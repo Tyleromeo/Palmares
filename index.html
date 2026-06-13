@@ -339,11 +339,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div class="card" style="margin-bottom:0">
       <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Power curve — best efforts</div></div>
       <div id="power-curve-bars"></div>
-      <div class="chart-wrap chart-wrap-md" style="margin-top:1rem"><canvas id="power-chart"></canvas></div>
+      <div class="chart-wrap chart-wrap-md" style="height:180px;position:relative;margin-top:1rem"><canvas id="power-chart"></canvas></div>
     </div>
     <div class="card" style="margin-bottom:0">
       <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Aerobic efficiency (HR:Power)</div></div>
-      <div class="chart-wrap chart-wrap-md"><canvas id="aero-chart"></canvas></div>
+      <div class="chart-wrap chart-wrap-md" style="height:180px;position:relative"><canvas id="aero-chart"></canvas></div>
       <div id="aero-insight" style="margin-top:10px;font-size:12px;color:#7d8590;line-height:1.5"></div>
     </div>
   </div>
@@ -743,7 +743,7 @@ function showSection(name) {
   if (name === 'gear' && allActivities.length) { try { renderGear(); } catch(e) { console.error('renderGear:', e); } }
   if (name === 'segments' && allActivities.length) { try { renderSegments(); } catch(e) { console.error('renderSegments:', e); } }
   if (name === 'collaborators' && allActivities.length) { try { renderCollaborators(collabFilter||'all'); } catch(e) { console.error('renderCollaborators:', e); } }
-  if (name === 'performance' && allActivities.length) { try { renderPerformance(); } catch(e) { console.error('renderPerformance:', e); } }
+  if (name === 'performance' && allActivities.length) { setTimeout(function() { try { renderPerformance(); } catch(e) { console.error('renderPerformance:', e); } }, 50); }
 }
 let weatherLoaded = false;
 
@@ -1396,7 +1396,12 @@ function renderAeroChart() {
       <button class="nav-btn" onclick="renderAeroFor(180)">6mo</button>
       <button class="nav-btn" onclick="renderAeroFor('ytd')">YTD</button>`;
     const chartWrap = document.getElementById('aero-chart').parentNode;
-    aeroCard.querySelector('.card-title').after(filters);
+    const aeroTitle = aeroCard.querySelector('.card-title');
+    if (aeroTitle && aeroTitle.nextSibling) {
+      aeroCard.insertBefore(filters, aeroTitle.nextSibling);
+    } else if (aeroTitle) {
+      aeroCard.appendChild(filters);
+    }
   }
   renderAeroFor(90);
 }
@@ -1489,12 +1494,15 @@ function renderYOY() {
     ['Total activities', thisYear.length, lastYear.length, '', true],
   ];
 
-  document.getElementById('yoy-body').innerHTML = rows.map(([label,ty,ly,unit,higher])=>{
-    const diff = ty-ly;
-    const pct = ly>0?Math.round(diff/ly*100):0;
-    const cls = diff>0?'up':diff<0?'down':'';
-    const arrow = diff>0?'↑':diff<0?'↓':'—';
-    return `<tr><td>${label}</td><td>${ty.toLocaleString()}${unit}</td><td>${ly.toLocaleString()}${unit}</td><td class="${cls}">${arrow} ${Math.abs(pct)}%</td></tr>`;
+  const yoyEl = document.getElementById('yoy-body');
+  if (!yoyEl) return;
+  yoyEl.innerHTML = rows.map(function(row) {
+    var label=row[0], ty=row[1], ly=row[2], unit=row[3];
+    var diff = ty-ly;
+    var pct = ly>0 ? Math.round(diff/ly*100) : 0;
+    var cls = diff>0 ? 'up' : diff<0 ? 'down' : '';
+    var arrow = diff>0 ? '+' : diff<0 ? '-' : '';
+    return '<tr><td>'+label+'</td><td>'+ty.toLocaleString()+unit+'</td><td>'+ly.toLocaleString()+unit+'</td><td class="'+cls+'">'+arrow+Math.abs(pct)+'%</td></tr>';
   }).join('');
 }
 
@@ -1524,7 +1532,7 @@ function renderHeatmap() {
 
 function renderCalendar() {
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-  document.getElementById('cal-label').textContent = months[calMonth] + ' ' + calYear;
+  var calLabel = document.getElementById('cal-label'); if (calLabel) calLabel.textContent = months[calMonth] + ' ' + calYear;
 
   // Build day map
   const dayMap = {};
@@ -1600,7 +1608,7 @@ function renderCalendar() {
     <span><strong style="color:#e6edf3">${monthTSS}</strong> TSS</span>
   </div>`;
 
-  document.getElementById('cal-grid').innerHTML = html;
+  var calGrid = document.getElementById('cal-grid'); if (calGrid) calGrid.innerHTML = html;
 }
 
 function showCalDay(dateStr) {
