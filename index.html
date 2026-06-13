@@ -350,10 +350,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div class="card" style="margin-bottom:0">
       <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Aerobic efficiency (HR:Power)</div></div>
       <div id="aero-filters" style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap">
-        <button class="nav-btn" onclick="renderAeroFor(7)">7d</button>
+        <button class="nav-btn active" onclick="renderAeroFor(7)">7d</button>
         <button class="nav-btn" onclick="renderAeroFor(30)">1mo</button>
         <button class="nav-btn" onclick="renderAeroFor(60)">2mo</button>
-        <button class="nav-btn active" onclick="renderAeroFor(90)">3mo</button>
+        <button class="nav-btn" onclick="renderAeroFor(90)">3mo</button>
         <button class="nav-btn" onclick="renderAeroFor(180)">6mo</button>
         <button class="nav-btn" onclick="renderAeroFor('ytd')">YTD</button>
       </div>
@@ -682,7 +682,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 <script>
 const CLIENT_ID = '257624';
 const CLIENT_SECRET = 'a649b9610e77abb13c8384c4c6a51e78a4c3354b';
-const APP_VERSION = 'v4.15';
+const APP_VERSION = 'v4.16';
 
 // Clear stale tokens on version change
 (function() {
@@ -909,6 +909,19 @@ async function loadAll(token) {
   gearData = await Promise.all([...gearIds].slice(0,10).map(id =>
     fetch(`https://www.strava.com/api/v3/gear/${id}`, {headers}).then(r=>r.json()).catch(()=>null)
   )).then(arr => arr.filter(Boolean));
+
+  // Fetch power streams for recent rides to build accurate power curve
+  setLoading('Loading power data...', 'Fetching ride power streams');
+  const powerRides = allActivities.filter(a=>(a.type==='Ride'||a.type==='VirtualRide')&&a.average_watts>0).slice(0,15);
+  window.powerStreams = {};
+  for (const ride of powerRides) {
+    try {
+      const stream = await fetch('https://www.strava.com/api/v3/activities/'+ride.id+'/streams?keys=watts&key_by_type=true', {headers}).then(r=>r.json());
+      if (stream && stream.watts && stream.watts.data) {
+        window.powerStreams[ride.id] = stream.watts.data;
+      }
+    } catch(e) {}
+  }
 
   // Segment achievements from recent rides with achievements
   setLoading('Analyzing segment achievements...', 'This may take a moment');
@@ -1287,26 +1300,44 @@ function renderPowerCurveFor(period) {
 
   function getBestPowers(rides) {
     const durations = [5,30,60,180,300,600,1200,1800,3600];
+    const streams = window.powerStreams || {};
+
     return durations.map(dur => {
       const relevant = rides.filter(a => a.moving_time >= dur);
       if (!relevant.length) return 0;
+
+      // Try to get best power from actual stream data
+      var bestFromStream = 0;
+      relevant.forEach(function(ride) {
+        if (!streams[ride.id]) return;
+        var data = streams[ride.id];
+        if (data.length < dur) return;
+        // Rolling average over 'dur' seconds
+        var windowSize = Math.min(dur, data.length);
+        var best = 0;
+        for (var i = 0; i <= data.length - windowSize; i++) {
+          var slice = data.slice(i, i + windowSize);
+          var avg = slice.reduce(function(s,v){return s+v;},0) / slice.length;
+          if (avg > best) best = avg;
+        }
+        if (best > bestFromStream) bestFromStream = Math.round(best);
+      });
+
+      if (bestFromStream > 10) return bestFromStream;
+
+      // Fallback to activity summary data
       if (dur <= 30) {
-        // Use max_watts if available, cap at realistic max (800w for strong amateur)
-        const maxW = Math.max(...relevant.map(a => Math.min(a.max_watts || 0, 800)));
-        if (maxW > 50) return maxW;
-        return 0;
+        var maxW = Math.max.apply(null, relevant.map(function(a){return Math.min(a.max_watts||0,800);}));
+        return maxW > 50 ? maxW : 0;
       } else if (dur <= 60) {
-        const maxW = Math.max(...relevant.map(a => Math.min(a.max_watts || 0, 800)));
-        if (maxW > 50) return Math.round(maxW * 0.85);
-        return Math.round(Math.max(...relevant.map(a=>a.average_watts)) * 1.15);
+        var maxW2 = Math.max.apply(null, relevant.map(function(a){return Math.min(a.max_watts||0,800);}));
+        return maxW2 > 50 ? Math.round(maxW2*0.85) : Math.round(Math.max.apply(null,relevant.map(function(a){return a.average_watts;}))*1.15);
       } else if (dur <= 300) {
-        // 5 min: best average_watts from rides longer than 5 min * modest factor
-        return Math.round(Math.max(...relevant.map(a=>a.average_watts)) * 1.10);
+        return Math.round(Math.max.apply(null,relevant.map(function(a){return a.average_watts;}))*1.10);
       } else if (dur <= 1200) {
-        return Math.round(Math.max(...relevant.map(a=>a.average_watts)) * 1.04);
+        return Math.round(Math.max.apply(null,relevant.map(function(a){return a.average_watts;}))*1.04);
       } else {
-        // 20-60 min: best sustained average is close to actual
-        return Math.round(Math.max(...relevant.map(a=>a.average_watts)) * 0.98);
+        return Math.round(Math.max.apply(null,relevant.map(function(a){return a.average_watts;}))*0.98);
       }
     });
   }
@@ -1413,40 +1444,16 @@ function renderPowerCurveFor(period) {
 
 
 function renderAeroChart() {
-  // Add range selector if not present
-  const aeroChart = document.getElementById('aero-chart'); const aeroCard = aeroChart ? aeroChart.parentNode.parentNode : null; if (!aeroCard) return;
-  if (!document.getElementById('aero-filters')) {
-    const filters = document.createElement('div');
-    filters.id = 'aero-filters';
-    filters.style.cssText = 'display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap';
-    filters.innerHTML = `
-      <button class="nav-btn" onclick="renderAeroFor(7)">7d</button>
-      <button class="nav-btn" onclick="renderAeroFor(30)">1mo</button>
-      <button class="nav-btn" onclick="renderAeroFor(60)">2mo</button>
-      <button class="nav-btn active" onclick="renderAeroFor(90)">3mo</button>
-      <button class="nav-btn" onclick="renderAeroFor(180)">6mo</button>
-      <button class="nav-btn" onclick="renderAeroFor('ytd')">YTD</button>`;
-    const chartWrap = document.getElementById('aero-chart').parentNode;
-    const aeroTitle = aeroCard.querySelector('.card-title');
-    if (aeroTitle && aeroTitle.nextSibling) {
-      aeroCard.insertBefore(filters, aeroTitle.nextSibling);
-    } else if (aeroTitle) {
-      aeroCard.appendChild(filters);
-    }
-  }
-  renderAeroFor(90);
+  renderAeroFor(7);
 }
 
 function renderAeroFor(range) {
-  document.querySelectorAll('#aero-filters .nav-btn').forEach(b => {
+  document.querySelectorAll('#aero-filters .nav-btn').forEach(function(b) {
     b.classList.remove('active');
-    if (b.textContent === range+'d' || b.textContent === range+'mo' || 
-        (range==='ytd' && b.textContent==='YTD') ||
-        (range===7 && b.textContent==='7d') ||
-        (range===30 && b.textContent==='1mo') ||
-        (range===60 && b.textContent==='2mo') ||
-        (range===90 && b.textContent==='3mo') ||
-        (range===180 && b.textContent==='6mo')) {
+    var txt = b.textContent.trim();
+    if ((range===7 && txt==='7d') || (range===30 && txt==='1mo') ||
+        (range===60 && txt==='2mo') || (range===90 && txt==='3mo') ||
+        (range===180 && txt==='6mo') || (range==='ytd' && txt==='YTD')) {
       b.classList.add('active');
     }
   });
@@ -1563,6 +1570,8 @@ function renderHeatmap() {
 
 function renderCalendar() {
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const now = new Date();
+  if (!calYear) { calYear = now.getFullYear(); calMonth = now.getMonth(); }
   var calLabel = document.getElementById('cal-label'); if (calLabel) calLabel.textContent = months[calMonth] + ' ' + calYear;
 
   // Build day map
@@ -1572,8 +1581,6 @@ function renderCalendar() {
     if (!dayMap[d]) dayMap[d] = [];
     dayMap[d].push(a);
   });
-
-  const now = new Date();
   const firstDay = new Date(calYear, calMonth, 1).getDay(); // 0=Sun
   const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
   const todayStr = now.toISOString().split('T')[0];
@@ -1588,7 +1595,7 @@ function renderCalendar() {
   for (let i=0; i<firstDay; i++) html += '<div></div>';
 
   for (let day=1; day<=daysInMonth; day++) {
-    const dateStr = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const dateStr = calYear+'-'+String(calMonth+1).padStart(2,'0')+'-'+String(day).padStart(2,'0');
     const acts = dayMap[dateStr] || [];
     const isToday = dateStr === todayStr;
     const isFuture = new Date(dateStr) > now;
