@@ -685,7 +685,7 @@ const CLIENT_SECRET = 'a649b9610e77abb13c8384c4c6a51e78a4c3354b';
 const SUPABASE_URL = 'https://chvrtqrjnatjftqzvgbv.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNodnJ0cXJqbmF0amZ0cXp2Z2J2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1MzM5NTgsImV4cCI6MjA5NzEwOTk1OH0.LtpcWIUO0hGSfoggIkcz7vuXm_0_F7_1uSHhMsUgtDU';
 const EDGE_FN = SUPABASE_URL + '/functions/v1/sync-strava';
-const APP_VERSION = 'v4.20';
+const APP_VERSION = 'v4.21';
 
 // Clear stale tokens on version change
 (function() {
@@ -870,10 +870,12 @@ async function handleCallback() {
       body: JSON.stringify({ action: 'auth', code: code })
     });
 
-    const data = await r.json();
+    let data;
+    try { data = await r.json(); } catch(e) { data = {}; }
 
-    if (!data.access_token) {
-      showError('Connection failed: ' + (data.error || JSON.stringify(data).slice(0, 200)));
+    if (!data || !data.access_token) {
+      const msg = data ? (data.error || data.detail || JSON.stringify(data).slice(0, 200)) : 'No response from server';
+      showError('Connection failed: ' + msg);
       return true;
     }
 
@@ -916,8 +918,9 @@ async function getToken() {
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY },
       body: JSON.stringify({ action: 'refresh', athlete_id: parseInt(athlete_id) })
     });
-    const data = await r.json();
-    if (data.access_token) {
+    let data;
+    try { data = await r.json(); } catch(e) { data = {}; }
+    if (data && data.access_token) {
       localStorage.setItem('ed_token', data.access_token);
       if (data.expires_at) localStorage.setItem('ed_expires', data.expires_at);
       return data.access_token;
