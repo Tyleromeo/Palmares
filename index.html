@@ -682,7 +682,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 <script>
 const CLIENT_ID = '257624';
 const CLIENT_SECRET = 'a649b9610e77abb13c8384c4c6a51e78a4c3354b';
-const APP_VERSION = 'v4.19';
+const SUPABASE_URL = 'https://chvrtqrjnatjftqzvgbv.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNodnJ0cXJqbmF0amZ0cXp2Z2J2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1MzM5NTgsImV4cCI6MjA5NzEwOTk1OH0.LtpcWIUO0hGSfoggIkcz7vuXm_0_F7_1uSHhMsUgtDU';
+const EDGE_FN = SUPABASE_URL + '/functions/v1/sync-strava';
+const APP_VERSION = 'v4.20';
 
 // Clear stale tokens on version change
 (function() {
@@ -695,6 +698,60 @@ const APP_VERSION = 'v4.19';
 // FTP and weight now come from settings - these are fallback defaults
 const FTP = 249;
 const WEIGHT_KG = 75;
+
+
+// ==================== SUPABASE SYNC ====================
+async function syncToSupabase(athlete_id, access_token) {
+  try {
+    // Sync activities in background
+    await fetch(EDGE_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY },
+      body: JSON.stringify({ action: 'sync', athlete_id, access_token })
+    });
+
+    // Sync power PRs in background (takes longer)
+    setTimeout(async function() {
+      try {
+        await fetch(EDGE_FN, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY },
+          body: JSON.stringify({ action: 'sync_power', athlete_id, access_token })
+        });
+        // Refresh power curve after sync
+        if (typeof renderPowerCurve === 'function') {
+          loadPowerPRsFromSupabase(athlete_id);
+        }
+      } catch(e) { console.log('Power sync error:', e); }
+    }, 5000);
+
+  } catch(e) { console.log('Sync error:', e); }
+}
+
+async function loadPowerPRsFromSupabase(athlete_id) {
+  try {
+    const r = await fetch(EDGE_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY },
+      body: JSON.stringify({ action: 'get_power_prs', athlete_id })
+    });
+    const data = await r.json();
+    if (data.power_prs && data.power_prs.length) {
+      // Group by year
+      const byYear = {};
+      data.power_prs.forEach(function(pr) {
+        if (!byYear[pr.year]) byYear[pr.year] = {};
+        byYear[pr.year][pr.duration_seconds] = {
+          watts: pr.watts,
+          activity_name: pr.activity_name,
+          activity_id: pr.activity_id
+        };
+      });
+      window.powerPRsByYear = byYear;
+      console.log('Power PRs loaded from Supabase:', Object.keys(byYear));
+    }
+  } catch(e) { console.log('Load power PRs error:', e); }
+}
 
 // ==================== SETTINGS ====================
 const DEFAULTS = { ftp:249, weight:75, runPace:'7:30', css:'1:45', ageGroup:'35_44', city:'Smithtown, NY', units:'imperial' };
@@ -785,7 +842,7 @@ let weatherLoaded = false;
 // AUTH
 function connectStrava() {
   const here = window.location.href.split('?')[0];
-  window.location.href = `https://www.strava.com/oauth/authorize?client_id=${CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(here)}&approval_prompt=force&scope=read,activity:read_all`;
+  window.location.href = 'https://www.strava.com/oauth/authorize?client_id=' + CLIENT_ID + '&response_type=code&redirect_uri=' + encodeURIComponent(here) + '&approval_prompt=force&scope=read,activity:read_all';
 }
 
 async function handleCallback() {
@@ -802,40 +859,40 @@ async function handleCallback() {
 
   if (!code) return false;
 
-  // We have a code -- clear URL immediately to prevent reuse on refresh
   window.history.replaceState({}, '', window.location.pathname);
-  setLoading('Connecting to Strava...', 'Exchanging authorization code');
+  setLoading('Connecting to Strava...', 'Authenticating via ElDorado backend');
 
   try {
-    const body = {
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      code: code,
-      grant_type: 'authorization_code'
-    };
-
-    const r = await fetch('https://www.strava.com/oauth/token', {
+    // Exchange code via Supabase edge function
+    const r = await fetch(EDGE_FN, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY },
+      body: JSON.stringify({ action: 'auth', code: code })
     });
 
-    let data;
-    try { data = await r.json(); } catch(e) { data = {}; }
+    const data = await r.json();
 
-    // Show full debug info if it fails
     if (!data.access_token) {
-      const debugMsg = 'Status: ' + r.status + ' | Response: ' + JSON.stringify(data).slice(0, 300);
-      showError('Connection failed. ' + debugMsg);
+      showError('Connection failed: ' + (data.error || JSON.stringify(data).slice(0, 200)));
       return true;
     }
 
-    storeToken(data);
+    // Store token + athlete_id locally
+    localStorage.setItem('ed_token', data.access_token);
+    localStorage.setItem('ed_refresh', data.refresh_token);
+    localStorage.setItem('ed_expires', data.expires_at);
+    localStorage.setItem('ed_athlete_id', data.athlete_id);
+
+    setLoading('Syncing your data...', 'Loading activities from Supabase');
+
+    // Trigger background sync
+    syncToSupabase(data.athlete_id, data.access_token);
+
     await loadAll(data.access_token);
     return true;
 
   } catch(e) {
-    showError('Network error: ' + e.message + '. Check your internet connection and try again.');
+    showError('Network error: ' + e.message);
     return true;
   }
 }
@@ -849,15 +906,22 @@ function storeToken(data) {
 async function getToken() {
   const exp = parseInt(localStorage.getItem('ed_expires')||'0');
   if (localStorage.getItem('ed_token') && Date.now()/1000 < exp-60) return localStorage.getItem('ed_token');
-  const refresh = localStorage.getItem('ed_refresh');
-  if (!refresh) return null;
+  
+  const athlete_id = localStorage.getItem('ed_athlete_id');
+  if (!athlete_id) return null;
+
   try {
-    const r = await fetch('https://www.strava.com/oauth/token', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({client_id:CLIENT_ID,client_secret:CLIENT_SECRET,refresh_token:refresh,grant_type:'refresh_token'})
+    const r = await fetch(EDGE_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY },
+      body: JSON.stringify({ action: 'refresh', athlete_id: parseInt(athlete_id) })
     });
     const data = await r.json();
-    if (data.access_token) { storeToken(data); return data.access_token; }
+    if (data.access_token) {
+      localStorage.setItem('ed_token', data.access_token);
+      if (data.expires_at) localStorage.setItem('ed_expires', data.expires_at);
+      return data.access_token;
+    }
   } catch(e) {}
   return null;
 }
