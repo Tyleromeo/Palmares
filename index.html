@@ -985,18 +985,17 @@ async function loadAll(token) {
   document.getElementById('dot').className = 'dot on';
   document.getElementById('auth-name').textContent = athlete.firstname + ' ' + athlete.lastname;
 
-  // Activities - fetch up to 20 pages (1000 activities) for deep history
+  // Activities - fetch up to 10 pages (500 activities)
   setLoading('Loading activities...', 'Fetching full history — this takes a moment');
   allActivities = [];
-  for (let page = 1; page <= 20; page++) {
-    setLoading('Loading activities...', `Page ${page} of up to 20 — ${allActivities.length} activities loaded`);
+  for (let page = 1; page <= 10; page++) {
+    setLoading('Loading activities...', `Page ${page} of up to 10 — ${allActivities.length} activities loaded`);
     const batch = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=50&page=${page}`, {headers}).then(r=>r.json()).catch(()=>[]);
     if (!Array.isArray(batch) || batch.length === 0) break;
     allActivities = [...allActivities, ...batch];
     if (batch.length < 50) break;
   }
   allActivities.sort((a,b) => new Date(b.start_date) - new Date(a.start_date));
-  console.log('Total activities loaded:', allActivities.length, 'Most recent:', allActivities[0]?.start_date);
 
   // Stats
   setLoading('Loading all-time stats...');
@@ -1120,6 +1119,36 @@ function getActiveDays() {
   return activeDays;
 }
 
+
+function calcDailyStreak() {
+  var now = new Date();
+  var todayStr = now.toISOString().split('T')[0];
+  var activeDays = getActiveDays();
+  var streak = 0;
+  var d = new Date(now);
+  if (!activeDays[todayStr]) d.setDate(d.getDate()-1);
+  while (true) {
+    var ds = d.toISOString().split('T')[0];
+    if (activeDays[ds]) { streak++; d.setDate(d.getDate()-1); }
+    else break;
+  }
+  return streak;
+}
+
+function calcAllTimeDailyStreak() {
+  var activeDays = getActiveDays();
+  var sorted = Object.keys(activeDays).sort();
+  if (!sorted.length) return 0;
+  var best = 1, current = 1;
+  for (var i = 1; i < sorted.length; i++) {
+    var prev = new Date(sorted[i-1]);
+    var curr = new Date(sorted[i]);
+    var diff = (curr - prev) / (1000*60*60*24);
+    if (diff === 1) { current++; if (current > best) best = current; }
+    else { current = 1; }
+  }
+  return best;
+}
 
 function getWeekStart(dateStr) {
   // Parse as UTC to match getActiveDays keys (which are UTC date strings from Strava)
