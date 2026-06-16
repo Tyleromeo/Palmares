@@ -688,7 +688,7 @@ const CLIENT_SECRET = 'a649b9610e77abb13c8384c4c6a51e78a4c3354b';
 const SUPABASE_URL = 'https://chvrtqrjnatjftqzvgbv.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNodnJ0cXJqbmF0amZ0cXp2Z2J2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1MzM5NTgsImV4cCI6MjA5NzEwOTk1OH0.LtpcWIUO0hGSfoggIkcz7vuXm_0_F7_1uSHhMsUgtDU';
 const EDGE_FN = SUPABASE_URL + '/functions/v1/sync-strava';
-const APP_VERSION = 'v4.28';
+const APP_VERSION = 'v4.30';
 
 // Clear stale tokens on version change
 (function() {
@@ -1109,6 +1109,137 @@ function checkNotifications(activities, metrics) {
   }
 }
 
+function getActiveDays() {
+  var activeDays = {};
+  allActivities.forEach(function(a) { activeDays[a.start_date.split('T')[0]] = true; });
+  return activeDays;
+}
+
+function getWeekStart(date) {
+  var d = new Date(date);
+  d.setDate(d.getDate() - d.getDay());
+  return d.toISOString().split('T')[0];
+}
+
+function calcDailyStreak() {
+  var now = new Date();
+  var todayStr = now.toISOString().split('T')[0];
+  var activeDays = getActiveDays();
+  var streak = 0;
+  var d = new Date(now);
+  if (!activeDays[todayStr]) d.setDate(d.getDate()-1);
+  while (true) {
+    var ds = d.toISOString().split('T')[0];
+    if (activeDays[ds]) { streak++; d.setDate(d.getDate()-1); }
+    else break;
+  }
+  return streak;
+}
+
+function calcAllTimeDailyStreak() {
+  var activeDays = getActiveDays();
+  var sorted = Object.keys(activeDays).sort();
+  if (!sorted.length) return 0;
+  var best = 1, current = 1;
+  for (var i = 1; i < sorted.length; i++) {
+    var prev = new Date(sorted[i-1]);
+    var curr = new Date(sorted[i]);
+    var diff = (curr - prev) / (1000*60*60*24);
+    if (diff === 1) {
+      current++;
+      if (current > best) best = current;
+    } else {
+      current = 1;
+    }
+  }
+  return best;
+}
+
+function calcWeeklyStreak() {
+  var now = new Date();
+  var activeDays = getActiveDays();
+  var activeWeeks = {};
+  Object.keys(activeDays).forEach(function(ds) { activeWeeks[getWeekStart(new Date(ds))] = true; });
+  var streak = 0;
+  var weekStart = new Date(getWeekStart(now));
+  if (!activeWeeks[weekStart.toISOString().split('T')[0]]) weekStart.setDate(weekStart.getDate()-7);
+  while (true) {
+    var ws = weekStart.toISOString().split('T')[0];
+    if (activeWeeks[ws]) { streak++; weekStart.setDate(weekStart.getDate()-7); }
+    else break;
+  }
+  return streak;
+}
+
+function calcAllTimeWeeklyStreak() {
+  var activeDays = getActiveDays();
+  var activeWeeks = {};
+  Object.keys(activeDays).forEach(function(ds) { activeWeeks[getWeekStart(new Date(ds))] = true; });
+  var sorted = Object.keys(activeWeeks).sort();
+  if (!sorted.length) return 0;
+  var best = 1, current = 1;
+  for (var i = 1; i < sorted.length; i++) {
+    var prev = new Date(sorted[i-1]);
+    var curr = new Date(sorted[i]);
+    var diff = Math.round((curr - prev) / (1000*60*60*24*7));
+    if (diff === 1) {
+      current++;
+      if (current > best) best = current;
+    } else {
+      current = 1;
+    }
+  }
+  return best;
+}
+
+function renderStreaks() {
+  var daily = calcDailyStreak();
+  var weekly = calcWeeklyStreak();
+  var bestDaily = calcAllTimeDailyStreak();
+  var bestWeekly = calcAllTimeWeeklyStreak();
+  var el = document.getElementById('streak-cards');
+  if (!el) return;
+
+  var dailyFire = daily >= 14 ? '🔥' : daily >= 7 ? '⚡' : '📅';
+  var weeklyFire = weekly >= 12 ? '🔥' : weekly >= 6 ? '⚡' : '📅';
+
+  el.innerHTML =
+    '<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">' +
+        '<span style="font-size:20px">'+dailyFire+'</span>' +
+        '<span style="font-size:13px;font-weight:600;color:#e6edf3">Daily streak</span>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-end">' +
+        '<div>' +
+          '<div style="font-size:36px;font-weight:700;color:#C9A227;line-height:1">'+daily+'</div>' +
+          '<div style="font-size:11px;color:#7d8590;margin-top:2px">current streak</div>' +
+        '</div>' +
+        '<div style="text-align:right">' +
+          '<div style="font-size:24px;font-weight:600;color:#3fb950;line-height:1">'+bestDaily+'</div>' +
+          '<div style="font-size:11px;color:#7d8590;margin-top:2px">all-time best</div>' +
+        '</div>' +
+      '</div>' +
+      (daily === bestDaily ? '<div style="font-size:10px;color:#C9A227;margin-top:8px">🏆 Currently at your all-time best!</div>' : '<div style="font-size:10px;color:#7d8590;margin-top:8px">'+(bestDaily-daily)+' days from all-time best</div>') +
+    '</div>' +
+    '<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">' +
+        '<span style="font-size:20px">'+weeklyFire+'</span>' +
+        '<span style="font-size:13px;font-weight:600;color:#e6edf3">Weekly streak</span>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-end">' +
+        '<div>' +
+          '<div style="font-size:36px;font-weight:700;color:#C9A227;line-height:1">'+weekly+'</div>' +
+          '<div style="font-size:11px;color:#7d8590;margin-top:2px">current streak</div>' +
+        '</div>' +
+        '<div style="text-align:right">' +
+          '<div style="font-size:24px;font-weight:600;color:#3fb950;line-height:1">'+bestWeekly+'</div>' +
+          '<div style="font-size:11px;color:#7d8590;margin-top:2px">all-time best</div>' +
+        '</div>' +
+      '</div>' +
+      (weekly === bestWeekly ? '<div style="font-size:10px;color:#C9A227;margin-top:8px">🏆 Currently at your all-time best!</div>' : '<div style="font-size:10px;color:#7d8590;margin-top:8px">'+(bestWeekly-weekly)+' weeks from all-time best</div>') +
+    '</div>';
+}
+
 function renderDashboard() {
   const rides = allActivities;
   const metrics = computeMetrics(rides);
@@ -1148,6 +1279,7 @@ function renderDashboard() {
   renderCoaching(metrics);
   checkNotifications(allActivities, metrics);
   loadClubEvents();
+  renderStreaks();
 }
 
 function activityRow(r) {
