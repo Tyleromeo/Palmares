@@ -1124,7 +1124,8 @@ function getWeekStart(date) {
   var day = d.getDay(); // 0=Sun, 1=Mon
   var diff = (day === 0) ? 6 : day - 1; // days since Monday
   d.setDate(d.getDate() - diff);
-  return d.toISOString().split('T')[0];
+  var y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+  return y + '-' + m + '-' + dd;
 }
 
 function calcDailyStreak() {
@@ -1171,7 +1172,8 @@ function calcWeeklyStreak() {
   var weekStart = new Date(getWeekStart(now));
   weekStart.setDate(weekStart.getDate() - 7);
   while (true) {
-    var ws = weekStart.toISOString().split('T')[0];
+    var y = weekStart.getFullYear(), m = String(weekStart.getMonth()+1).padStart(2,'0'), dd = String(weekStart.getDate()).padStart(2,'0');
+    var ws = y + '-' + m + '-' + dd;
     if (activeWeeks[ws]) { streak++; weekStart.setDate(weekStart.getDate()-7); }
     else break;
   }
