@@ -1117,6 +1117,8 @@ function checkNotifications(activities, metrics) {
 function getActiveDays() {
   var activeDays = {};
   allActivities.forEach(function(a) { activeDays[a.start_date.split('T')[0]] = true; });
+  var sorted = Object.keys(activeDays).sort();
+  console.log('getActiveDays: total days=', sorted.length, 'most recent 5=', sorted.slice(-5));
   return activeDays;
 }
 
