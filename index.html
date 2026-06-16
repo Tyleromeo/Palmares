@@ -1166,9 +1166,12 @@ function calcWeeklyStreak() {
   var now = new Date();
   var activeDays = getActiveDays();
   var activeWeeks = {};
-  Object.keys(activeDays).forEach(function(ds) { activeWeeks[getWeekStart(new Date(ds))] = true; });
+  Object.keys(activeDays).forEach(function(ds) {
+    var p = ds.split('-');
+    var d = new Date(parseInt(p[0]), parseInt(p[1])-1, parseInt(p[2]));
+    activeWeeks[getWeekStart(d)] = true;
+  });
   var streak = 0;
-  // Always start from the most recently COMPLETED week — ignore current in-progress week
   var weekStart = new Date(getWeekStart(now));
   weekStart.setDate(weekStart.getDate() - 7);
   while (true) {
@@ -1183,20 +1186,21 @@ function calcWeeklyStreak() {
 function calcAllTimeWeeklyStreak() {
   var activeDays = getActiveDays();
   var activeWeeks = {};
-  Object.keys(activeDays).forEach(function(ds) { activeWeeks[getWeekStart(new Date(ds))] = true; });
+  Object.keys(activeDays).forEach(function(ds) {
+    var p = ds.split('-');
+    var d = new Date(parseInt(p[0]), parseInt(p[1])-1, parseInt(p[2]));
+    activeWeeks[getWeekStart(d)] = true;
+  });
   var sorted = Object.keys(activeWeeks).sort();
   if (!sorted.length) return 0;
   var best = 1, current = 1;
   for (var i = 1; i < sorted.length; i++) {
-    var prev = new Date(sorted[i-1]);
-    var curr = new Date(sorted[i]);
+    var p = sorted[i-1].split('-'), c = sorted[i].split('-');
+    var prev = new Date(parseInt(p[0]), parseInt(p[1])-1, parseInt(p[2]));
+    var curr = new Date(parseInt(c[0]), parseInt(c[1])-1, parseInt(c[2]));
     var diff = Math.round((curr - prev) / (1000*60*60*24*7));
-    if (diff === 1) {
-      current++;
-      if (current > best) best = current;
-    } else {
-      current = 1;
-    }
+    if (diff === 1) { current++; if (current > best) best = current; }
+    else { current = 1; }
   }
   return best;
 }
