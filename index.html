@@ -2587,11 +2587,34 @@ async function loadClubEvents() {
 
     // Sort by upcoming date
     const now = new Date();
-    const upcoming = allEvents
+    const allUpcoming = allEvents
       .filter(e => e.upcoming_occurrences && e.upcoming_occurrences.length > 0)
       .map(e => ({...e, nextDate: new Date(e.upcoming_occurrences[0])}))
       .filter(e => e.nextDate >= now)
       .sort((a,b) => a.nextDate - b.nextDate);
+
+    // Current week boundary (Monday-Sunday) for the Livelo/WolfPack week filter
+    const weekStart = new Date(now); { const d = now.getDay(); weekStart.setDate(now.getDate() - (d===0?6:d-1)); } weekStart.setHours(0,0,0,0);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate()+7);
+
+    const matchesText = (e, needle) => {
+      const haystack = ((e.title||'') + ' ' + (e.club_name||'')).toLowerCase();
+      return haystack.includes(needle);
+    };
+
+    const upcoming = allUpcoming.filter(e => {
+      // SBRA A rides: always shown, regardless of date
+      const isSbraA = matchesText(e, 'sbra') && /\ba\b/i.test(e.title || '');
+      if (isSbraA) return true;
+
+      // Livelo and WolfPack rides: only shown if they fall in the current week
+      const isLivelo = matchesText(e, 'livelo');
+      const isWolfpack = matchesText(e, 'wolfpack') || matchesText(e, 'wolf pack');
+      if (isLivelo || isWolfpack) return e.nextDate >= weekStart && e.nextDate < weekEnd;
+
+      // Everything else: keep the normal "any upcoming" behavior
+      return true;
+    });
 
     document.getElementById('events-count').textContent = upcoming.length + ' upcoming';
 
