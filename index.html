@@ -3126,16 +3126,6 @@ function computeMetrics(rides) {
   const dayMap=buildDayMap(rides);
   const now=new Date();
 
-  // TEMP DEBUG: print last 14 days of daily TSS to diagnose CTL/ATL divergence
-  console.log('=== Last 14 days TSS ===');
-  for (let i=13; i>=0; i--) {
-    const d=new Date(now); d.setDate(d.getDate()-i);
-    const key=d.toISOString().split('T')[0];
-    const dayActs = rides.filter(r => r.start_date.split('T')[0] === key);
-    const names = dayActs.map(a => a.name + ' (' + a.type + ', ' + Math.round(a.moving_time/60) + 'min, HR:' + Math.round(a.average_heartrate||0) + ')').join(' + ');
-    console.log(key, '| TSS:', dayMap[key]||0, '|', names || 'rest day');
-  }
-
   // Determine how far back we actually have data, up to a 1-year cap, so CTL has
   // real runway to stabilize instead of starting from an arbitrary seed value
   // close to "today". More history = more accurate fitness number.
