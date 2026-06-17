@@ -2573,16 +2573,25 @@ async function loadClubEvents() {
     // Fetch events for each club
     const allEvents = [];
     let anyClubFailed = false;
+    console.log('=== Club events debug ===');
+    console.log('Total clubs found:', clubs.length, '| Names:', clubs.map(c => c.name).join(', '));
     for (const club of clubs.slice(0, 8)) {
       try {
         const evResp = await fetch('https://www.strava.com/api/v3/clubs/'+club.id+'/group_events', {headers});
-        if (!evResp.ok) { anyClubFailed = true; continue; }
+        if (!evResp.ok) {
+          console.log('Club "'+club.name+'" (id '+club.id+'): FAILED, status', evResp.status);
+          anyClubFailed = true;
+          continue;
+        }
         const events = await evResp.json();
         if (Array.isArray(events)) {
+          console.log('Club "'+club.name+'" (id '+club.id+'): OK,', events.length, 'total events,', events.filter(e=>e.upcoming_occurrences&&e.upcoming_occurrences.length).length, 'with upcoming occurrences');
           events.forEach(function(e) { allEvents.push(Object.assign({}, e, {club_name: club.name, club_id: club.id})); });
+        } else {
+          console.log('Club "'+club.name+'" (id '+club.id+'): unexpected response shape', events);
         }
         await new Promise(function(r){setTimeout(r,300);});
-      } catch(e) { anyClubFailed = true; }
+      } catch(e) { console.log('Club "'+club.name+'" (id '+club.id+'): EXCEPTION', e.message); anyClubFailed = true; }
     }
 
     // Sort by upcoming date
@@ -2645,7 +2654,7 @@ async function loadClubEvents() {
         <div>
           <div class="row-name" style="display:flex;align-items:center;gap:6px">
             <span style="font-size:10px;background:${typeColor}22;color:${typeColor};border:1px solid ${typeColor};border-radius:4px;padding:1px 6px;font-weight:600">${typeLabel}</span>
-            <a href="https://www.strava.com/clubs/${e.club_id}/group_events" target="_blank" style="color:#e6edf3;text-decoration:none" title="Opens this club's events list, since individual event links can go stale on Strava">${e.title}</a>
+            <a href="https://www.strava.com/athlete/clubs" target="_blank" style="color:#e6edf3;text-decoration:none" title="Opens your Strava clubs list - direct event links aren't reliable on Strava's web app">${e.title}</a>
             ${isToday||isTomorrow ? `<span class="badge b-gold">${dayLabel}</span>` : ''}
           </div>
           <div class="row-meta">${dateStr} at ${timeStr} &middot; ${e.club_name}</div>
