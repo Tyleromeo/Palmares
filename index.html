@@ -746,6 +746,63 @@ const SB_HEADERS = {
   'Prefer': 'resolution=merge-duplicates'
 };
 
+// Converts a cached Supabase activities row back into the shape the rest of
+// the app expects (matching Strava's API response fields). Cached rows only
+// store a subset of fields (see syncActivitiesToSupabase), so anything not
+// stored falls back to a safe default rather than being undefined.
+function mapCachedRowToActivity(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    distance: row.distance,
+    moving_time: row.moving_time,
+    total_elevation_gain: row.total_elevation_gain,
+    average_watts: row.average_watts || null,
+    max_watts: row.max_watts || null,
+    average_heartrate: row.average_heartrate || null,
+    max_heartrate: row.max_heartrate || null,
+    average_speed: row.average_speed || null,
+    suffer_score: row.suffer_score || null,
+    achievement_count: row.achievement_count || 0,
+    gear_id: row.gear_id || null,
+    start_date: row.start_date,
+    start_date_local: row.start_date_local || row.start_date
+  };
+}
+
+// Writes activities to the Supabase cache without blocking the UI - failures
+// here should never interrupt the dashboard, since Strava remains the source
+// of truth and the cache is purely a rate-limit optimization.
+function syncActivitiesToSupabase(activities, athlete_id) {
+  (async () => {
+    try {
+      const rows = activities.map(a => ({
+        id: a.id, athlete_id: athlete_id, name: a.name, type: a.type,
+        distance: a.distance, moving_time: a.moving_time,
+        total_elevation_gain: a.total_elevation_gain,
+        average_watts: a.average_watts || null,
+        max_watts: a.max_watts || null,
+        average_heartrate: a.average_heartrate || null,
+        max_heartrate: a.max_heartrate || null,
+        average_speed: a.average_speed || null,
+        suffer_score: a.suffer_score || null,
+        achievement_count: a.achievement_count || 0,
+        gear_id: a.gear_id || null,
+        start_date: a.start_date,
+        start_date_local: a.start_date_local || a.start_date
+      }));
+      for (let i = 0; i < rows.length; i += 50) {
+        const batch = rows.slice(i, i + 50);
+        await fetch(SB_REST + '/activities', {
+          method: 'POST', headers: SB_HEADERS, body: JSON.stringify(batch)
+        });
+      }
+      console.log('Cache updated:', rows.length, 'activities written to Supabase');
+    } catch(e) { console.log('Background cache write error:', e); }
+  })();
+}
+
 async function syncToSupabase(athlete_id, access_token) {
   try {
     // Upsert athlete record
@@ -1023,16 +1080,67 @@ async function loadAll(token) {
   document.getElementById('dot').className = 'dot on';
   document.getElementById('auth-name').textContent = athlete.firstname + ' ' + athlete.lastname;
 
-  // Activities - fetch up to 10 pages (500 activities)
-  setLoading('Loading activities...', 'Fetching full history — this takes a moment');
+  // Activities - cache-first strategy to reduce Strava API load.
+  // 1. Read cached activities from Supabase first (no Strava call needed).
+  // 2. Only fetch from Strava: (a) activities newer than the most recent cached one,
+  //    or (b) everything, if the cache is empty or has gone stale (>6 hours old).
+  setLoading('Loading activities...', 'Checking cache...');
   allActivities = [];
-  for (let page = 1; page <= 10; page++) {
-    setLoading('Loading activities...', `Page ${page} of up to 10 — ${allActivities.length} activities loaded`);
-    const batch = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=50&page=${page}`, {headers}).then(r=>r.json()).catch(()=>[]);
-    if (!Array.isArray(batch) || batch.length === 0) break;
-    allActivities = [...allActivities, ...batch];
-    if (batch.length < 50) break;
+  let cachedActivities = [];
+  let cacheIsStale = true;
+
+  try {
+    const cacheResp = await fetch(SB_REST + '/activities?athlete_id=eq.' + athlete.id + '&order=start_date.desc&limit=500', {
+      headers: { 'apikey': SUPABASE_ANON_KEY }
+    });
+    if (cacheResp.ok) {
+      cachedActivities = await cacheResp.json();
+    }
+  } catch(e) { console.log('Cache read error:', e); }
+
+  // Check freshness: if the most recently cached activity's updated_at (or just
+  // its presence) is recent, and we have a reasonable number of cached rows,
+  // treat the cache as fresh enough to skip a full Strava re-fetch.
+  const lastSyncStr = localStorage.getItem('ed_last_full_sync');
+  const lastSync = lastSyncStr ? new Date(lastSyncStr) : null;
+  const sixHoursAgo = new Date(Date.now() - 6*60*60*1000);
+  cacheIsStale = !lastSync || lastSync < sixHoursAgo || cachedActivities.length === 0;
+
+  if (!cacheIsStale) {
+    // Cache is fresh: use it directly, then just pull anything newer than the
+    // most recent cached activity in case something was logged since the cache
+    // was last written (cheap - usually 1 page, often 0 results).
+    setLoading('Loading activities...', `Using cached data (${cachedActivities.length} activities) — checking for new ones...`);
+    allActivities = cachedActivities.map(mapCachedRowToActivity);
+    const mostRecentCached = allActivities.length ? new Date(allActivities[0].start_date) : null;
+
+    try {
+      const newBatch = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=30&page=1`, {headers}).then(r=>r.json()).catch(()=>[]);
+      if (Array.isArray(newBatch)) {
+        const newOnes = mostRecentCached
+          ? newBatch.filter(a => new Date(a.start_date) > mostRecentCached)
+          : newBatch;
+        if (newOnes.length) {
+          allActivities = [...newOnes, ...allActivities];
+          syncActivitiesToSupabase(newOnes, athlete.id); // fire and forget cache update
+        }
+      }
+    } catch(e) { console.log('Incremental fetch error:', e); }
+  } else {
+    // Cache is stale or empty: do the full historical fetch from Strava,
+    // same as before, then write the full result back to the cache.
+    setLoading('Loading activities...', 'Fetching full history — this takes a moment');
+    for (let page = 1; page <= 10; page++) {
+      setLoading('Loading activities...', `Page ${page} of up to 10 — ${allActivities.length} activities loaded`);
+      const batch = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=50&page=${page}`, {headers}).then(r=>r.json()).catch(()=>[]);
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      allActivities = [...allActivities, ...batch];
+      if (batch.length < 50) break;
+    }
+    localStorage.setItem('ed_last_full_sync', new Date().toISOString());
+    syncActivitiesToSupabase(allActivities, athlete.id); // fire and forget cache write
   }
+
   allActivities.sort((a,b) => new Date(b.start_date) - new Date(a.start_date));
 
   // Stats
