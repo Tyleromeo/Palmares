@@ -411,6 +411,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
         <button class="nav-btn" id="filter-run" onclick="filterActivities('run')">Runs</button>
       </div>
     </div>
+    <div style="margin-bottom:12px">
+      <input type="text" id="activity-search" placeholder="Search activities by name..." oninput="searchActivities(this.value)" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px 12px;color:#e6edf3;font-size:13px;box-sizing:border-box" />
+    </div>
     <div id="activity-list"></div>
   </div>
 </div>
@@ -3425,12 +3428,18 @@ function showError(msg) {
 
 // ==================== ACTIVITIES ====================
 let actFilter = 'all';
+let actSearchQuery = '';
 
 function filterActivities(type) {
   actFilter = type;
   document.querySelectorAll('[id^=filter-]').forEach(b => b.classList.remove('active'));
   const btn = document.getElementById('filter-' + type);
   if (btn) btn.classList.add('active');
+  renderActivityList();
+}
+
+function searchActivities(query) {
+  actSearchQuery = (query || '').trim().toLowerCase();
   renderActivityList();
 }
 
@@ -3451,14 +3460,26 @@ function renderActivities() {
 
 function renderActivityList() {
   const filtered = allActivities.filter(a => {
-    if (actFilter === 'ride') return a.type === 'Ride' || a.type === 'VirtualRide' || a.type === 'EBikeRide';
-    if (actFilter === 'run') return a.type === 'Run' || a.type === 'TrailRun' || a.type === 'VirtualRun';
-    return true;
+    const typeMatch = actFilter === 'ride' ? (a.type === 'Ride' || a.type === 'VirtualRide' || a.type === 'EBikeRide')
+      : actFilter === 'run' ? (a.type === 'Run' || a.type === 'TrailRun' || a.type === 'VirtualRun')
+      : true;
+    if (!typeMatch) return false;
+    if (!actSearchQuery) return true;
+    const gear = a.gear_id ? gearData.find(g => g.id === a.gear_id) : null;
+    const haystack = ((a.name || '') + ' ' + (gear ? gear.name : '')).toLowerCase();
+    return haystack.includes(actSearchQuery);
   });
   const list = document.getElementById('activity-list');
   if (!list) return;
-  if (!filtered.length) { list.innerHTML = '<p style="font-size:13px;color:#7d8590;padding:1rem 0">No activities found.</p>'; return; }
-  list.innerHTML = filtered.slice(0, 30).map(r => {
+  if (!filtered.length) {
+    const msg = actSearchQuery ? `No activities matching "${actSearchQuery}".` : 'No activities found.';
+    list.innerHTML = `<p style="font-size:13px;color:#7d8590;padding:1rem 0">${msg}</p>`;
+    return;
+  }
+  // Show more results when actively searching, since a search is a deliberate
+  // attempt to find something specific rather than just browsing recent activity.
+  const displayLimit = actSearchQuery ? 100 : 30;
+  list.innerHTML = filtered.slice(0, displayLimit).map(r => {
     const mi = (r.distance/1609.34).toFixed(1);
     const h = Math.floor(r.moving_time/3600), m = Math.floor((r.moving_time%3600)/60);
     const t = h > 0 ? h + 'h ' + m + 'm' : m + 'm';
