@@ -778,7 +778,7 @@ function syncActivitiesToSupabase(activities, athlete_id) {
   (async () => {
     try {
       // Upsert athlete record alongside the activity cache write
-      await fetch(SB_REST + '/athletes', {
+      await fetch(SB_REST + '/athletes?on_conflict=id', {
         method: 'POST',
         headers: SB_HEADERS,
         body: JSON.stringify({
@@ -806,9 +806,13 @@ function syncActivitiesToSupabase(activities, athlete_id) {
       }));
       for (let i = 0; i < rows.length; i += 50) {
         const batch = rows.slice(i, i + 50);
-        await fetch(SB_REST + '/activities', {
+        const resp = await fetch(SB_REST + '/activities?on_conflict=id', {
           method: 'POST', headers: SB_HEADERS, body: JSON.stringify(batch)
         });
+        if (!resp.ok) {
+          const errBody = await resp.text();
+          console.log('Activities upsert batch failed:', resp.status, errBody);
+        }
       }
       console.log('Cache updated:', rows.length, 'activities written to Supabase');
     } catch(e) { console.log('Background cache write error:', e); }
@@ -2729,9 +2733,19 @@ async function loadClubEvents() {
 
     // TEMP DEBUG: show what LiVelo/WolfPack events look like before filtering
     const liveloWolfpackRaw = allUpcoming.filter(e => matchesText(e,'livelo') || matchesText(e,'wolfpack') || matchesText(e,'wolf pack'));
-    console.log('=== LiVelo/WolfPack raw events (pre-filter) ===');
+    console.log('=== LiVelo/WolfPack raw events (pre-filter), matched:', liveloWolfpackRaw.length, '===');
     liveloWolfpackRaw.slice(0,15).forEach(e => {
       console.log(e.title, '|', e.club_name, '| next:', e.nextDate.toISOString(), '| occurrences in window:', (e.upcoming_occurrences||[]).filter(d => new Date(d) >= weekStart && new Date(d) < weekEnd).length);
+    });
+
+    // TEMP DEBUG: show ALL events from the LiVelo club specifically (not just
+    // ones with upcoming_occurrences), to find WNR even if it's titled
+    // differently or has zero upcoming occurrences listed by Strava right now.
+    const allLiveloEvents = allEvents.filter(e => matchesText(e,'livelo'));
+    console.log('=== ALL LiVelo club events (any title), total:', allLiveloEvents.length, '===');
+    allLiveloEvents.forEach(e => {
+      const occCount = (e.upcoming_occurrences||[]).length;
+      console.log(e.title, '| upcoming_occurrences count:', occCount, occCount ? '| first: '+e.upcoming_occurrences[0] : '(none)');
     });
 
     if (!upcoming.length) {
