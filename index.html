@@ -940,7 +940,7 @@ function disconnectStrava() {
 }
 
 function forceFullResync() {
-  if (!confirm('This will re-fetch your complete activity history from Strava (up to 25 pages) and may take a moment. Continue?')) return;
+  if (!confirm('This will re-fetch your complete activity history from Strava (up to 30 pages) and may take a moment. Continue?')) return;
   localStorage.removeItem('ed_last_full_sync');
   location.reload();
 }
@@ -1157,13 +1157,13 @@ async function loadAll(token) {
     } catch(e) { console.log('Incremental fetch error:', e); }
   } else {
     // Cache is stale or empty: do the full historical fetch from Strava,
-    // then write the full result back to the cache. Capped at 25 pages
-    // (1250 activities) - comfortably covers full history today (969
-    // activities) plus headroom for a year or two of future growth before
-    // needing another bump.
+    // then write the full result back to the cache. Capped at 30 pages
+    // (1500 activities) - covers full history (1,418 activities: 438 rides,
+    // 969 runs, 11 swims) plus headroom for future growth before needing
+    // another bump.
     setLoading('Loading activities...', 'Fetching full history — this takes a moment');
-    for (let page = 1; page <= 25; page++) {
-      setLoading('Loading activities...', `Page ${page} of up to 25 — ${allActivities.length} activities loaded`);
+    for (let page = 1; page <= 30; page++) {
+      setLoading('Loading activities...', `Page ${page} of up to 30 — ${allActivities.length} activities loaded`);
       const batch = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=50&page=${page}`, {headers}).then(r=>r.json()).catch(()=>[]);
       if (!Array.isArray(batch) || batch.length === 0) break;
       allActivities = [...allActivities, ...batch];
