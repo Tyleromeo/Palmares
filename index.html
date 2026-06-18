@@ -746,6 +746,44 @@ const SB_HEADERS = {
   'Prefer': 'resolution=merge-duplicates'
 };
 
+// ==================== GENERIC API CACHE ====================
+// Reusable cache layer for Strava API responses that don't change often
+// (gear, segment achievements, club events). Uses a single Supabase table
+// (api_cache) keyed by athlete_id + cache_key, storing the raw JSON payload
+// and a timestamp, so we can avoid re-hitting Strava on every page load for
+// data that's expensive to fetch but slow-changing.
+//
+// Requires a Supabase table named "api_cache" with columns:
+//   athlete_id (int8), cache_key (text), payload (jsonb), updated_at (timestamptz)
+//   primary key (athlete_id, cache_key)
+
+async function getCached(athleteId, key, maxAgeMs) {
+  try {
+    const resp = await fetch(SB_REST + '/api_cache?athlete_id=eq.' + athleteId + '&cache_key=eq.' + encodeURIComponent(key), {
+      headers: { 'apikey': SUPABASE_ANON_KEY }
+    });
+    if (!resp.ok) return null;
+    const rows = await resp.json();
+    if (!rows.length) return null;
+    const row = rows[0];
+    const age = Date.now() - new Date(row.updated_at).getTime();
+    if (age > maxAgeMs) return null; // stale, treat as a cache miss
+    return row.payload;
+  } catch(e) { console.log('Cache read error for', key, ':', e); return null; }
+}
+
+function setCached(athleteId, key, payload) {
+  (async () => {
+    try {
+      const resp = await fetch(SB_REST + '/api_cache?on_conflict=athlete_id,cache_key', {
+        method: 'POST', headers: SB_HEADERS,
+        body: JSON.stringify({ athlete_id: athleteId, cache_key: key, payload: payload, updated_at: new Date().toISOString() })
+      });
+      if (!resp.ok) console.log('Cache write failed for', key, ':', resp.status, await resp.text());
+    } catch(e) { console.log('Cache write error for', key, ':', e); }
+  })();
+}
+
 // Converts a cached Supabase activities row back into the shape the rest of
 // the app expects (matching Strava's API response fields). Cached rows only
 // store a subset of fields (see syncActivitiesToSupabase), so anything not
@@ -1122,15 +1160,22 @@ async function loadAll(token) {
   setLoading('Loading all-time stats...');
   athleteStats = await fetch(`https://www.strava.com/api/v3/athletes/${athlete.id}/stats`, {headers}).then(r=>r.json()).catch(()=>null);
 
-  // Gear
+  // Gear - cached for 24h since bikes/shoes/components rarely change day to day
   setLoading('Loading gear...');
   const gearIds = new Set();
   allActivities.forEach(a => { if (a.gear_id) gearIds.add(a.gear_id); });
   if (athlete.bikes) athlete.bikes.forEach(b => gearIds.add(b.id));
   if (athlete.shoes) athlete.shoes.forEach(s => gearIds.add(s.id));
-  gearData = await Promise.all([...gearIds].slice(0,10).map(id =>
-    fetch(`https://www.strava.com/api/v3/gear/${id}`, {headers}).then(r=>r.json()).catch(()=>null)
-  )).then(arr => arr.filter(Boolean));
+  const gearCacheKey = 'gear:' + [...gearIds].sort().join(',');
+  const cachedGear = await getCached(athlete.id, gearCacheKey, 24*60*60*1000);
+  if (cachedGear) {
+    gearData = cachedGear;
+  } else {
+    gearData = await Promise.all([...gearIds].slice(0,10).map(id =>
+      fetch(`https://www.strava.com/api/v3/gear/${id}`, {headers}).then(r=>r.json()).catch(()=>null)
+    )).then(arr => arr.filter(Boolean));
+    setCached(athlete.id, gearCacheKey, gearData);
+  }
 
   // Fetch power streams for recent rides (limited to avoid rate limits)
   setLoading('Loading power data...', 'Fetching ride power streams');
@@ -1155,7 +1200,7 @@ async function loadAll(token) {
 
   // Segment achievements from recent rides with achievements
   setLoading('Analyzing segment achievements...', 'This may take a moment');
-  await loadSegmentAchievements(token);
+  await loadSegmentAchievements(token, athlete.id);
 
   // Render everything
   hideLoading();
@@ -1171,9 +1216,21 @@ async function loadAll(token) {
   renderCollaborators('all');
 }
 
-async function loadSegmentAchievements(token) {
+async function loadSegmentAchievements(token, athleteId) {
   const headers = {Authorization:`Bearer ${token}`};
   const achRides = allActivities.filter(a => a.achievement_count > 0).slice(0, 15);
+
+  // Cache key includes the exact set of ride IDs being analyzed - if the same
+  // 15 rides come up again (typical within the same day), skip straight to
+  // cache instead of re-fetching 15 activity detail calls from Strava.
+  // 24h window since completed ride data essentially never changes.
+  const cacheKey = 'segment_achievements:' + achRides.map(r => r.id).sort().join(',');
+  const cached = await getCached(athleteId, cacheKey, 24*60*60*1000);
+  if (cached) {
+    segmentAchievements = cached;
+    return;
+  }
+
   const koms = [], top10s = [];
   const corrections = [];
 
@@ -1205,6 +1262,7 @@ async function loadSegmentAchievements(token) {
     } catch(e) {}
   }
   segmentAchievements = { koms, top10s };
+  setCached(athleteId, cacheKey, segmentAchievements);
 
   // Persist corrected achievement counts to Supabase so future loads are accurate
   // without needing to re-fetch activity details from Strava every time.
@@ -2571,21 +2629,37 @@ async function loadStarredSegments() {
   const contentEl = document.getElementById('starred-content');
 
   try {
-    const starred = await fetch('https://www.strava.com/api/v3/segments/starred?per_page=50', {headers}).then(r=>r.json());
+    const cacheKey = 'starred_segments';
+    const cached = await getCached(athleteData ? athleteData.id : null, cacheKey, 4*60*60*1000);
+    let starred, withRankings;
+
+    if (cached) {
+      starred = cached.starred;
+      withRankings = cached.withRankings;
+    } else {
+      starred = await fetch('https://www.strava.com/api/v3/segments/starred?per_page=50', {headers}).then(r=>r.json());
+      if (!Array.isArray(starred)||!starred.length) {
+        if (loadingEl) loadingEl.textContent='No starred segments found. Star segments on Strava first.';
+        return;
+      }
+
+      withRankings = [];
+      for (const seg of starred.slice(0,10)) {
+        try {
+          const lb = await fetch('https://www.strava.com/api/v3/segments/'+seg.id+'/leaderboard?age_group='+s.ageGroup+'&per_page=10',{headers}).then(r=>r.json());
+          withRankings.push({seg,lb});
+        } catch(e) { withRankings.push({seg,lb:null}); }
+      }
+
+      if (athleteData && athleteData.id) setCached(athleteData.id, cacheKey, {starred, withRankings});
+    }
+
     if (!Array.isArray(starred)||!starred.length) {
       if (loadingEl) loadingEl.textContent='No starred segments found. Star segments on Strava first.';
       return;
     }
     if (loadingEl) loadingEl.style.display='none';
     if (contentEl) contentEl.style.display='block';
-
-    const withRankings = [];
-    for (const seg of starred.slice(0,10)) {
-      try {
-        const lb = await fetch('https://www.strava.com/api/v3/segments/'+seg.id+'/leaderboard?age_group='+s.ageGroup+'&per_page=10',{headers}).then(r=>r.json());
-        withRankings.push({seg,lb});
-      } catch(e) { withRankings.push({seg,lb:null}); }
-    }
 
     const withKom = withRankings.filter(({lb})=>lb&&lb.entries&&lb.entries[0]&&lb.entries[0].rank===1).length;
     const totalsEl = document.getElementById('seg-totals2');
@@ -2636,45 +2710,59 @@ async function loadClubEvents() {
   const headers = {Authorization:`Bearer ${token}`};
 
   try {
-    // Get athlete clubs first
-    const clubsResp = await fetch('https://www.strava.com/api/v3/athlete/clubs?per_page=30', {headers});
-    if (!clubsResp.ok) {
-      if (clubsResp.status === 429) {
-        document.getElementById('events-list').innerHTML = '<p style="font-size:13px;color:#f85149">Strava rate limit hit while loading clubs. Try refreshing in a few minutes.</p>';
-      } else {
-        document.getElementById('events-list').innerHTML = '<p style="font-size:13px;color:#f85149">Could not load clubs (Strava returned '+clubsResp.status+').</p>';
-      }
-      eventsLoaded = false; // allow retry on next dashboard load rather than getting stuck
-      return;
-    }
-    const clubs = await clubsResp.json();
-    if (!Array.isArray(clubs) || !clubs.length) {
-      document.getElementById('events-list').innerHTML = '<p style="font-size:13px;color:#7d8590">No clubs found. Join clubs on Strava to see group events here.</p>';
-      return;
-    }
+    // Check cache first - club lists and their events change slowly enough
+    // that a 2-hour cache meaningfully cuts Strava calls without showing
+    // visibly stale data (new events posted today would show up within 2h).
+    const cacheKey = 'club_events';
+    const athleteId = athleteData ? athleteData.id : null;
+    const cached = await getCached(athleteId, cacheKey, 2*60*60*1000);
+    let allEvents, anyClubFailed = false;
 
-    // Fetch events for each club
-    const allEvents = [];
-    let anyClubFailed = false;
-    console.log('=== Club events debug ===');
-    console.log('Total clubs found:', clubs.length, '| Names:', clubs.map(c => c.name).join(', '));
-    for (const club of clubs.slice(0, 8)) {
-      try {
-        const evResp = await fetch('https://www.strava.com/api/v3/clubs/'+club.id+'/group_events', {headers});
-        if (!evResp.ok) {
-          console.log('Club "'+club.name+'" (id '+club.id+'): FAILED, status', evResp.status);
-          anyClubFailed = true;
-          continue;
-        }
-        const events = await evResp.json();
-        if (Array.isArray(events)) {
-          console.log('Club "'+club.name+'" (id '+club.id+'): OK,', events.length, 'total events,', events.filter(e=>e.upcoming_occurrences&&e.upcoming_occurrences.length).length, 'with upcoming occurrences');
-          events.forEach(function(e) { allEvents.push(Object.assign({}, e, {club_name: club.name, club_id: club.id})); });
+    if (cached) {
+      allEvents = cached;
+      console.log('Club events: using cache,', allEvents.length, 'events');
+    } else {
+      // Get athlete clubs first
+      const clubsResp = await fetch('https://www.strava.com/api/v3/athlete/clubs?per_page=30', {headers});
+      if (!clubsResp.ok) {
+        if (clubsResp.status === 429) {
+          document.getElementById('events-list').innerHTML = '<p style="font-size:13px;color:#f85149">Strava rate limit hit while loading clubs. Try refreshing in a few minutes.</p>';
         } else {
-          console.log('Club "'+club.name+'" (id '+club.id+'): unexpected response shape', events);
+          document.getElementById('events-list').innerHTML = '<p style="font-size:13px;color:#f85149">Could not load clubs (Strava returned '+clubsResp.status+').</p>';
         }
-        await new Promise(function(r){setTimeout(r,300);});
-      } catch(e) { console.log('Club "'+club.name+'" (id '+club.id+'): EXCEPTION', e.message); anyClubFailed = true; }
+        eventsLoaded = false; // allow retry on next dashboard load rather than getting stuck
+        return;
+      }
+      const clubs = await clubsResp.json();
+      if (!Array.isArray(clubs) || !clubs.length) {
+        document.getElementById('events-list').innerHTML = '<p style="font-size:13px;color:#7d8590">No clubs found. Join clubs on Strava to see group events here.</p>';
+        return;
+      }
+
+      // Fetch events for each club
+      allEvents = [];
+      console.log('=== Club events debug ===');
+      console.log('Total clubs found:', clubs.length, '| Names:', clubs.map(c => c.name).join(', '));
+      for (const club of clubs.slice(0, 8)) {
+        try {
+          const evResp = await fetch('https://www.strava.com/api/v3/clubs/'+club.id+'/group_events', {headers});
+          if (!evResp.ok) {
+            console.log('Club "'+club.name+'" (id '+club.id+'): FAILED, status', evResp.status);
+            anyClubFailed = true;
+            continue;
+          }
+          const events = await evResp.json();
+          if (Array.isArray(events)) {
+            console.log('Club "'+club.name+'" (id '+club.id+'): OK,', events.length, 'total events,', events.filter(e=>e.upcoming_occurrences&&e.upcoming_occurrences.length).length, 'with upcoming occurrences');
+            events.forEach(function(e) { allEvents.push(Object.assign({}, e, {club_name: club.name, club_id: club.id})); });
+          } else {
+            console.log('Club "'+club.name+'" (id '+club.id+'): unexpected response shape', events);
+          }
+          await new Promise(function(r){setTimeout(r,300);});
+        } catch(e) { console.log('Club "'+club.name+'" (id '+club.id+'): EXCEPTION', e.message); anyClubFailed = true; }
+      }
+
+      if (athleteId && !anyClubFailed) setCached(athleteId, cacheKey, allEvents);
     }
 
     // Sort by upcoming date
