@@ -1293,11 +1293,32 @@ async function persistAchievementCorrections(corrections) {
 const SCAN_CHUNK_SIZE = 40; // activities processed per click - keeps each
                               // chunk safely under the 100/15min Strava limit
                               // even with normal dashboard usage happening too
+const ENRICH_CHUNK_SIZE = 15; // segments enriched per click - each segment
+                                // costs 3 calls (detail, overall leaderboard,
+                                // age-group leaderboard), so this keeps total
+                                // calls per click (~45) similarly safe
 
 async function getScanProgress(athleteId) {
   // Progress doesn't expire on its own; it's only cleared by a fresh restart.
-  const progress = await getCached(athleteId, 'kom_scan_progress', 365*24*60*60*1000);
-  return progress || { scannedIds: [], koms: [], top10s: [], complete: false };
+  let progress = await getCached(athleteId, 'kom_scan_progress', 365*24*60*60*1000);
+  if (!progress) return { scannedIds: [], koms: [], top10s: [], complete: false };
+
+  // One-time self-heal for data scanned before the rank-vs-category fix
+  // (achievement "type" is the leaderboard category, not the position -
+  // some 2nd-10th place finishes were mislabeled as KOMs). Every entry
+  // still has its real rank stored, so this just re-sorts in place with
+  // no new Strava calls needed. Marked so it only runs once.
+  if (!progress.reclassifiedV1 && (progress.koms.length || progress.top10s.length)) {
+    const all = [...progress.koms, ...progress.top10s];
+    progress = {
+      ...progress,
+      koms: all.filter(e => e.rank === 1),
+      top10s: all.filter(e => e.rank >= 2 && e.rank <= 10),
+      reclassifiedV1: true
+    };
+    saveScanProgress(athleteId, progress);
+  }
+  return progress;
 }
 
 function saveScanProgress(athleteId, progress) {
@@ -1342,11 +1363,18 @@ async function scanKomChunk(token, athleteId) {
             const obj = {
               activity_id: ride.id, activity_name: ride.name, activity_type: ride.type,
               segment_name: e.name, segment_id: e.segment.id,
-              elapsed: e.elapsed_time, rank: a.rank, type: a.type,
+              elapsed: e.elapsed_time, rank: a.rank, category: a.type,
               date: ride.start_date
             };
-            if (a.type === 'overall') progress.koms.push(obj);
-            else if (a.rank <= 10) progress.top10s.push(obj);
+            // The achievement's "type" field is the leaderboard CATEGORY
+            // (overall, age_group, etc.), not the position - rank is the
+            // actual position within that category. A true KOM/CR is
+            // rank === 1 (in any category); ranks 2-10 are Top 10s.
+            // Using type==='overall' alone was the bug: it included every
+            // overall-category achievement regardless of rank, mislabeling
+            // 2nd-10th place finishes as KOMs.
+            if (a.rank === 1) progress.koms.push(obj);
+            else if (a.rank >= 2 && a.rank <= 10) progress.top10s.push(obj);
           });
         });
       }
@@ -1371,13 +1399,17 @@ async function scanKomChunk(token, athleteId) {
 async function enrichKomDetails(token, athleteId) {
   const headers = { Authorization: `Bearer ${token}` };
   const progress = await getScanProgress(athleteId);
-  const enriched = (await getCached(athleteId, 'kom_enriched_details', 7*24*60*60*1000)) || {};
+  const enriched = (await getCached(athleteId, 'kom_enriched_details_v2', 7*24*60*60*1000)) || {};
+  const s = getSettings();
 
-  const uniqueKomSegmentIds = [...new Set(progress.koms.map(k => k.segment_id))];
-  const toEnrich = uniqueKomSegmentIds.filter(id => !enriched[id]).slice(0, SCAN_CHUNK_SIZE);
+  // Enrich every segment with ANY achievement (KOM or Top 10), not just
+  // outright KOMs - an age-group KOM can exist on a segment where you're
+  // only 2nd-10th overall, so it would otherwise be missed entirely.
+  const allAchievementSegmentIds = [...new Set([...progress.koms, ...progress.top10s].map(k => k.segment_id))];
+  const toEnrich = allAchievementSegmentIds.filter(id => !enriched[id]).slice(0, ENRICH_CHUNK_SIZE);
 
   if (!toEnrich.length) {
-    return { processed: 0, remaining: 0, rateLimited: false, enriched, totalKomSegments: uniqueKomSegmentIds.length };
+    return { processed: 0, remaining: 0, rateLimited: false, enriched, totalKomSegments: allAchievementSegmentIds.length };
   }
 
   let processed = 0;
@@ -1385,29 +1417,63 @@ async function enrichKomDetails(token, athleteId) {
 
   for (const segId of toEnrich) {
     try {
+      // Segment detail is the reliable source: distance, elevation, KOM/QOM
+      // time (xoms), total athlete_count, and the user's own stats.
       const segResp = await fetch(`https://www.strava.com/api/v3/segments/${segId}`, { headers });
       if (segResp.status === 429) { rateLimited = true; break; }
       const seg = segResp.ok ? await segResp.json() : null;
 
-      const lbResp = await fetch(`https://www.strava.com/api/v3/segments/${segId}/leaderboard?per_page=2`, { headers });
-      if (lbResp.status === 429) { rateLimited = true; break; }
-      const lb = lbResp.ok ? await lbResp.json() : null;
-      const secondPlace = lb && lb.entries && lb.entries.length > 1 ? lb.entries[1] : null;
+      // Overall leaderboard - Strava restricted this a while back, so other
+      // athletes' names/times may come back empty or stripped. We still try,
+      // but never assume it'll have usable entries.
+      let secondPlace = null;
+      try {
+        const lbResp = await fetch(`https://www.strava.com/api/v3/segments/${segId}/leaderboard?per_page=2`, { headers });
+        if (lbResp.status === 429) { rateLimited = true; }
+        else if (lbResp.ok) {
+          const lb = await lbResp.json();
+          secondPlace = lb && lb.entries && lb.entries.length > 1 ? lb.entries[1] : null;
+        }
+      } catch(e) {}
+
+      // Age-group leaderboard check - separate call since age-group KOM
+      // status isn't part of the achievement data at all, only visible by
+      // filtering the leaderboard to the user's age group and checking rank.
+      let ageGroupRank = null, ageGroupTotal = null;
+      if (!rateLimited) {
+        try {
+          const agResp = await fetch(`https://www.strava.com/api/v3/segments/${segId}/leaderboard?age_group=${s.ageGroup}&per_page=1`, { headers });
+          if (agResp.status === 429) { rateLimited = true; }
+          else if (agResp.ok) {
+            const ag = await agResp.json();
+            if (ag && ag.entries && ag.entries.length) {
+              ageGroupRank = ag.entries[0].rank;
+              ageGroupTotal = ag.entry_count || null;
+            }
+          }
+        } catch(e) {}
+      }
 
       enriched[segId] = {
         distance: seg ? seg.distance : null,
         elevation_gain: seg ? seg.total_elevation_gain : null,
         average_grade: seg ? seg.average_grade : null,
+        athlete_count: seg ? seg.athlete_count : null,
+        effort_count: seg ? seg.effort_count : null,
+        kom_time: seg && seg.xoms ? (seg.xoms.kom || seg.xoms.overall) : null,
         second_place_time: secondPlace ? secondPlace.elapsed_time : null,
-        second_place_name: secondPlace ? secondPlace.athlete_name : null
+        second_place_name: secondPlace ? secondPlace.athlete_name : null,
+        age_group_rank: ageGroupRank,
+        age_group_total: ageGroupTotal,
+        age_group_label: s.ageGroup
       };
       processed++;
     } catch(e) { processed++; } // skip this segment, move on
   }
 
-  setCached(athleteId, 'kom_enriched_details', enriched);
-  const remaining = uniqueKomSegmentIds.filter(id => !enriched[id]).length;
-  return { processed, remaining, rateLimited, enriched, totalKomSegments: uniqueKomSegmentIds.length };
+  setCached(athleteId, 'kom_enriched_details_v2', enriched);
+  const remaining = allAchievementSegmentIds.filter(id => !enriched[id]).length;
+  return { processed, remaining, rateLimited, enriched, totalKomSegments: allAchievementSegmentIds.length };
 }
 
 // DASHBOARD
@@ -3701,15 +3767,15 @@ async function renderKomScanUI() {
     statusEl.innerHTML = `Scanned ${progress.scannedIds.length} of ${allAchievementRides.length} activities (${pct}%) - found ${progress.koms.length} KOMs and ${progress.top10s.length} Top 10s so far. ${remaining} activities remaining.`;
     controlsEl.innerHTML = `<button class="gold-btn" id="kom-scan-btn" onclick="runKomScanChunk()">Scan next ${Math.min(SCAN_CHUNK_SIZE, remaining)}</button> <button onclick="restartKomScan()" style="background:#2d1a1a;border:1px solid #f85149;border-radius:6px;padding:8px 14px;color:#f85149;cursor:pointer;font-size:13px;margin-left:8px">Restart scan</button>`;
   } else {
-    const enrichedCache = (await getCached(athleteData.id, 'kom_enriched_details', 7*24*60*60*1000)) || {};
-    const uniqueKomSegments = [...new Set(progress.koms.map(k => k.segment_id))];
-    const enrichedCount = uniqueKomSegments.filter(id => enrichedCache[id]).length;
+    const enrichedCache = (await getCached(athleteData.id, 'kom_enriched_details_v2', 7*24*60*60*1000)) || {};
+    const allAchievementSegments = [...new Set([...progress.koms, ...progress.top10s].map(k => k.segment_id))];
+    const enrichedCount = allAchievementSegments.filter(id => enrichedCache[id]).length;
 
-    if (enrichedCount < uniqueKomSegments.length) {
-      statusEl.innerHTML = `Activity scan complete: ${progress.koms.length} KOMs, ${progress.top10s.length} Top 10s found. Fetching segment details and 2nd-place comparison data: ${enrichedCount} of ${uniqueKomSegments.length} KOM segments enriched.`;
-      controlsEl.innerHTML = `<button class="gold-btn" id="kom-enrich-btn" onclick="runKomEnrichChunk()">Enrich next ${Math.min(SCAN_CHUNK_SIZE, uniqueKomSegments.length - enrichedCount)} KOMs</button>`;
+    if (enrichedCount < allAchievementSegments.length) {
+      statusEl.innerHTML = `Activity scan complete: ${progress.koms.length} KOMs, ${progress.top10s.length} Top 10s found. Fetching segment details, age-group rank, and comparison data (3 calls per segment): ${enrichedCount} of ${allAchievementSegments.length} segments enriched.`;
+      controlsEl.innerHTML = `<button class="gold-btn" id="kom-enrich-btn" onclick="runKomEnrichChunk()">Enrich next ${Math.min(ENRICH_CHUNK_SIZE, allAchievementSegments.length - enrichedCount)}</button>`;
     } else {
-      statusEl.innerHTML = `Full scan complete: ${progress.koms.length} KOMs and ${progress.top10s.length} Top 10s found across your entire history, with full segment and comparison details.`;
+      statusEl.innerHTML = `Full scan complete: ${progress.koms.length} KOMs and ${progress.top10s.length} Top 10s found across your entire history, with full segment, age-group, and comparison details.`;
       controlsEl.innerHTML = `<button onclick="restartKomScan()" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:8px 14px;color:#7d8590;cursor:pointer;font-size:13px">Rescan (refresh data)</button>`;
     }
   }
@@ -3761,7 +3827,7 @@ async function restartKomScan() {
   if (!confirm('This clears all scan progress and starts over from scratch. Continue?')) return;
   if (!athleteData) return;
   await resetKomScan(athleteData.id);
-  setCached(athleteData.id, 'kom_enriched_details', {});
+  setCached(athleteData.id, 'kom_enriched_details_v2', {});
   await renderKomScanUI();
 }
 
@@ -3771,7 +3837,7 @@ async function renderFullKomList() {
   if (!listEl || !athleteData) return;
 
   const progress = await getScanProgress(athleteData.id);
-  const enrichedCache = (await getCached(athleteData.id, 'kom_enriched_details', 7*24*60*60*1000)) || {};
+  const enrichedCache = (await getCached(athleteData.id, 'kom_enriched_details_v2', 7*24*60*60*1000)) || {};
 
   const koms = progress.koms.filter(k => komScanFilter === 'all' || sportGroupForType(k.activity_type) === komScanFilter);
   const top10s = progress.top10s.filter(k => komScanFilter === 'all' || sportGroupForType(k.activity_type) === komScanFilter);
@@ -3791,9 +3857,7 @@ async function renderFullKomList() {
     return;
   }
 
-  const sortedKoms = [...koms].sort((a,b) => new Date(b.date) - new Date(a.date));
-
-  listEl.innerHTML = sortedKoms.map(e => {
+  function renderRow(e, isKom) {
     const mins = Math.floor(e.elapsed/60), secs = e.elapsed % 60;
     const t = mins > 0 ? mins + 'm ' + secs + 's' : secs + 's';
     const date = new Date(e.date).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
@@ -3803,22 +3867,64 @@ async function renderFullKomList() {
     if (detail) {
       const distMi = detail.distance ? (detail.distance/1609.34).toFixed(1) + ' mi' : '';
       const elevFt = detail.elevation_gain ? Math.round(detail.elevation_gain*3.281) + ' ft' : '';
+
+      let rankOfStr = '';
+      if (isKom && detail.athlete_count) {
+        rankOfStr = ' &middot; 1st of ' + detail.athlete_count.toLocaleString() + ' athletes';
+      } else if (!isKom && detail.athlete_count) {
+        rankOfStr = ' &middot; #' + e.rank + ' of ' + detail.athlete_count.toLocaleString() + ' athletes';
+      }
+
       let marginStr = '';
-      if (detail.second_place_time) {
+      if (isKom && detail.second_place_time) {
         const marginSecs = detail.second_place_time - e.elapsed;
         if (marginSecs > 0) {
           const mm = Math.floor(marginSecs/60), ss = marginSecs%60;
           marginStr = ' &middot; +' + (mm > 0 ? mm+'m '+ss+'s' : ss+'s') + ' ahead of 2nd' + (detail.second_place_name ? ' ('+detail.second_place_name+')' : '');
         }
       }
-      detailLine = '<div class="row-meta" style="margin-top:2px">' + [distMi, elevFt].filter(Boolean).join(' &middot; ') + marginStr + '</div>';
+
+      let ageGroupStr = '';
+      if (detail.age_group_rank === 1) {
+        ageGroupStr = ' &middot; 1st in ' + (detail.age_group_label || 'age group').replace('_','-') + (detail.age_group_total ? ' of ' + detail.age_group_total : '');
+      } else if (detail.age_group_rank) {
+        ageGroupStr = ' &middot; #' + detail.age_group_rank + ' in ' + (detail.age_group_label || 'age group').replace('_','-') + (detail.age_group_total ? ' of ' + detail.age_group_total : '');
+      }
+
+      detailLine = '<div class="row-meta" style="margin-top:2px">' + [distMi, elevFt].filter(Boolean).join(' &middot; ') + rankOfStr + marginStr + ageGroupStr + '</div>';
     }
 
     const sportBadge = sportGroupForType(e.activity_type) === 'run' ? ' <span class="badge b-run">RUN</span>'
       : sportGroupForType(e.activity_type) === 'hike' ? ' <span class="badge" style="background:#21262d;color:#7d8590">HIKE</span>' : '';
 
-    return '<div class="row"><div><div class="row-name"><a href="https://www.strava.com/segments/' + e.segment_id + '" target="_blank" style="color:#e6edf3;text-decoration:none">' + e.segment_name + '</a>' + sportBadge + '</div><div class="row-meta">' + date + ' &middot; ' + t + '</div>' + detailLine + '</div><span class="badge b-gold">KOM</span></div>';
-  }).join('');
+    // Outright KOM = rank 1 overall. We also flag if it's ADDITIONALLY an
+    // age-group #1 (common - winning overall usually means winning your age
+    // group too), using the more reliable leaderboard-based age_group_rank
+    // rather than the achievement's own category field.
+    let rankBadge;
+    if (isKom) {
+      const alsoAgeGroupKom = detail && detail.age_group_rank === 1;
+      rankBadge = '<span class="badge b-gold">KOM' + (alsoAgeGroupKom ? ' + Age Group' : '') + '</span>';
+    } else {
+      const isAgeGroupKom = detail && detail.age_group_rank === 1;
+      rankBadge = isAgeGroupKom
+        ? '<span class="badge" style="background:#2d2410;color:#C9A227;border:1px solid #C9A227">Age Group KOM</span>'
+        : '<span class="badge b-blue">#' + e.rank + '</span>';
+    }
+
+    return '<div class="row"><div><div class="row-name"><a href="https://www.strava.com/segments/' + e.segment_id + '" target="_blank" style="color:#e6edf3;text-decoration:none">' + e.segment_name + '</a>' + sportBadge + '</div><div class="row-meta">' + date + ' &middot; ' + t + '</div>' + detailLine + '</div>' + rankBadge + '</div>';
+  }
+
+  const sortedKoms = [...koms].sort((a,b) => new Date(b.date) - new Date(a.date));
+  const sortedTop10s = [...top10s].sort((a,b) => new Date(b.date) - new Date(a.date));
+
+  let html = '';
+  html += '<h3 style="font-size:13px;font-weight:600;color:#7d8590;margin:0 0 8px;text-transform:uppercase;letter-spacing:1px">KOMs / CRs (' + sortedKoms.length + ')</h3>';
+  html += sortedKoms.length ? sortedKoms.map(e => renderRow(e, true)).join('') : '<p style="font-size:12px;color:#7d8590;padding:8px 0">No KOMs found for this filter.</p>';
+  html += '<h3 style="font-size:13px;font-weight:600;color:#7d8590;margin:20px 0 8px;text-transform:uppercase;letter-spacing:1px">Top 10s (' + sortedTop10s.length + ')</h3>';
+  html += sortedTop10s.length ? sortedTop10s.map(e => renderRow(e, false)).join('') : '<p style="font-size:12px;color:#7d8590;padding:8px 0">No Top 10s found for this filter.</p>';
+
+  listEl.innerHTML = html;
 }
 
 // INIT
