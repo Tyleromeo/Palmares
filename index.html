@@ -3907,10 +3907,16 @@ async function renderFullKomList() {
     const bikeKoms = progress.koms.filter(k => sportGroupForType(k.activity_type) === 'ride').length;
     const runKoms = progress.koms.filter(k => sportGroupForType(k.activity_type) === 'run').length;
     const hikeKoms = progress.koms.filter(k => sportGroupForType(k.activity_type) === 'hike').length;
+    const bikeTop10s = progress.top10s.filter(k => sportGroupForType(k.activity_type) === 'ride').length;
+    const runTop10s = progress.top10s.filter(k => sportGroupForType(k.activity_type) === 'run').length;
+    const hikeTop10s = progress.top10s.filter(k => sportGroupForType(k.activity_type) === 'hike').length;
     totalsEl.innerHTML =
       '<div class="metric"><div class="metric-label">Bike KOMs</div><div class="metric-val" style="color:#C9A227">' + bikeKoms + '</div><div class="metric-sub">all-time</div></div>' +
       '<div class="metric"><div class="metric-label">Run KOMs</div><div class="metric-val" style="color:#C9A227">' + runKoms + '</div><div class="metric-sub">all-time</div></div>' +
-      '<div class="metric"><div class="metric-label">Hike KOMs</div><div class="metric-val" style="color:#C9A227">' + hikeKoms + '</div><div class="metric-sub">all-time</div></div>';
+      '<div class="metric"><div class="metric-label">Hike KOMs</div><div class="metric-val" style="color:#C9A227">' + hikeKoms + '</div><div class="metric-sub">all-time</div></div>' +
+      '<div class="metric"><div class="metric-label">Bike Top 10s</div><div class="metric-val" style="color:#58a6ff">' + bikeTop10s + '</div><div class="metric-sub">all-time</div></div>' +
+      '<div class="metric"><div class="metric-label">Run Top 10s</div><div class="metric-val" style="color:#58a6ff">' + runTop10s + '</div><div class="metric-sub">all-time</div></div>' +
+      '<div class="metric"><div class="metric-label">Hike Top 10s</div><div class="metric-val" style="color:#58a6ff">' + hikeTop10s + '</div><div class="metric-sub">all-time</div></div>';
   }
 
   if (!koms.length && !top10s.length) {
@@ -3987,7 +3993,7 @@ async function renderFullKomList() {
         : '<span class="badge b-blue">#' + e.rank + '</span>';
     }
 
-    return '<div class="row"><div><div class="row-name"><a href="https://www.strava.com/segments/' + e.segment_id + '" target="_blank" style="color:#e6edf3;text-decoration:none">' + e.segment_name + '</a>' + sportBadge + '</div><div class="row-meta">' + date + ' &middot; ' + t + '</div>' + detailLine + '</div>' + rankBadge + '</div>';
+    return '<div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid #21262d"><div style="flex-shrink:0;padding-top:1px">' + rankBadge + '</div><div><div class="row-name"><a href="https://www.strava.com/segments/' + e.segment_id + '" target="_blank" style="color:#e6edf3;text-decoration:none">' + e.segment_name + '</a>' + sportBadge + '</div><div class="row-meta">' + date + ' &middot; ' + t + '</div>' + detailLine + '</div></div>';
   }
 
   function sortByMode(list) {
