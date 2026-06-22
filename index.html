@@ -1342,6 +1342,41 @@ async function getScanProgress(athleteId) {
     };
     saveScanProgress(athleteId, progress);
   }
+
+  // Third self-heal pass: a segment you already hold the KOM on will earn a
+  // FRESH "rank 1 overall" achievement every time you post a new best time
+  // on it again later - same segment, same KOM, but counted as a second
+  // separate entry. Dedupe down to one entry per segment_id, keeping the
+  // most recent (since that reflects your current best time there). Same
+  // logic applies to Top 10s - placing top-10 on a segment more than once
+  // shouldn't count as two separate Top 10 achievements.
+  // Third self-heal pass: a segment you already hold the KOM on will earn a
+  // FRESH "rank 1 overall" achievement every time you post a new best time
+  // on it again later - same segment, same KOM, but counted as a second
+  // separate entry. Dedupe down to one entry per segment_id, keeping the
+  // most recent (since that reflects your current best time there). This
+  // also handles the case where a segment's status changed over time (e.g.
+  // you held the KOM, lost it, then placed top-5 on a later effort, or vice
+  // versa) - merge both lists first, find the most recent entry PER
+  // SEGMENT regardless of which list it came from, then re-split based on
+  // that entry's actual rank, rather than deduping each list independently
+  // and risking the same segment appearing in both.
+  if (!progress.dedupedV3 && (progress.koms.length || progress.top10s.length)) {
+    const merged = [...progress.koms, ...progress.top10s];
+    const bySegment = {};
+    merged.forEach(e => {
+      const existing = bySegment[e.segment_id];
+      if (!existing || new Date(e.date) > new Date(existing.date)) bySegment[e.segment_id] = e;
+    });
+    const deduped = Object.values(bySegment);
+    progress = {
+      ...progress,
+      koms: deduped.filter(e => e.rank === 1),
+      top10s: deduped.filter(e => e.rank >= 2 && e.rank <= 10),
+      dedupedV3: true
+    };
+    saveScanProgress(athleteId, progress);
+  }
   return progress;
 }
 
