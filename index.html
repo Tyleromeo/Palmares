@@ -952,7 +952,7 @@ function disconnectStrava() {
 }
 
 function forceFullResync() {
-  if (!confirm('This will re-fetch your complete activity history from Strava (up to 30 pages) and may take a moment. Continue?')) return;
+  if (!confirm('This will re-fetch your complete activity history from Strava (up to 36 pages) and may take a moment. Continue?')) return;
   localStorage.removeItem('ed_last_full_sync');
   location.reload();
 }
@@ -1178,13 +1178,14 @@ async function loadAll(token) {
     } catch(e) { console.log('Incremental fetch error:', e); }
   } else {
     // Cache is stale or empty: do the full historical fetch from Strava,
-    // then write the full result back to the cache. Capped at 30 pages
-    // (1500 activities) - covers full history (1,418 activities: 438 rides,
-    // 969 runs, 11 swims) plus headroom for future growth before needing
-    // another bump.
+    // then write the full result back to the cache. Capped at 36 pages
+    // (1800 activities) - covers known all-time total (1,418) with extra
+    // headroom, since some 2019-era activities were found missing even
+    // when comfortably under the 1500 cap, suggesting either growth beyond
+    // the last known count or pagination not being perfectly gapless.
     setLoading('Loading activities...', 'Fetching full history — this takes a moment');
-    for (let page = 1; page <= 30; page++) {
-      setLoading('Loading activities...', `Page ${page} of up to 30 — ${allActivities.length} activities loaded`);
+    for (let page = 1; page <= 36; page++) {
+      setLoading('Loading activities...', `Page ${page} of up to 36 — ${allActivities.length} activities loaded`);
       const batch = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=50&page=${page}`, {headers}).then(r=>r.json()).catch(()=>[]);
       if (!Array.isArray(batch) || batch.length === 0) break;
       allActivities = [...allActivities, ...batch];
@@ -1192,6 +1193,16 @@ async function loadAll(token) {
     }
     localStorage.setItem('ed_last_full_sync', new Date().toISOString());
     syncActivitiesToSupabase(allActivities, athlete.id); // fire and forget cache write
+
+    // Log the actual date range covered so we can verify coverage directly,
+    // rather than just trusting the activity count - a 2019 segment effort
+    // was reported missing even when the count was well under the prior cap.
+    if (allActivities.length) {
+      const sorted = [...allActivities].sort((a,b) => new Date(a.start_date) - new Date(b.start_date));
+      console.log('Full sync complete:', allActivities.length, 'activities loaded.');
+      console.log('Oldest activity:', sorted[0].name, '-', sorted[0].start_date);
+      console.log('Newest activity:', sorted[sorted.length-1].name, '-', sorted[sorted.length-1].start_date);
+    }
   }
 
   allActivities.sort((a,b) => new Date(b.start_date) - new Date(a.start_date));
