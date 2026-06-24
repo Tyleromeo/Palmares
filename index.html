@@ -1046,6 +1046,16 @@ async function handleCallback() {
     localStorage.setItem('ed_expires', data.expires_at);
     if (data.athlete) localStorage.setItem('ed_athlete_id', data.athlete.id);
 
+    // Log and store the scope Strava actually granted, since this is the
+    // authoritative source - the developer settings page (My API Application)
+    // can show a stale/different token (e.g. your own personal test token)
+    // and isn't reliable for checking what THIS app's live OAuth flow received.
+    console.log('OAuth scope granted by Strava:', data.scope);
+    localStorage.setItem('ed_granted_scope', data.scope || '(none returned)');
+    if (!data.scope || !data.scope.includes('activity:read_all')) {
+      console.warn('activity:read_all was NOT granted - only got:', data.scope, '- some features (private activities, certain segment data) may not work correctly.');
+    }
+
     // Note: Supabase activity caching now happens inside loadAll() itself,
     // right after the real fetch completes, avoiding the race condition where
     // this used to fire on a fixed timer before all activities had loaded.
