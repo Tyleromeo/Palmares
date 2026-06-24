@@ -1187,10 +1187,9 @@ async function loadAll(token) {
     for (let page = 1; page <= 36; page++) {
       setLoading('Loading activities...', `Page ${page} of up to 36 — ${allActivities.length} activities loaded`);
       const batch = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=50&page=${page}`, {headers}).then(r=>r.json()).catch(()=>[]);
-      if (!Array.isArray(batch) || batch.length === 0) break;
-      allActivities = [...allActivities, ...batch];
-      if (batch.length < 50) break;
-    }
+      if (!Array.isArray(batch) || batch.length === 0) break; // only stop on a genuinely empty page (true end of history) -
+      allActivities = [...allActivities, ...batch];            // a partial page (e.g. 38 of 50) does NOT mean history has ended,
+    }                                                            // it can happen mid-history, so we keep fetching until truly empty
     localStorage.setItem('ed_last_full_sync', new Date().toISOString());
     syncActivitiesToSupabase(allActivities, athlete.id); // fire and forget cache write
 
