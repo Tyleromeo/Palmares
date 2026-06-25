@@ -1427,7 +1427,15 @@ async function scanKomChunk(token, athleteId) {
   const progress = await getScanProgress(athleteId);
   const scannedSet = new Set(progress.scannedIds);
 
-  const allAchievementRides = allActivities.filter(a => a.achievement_count > 0);
+  // NOTE: we intentionally do NOT filter on achievement_count > 0 here.
+  // Strava's summary-list endpoint (used to populate allActivities) can
+  // return achievement_count: 0 even when the activity-detail endpoint
+  // shows real achievements - confirmed directly via a known KOM
+  // ("Marshall and Bay Drive", Aug 2023) whose summary achievement_count
+  // was 0. Filtering on that unreliable field was silently skipping real
+  // KOMs. We scan every activity and let the detail endpoint (queried per
+  // activity below) be the actual source of truth.
+  const allAchievementRides = allActivities;
   const toScan = allAchievementRides.filter(a => !scannedSet.has(a.id)).slice(0, SCAN_CHUNK_SIZE);
 
   if (!toScan.length) {
@@ -3844,16 +3852,18 @@ async function renderKomScanUI() {
   if (!athleteData) { statusEl.textContent = ''; controlsEl.innerHTML = ''; return; }
 
   const progress = await getScanProgress(athleteData.id);
-  const allAchievementRides = allActivities.filter(a => a.achievement_count > 0);
+  // Scanning ALL activities now, not just achievement_count > 0 - that field
+  // from Strava's summary list can be unreliably 0 even on real KOMs.
+  const allActivitiesToScan = allActivities;
   const scannedSet = new Set(progress.scannedIds);
-  const remaining = allAchievementRides.filter(a => !scannedSet.has(a.id)).length;
+  const remaining = allActivitiesToScan.filter(a => !scannedSet.has(a.id)).length;
 
   if (progress.scannedIds.length === 0 && !progress.complete) {
-    statusEl.innerHTML = `Found <strong>${allAchievementRides.length}</strong> activities with achievements in your full history. A one-time scan will fetch details for each (~${SCAN_CHUNK_SIZE} per click) to build your complete KOM/CR list. This is a heavier operation - it's broken into chunks so it stays well under Strava's rate limits.`;
+    statusEl.innerHTML = `Scanning all <strong>${allActivitiesToScan.length}</strong> activities in your full history (not just ones Strava's summary list flags as having achievements, since that field can be unreliable). A one-time scan will fetch details for each (~${SCAN_CHUNK_SIZE} per click) to build your complete, accurate KOM/CR list. This is a heavier operation - it's broken into chunks so it stays well under Strava's rate limits.`;
     controlsEl.innerHTML = `<button class="gold-btn" id="kom-scan-btn" onclick="runKomScanChunk()">Start full scan</button>`;
   } else if (!progress.complete) {
-    const pct = Math.round((progress.scannedIds.length / allAchievementRides.length) * 100);
-    statusEl.innerHTML = `Scanned ${progress.scannedIds.length} of ${allAchievementRides.length} activities (${pct}%) - found ${progress.koms.length} KOMs and ${progress.top10s.length} Top 10s so far. ${remaining} activities remaining.`;
+    const pct = Math.round((progress.scannedIds.length / allActivitiesToScan.length) * 100);
+    statusEl.innerHTML = `Scanned ${progress.scannedIds.length} of ${allActivitiesToScan.length} activities (${pct}%) - found ${progress.koms.length} KOMs and ${progress.top10s.length} Top 10s so far. ${remaining} activities remaining.`;
     controlsEl.innerHTML = `<button class="gold-btn" id="kom-scan-btn" onclick="runKomScanChunk()">Scan next ${Math.min(SCAN_CHUNK_SIZE, remaining)}</button> <button onclick="restartKomScan()" style="background:#2d1a1a;border:1px solid #f85149;border-radius:6px;padding:8px 14px;color:#f85149;cursor:pointer;font-size:13px;margin-left:8px">Restart scan</button>`;
   } else {
     const enrichedCache = (await getCached(athleteData.id, 'kom_enriched_details_v5', 7*24*60*60*1000)) || {};
