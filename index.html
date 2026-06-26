@@ -1342,7 +1342,12 @@ const SCAN_CHUNK_SIZE = 40; // activities/segments processed per click - keeps
 async function getScanProgress(athleteId) {
   // Progress doesn't expire on its own; it's only cleared by a fresh restart.
   let progress = await getCached(athleteId, 'kom_scan_progress', 365*24*60*60*1000);
-  if (!progress) return { scannedIds: [], koms: [], top10s: [], complete: false };
+  if (!progress) return { scannedIds: [], koms: [], top10s: [], allSegmentBests: {}, complete: false };
+
+  // Backfill allSegmentBests for progress saved before this field existed -
+  // without this, resuming an old in-progress scan would crash trying to
+  // write into an undefined object.
+  if (!progress.allSegmentBests) progress.allSegmentBests = {};
 
   // One-time self-heal for data scanned before the rank-vs-category fix
   // (achievement "type" is the leaderboard category, not the position -
@@ -1424,7 +1429,7 @@ function saveScanProgress(athleteId, progress) {
 }
 
 async function resetKomScan(athleteId) {
-  await saveScanProgress(athleteId, { scannedIds: [], koms: [], top10s: [], complete: false });
+  await saveScanProgress(athleteId, { scannedIds: [], koms: [], top10s: [], allSegmentBests: {}, complete: false });
 }
 
 // Processes one chunk of not-yet-scanned achievement-bearing activities.
@@ -1464,6 +1469,25 @@ async function scanKomChunk(token, athleteId) {
 
       if (detail.segment_efforts) {
         detail.segment_efforts.forEach(e => {
+          // Track EVERY segment effort, not just ones with achievements -
+          // Strava only stamps achievements onto an effort at upload time,
+          // so a KOM earned "passively" later (e.g. you create a custom
+          // segment after the ride, or someone ahead of you gets removed
+          // years later) never gets retroactively added to old activities'
+          // achievements array, even though you may genuinely hold the KOM
+          // today. Keeping every effort's best time per segment lets
+          // enrichment cross-check your real personal best against the
+          // segment's current live KOM time, independent of whether Strava
+          // ever stamped an achievement on it.
+          const existingBest = progress.allSegmentBests[e.segment.id];
+          if (!existingBest || e.elapsed_time < existingBest.elapsed) {
+            progress.allSegmentBests[e.segment.id] = {
+              activity_id: ride.id, activity_name: ride.name, activity_type: ride.type,
+              segment_name: e.name, segment_id: e.segment.id,
+              elapsed: e.elapsed_time, date: ride.start_date
+            };
+          }
+
           if (!e.achievements || !e.achievements.length) return;
           e.achievements.forEach(a => {
             const obj = {
@@ -1524,15 +1548,23 @@ async function scanKomChunk(token, athleteId) {
 async function enrichKomDetails(token, athleteId) {
   const headers = { Authorization: `Bearer ${token}` };
   const progress = await getScanProgress(athleteId);
-  const enriched = (await getCached(athleteId, 'kom_enriched_details_v5', 7*24*60*60*1000)) || {};
+  const enriched = (await getCached(athleteId, 'kom_enriched_details_v6', 7*24*60*60*1000)) || {};
 
-  // Enrich every segment with ANY achievement (KOM or Top 10), not just
-  // outright KOMs.
-  const allAchievementSegmentIds = [...new Set([...progress.koms, ...progress.top10s].map(k => k.segment_id))];
-  const toEnrich = allAchievementSegmentIds.filter(id => !enriched[id]).slice(0, SCAN_CHUNK_SIZE); // back to the larger chunk size now that it's 1 call/segment, not 3
+  // Enrich every segment we've ever had an effort on - not just ones with
+  // an achievement attached. Strava only stamps achievements onto an effort
+  // at upload time, so a KOM earned passively later (e.g. a custom segment
+  // created after the ride, or a competitor removed years later) never
+  // gets retroactively added to the achievements array on old activities,
+  // even though the rider may genuinely hold the KOM today. Checking every
+  // segment's live current-best against the rider's own live PR (both
+  // pulled fresh from /segments/{id} below) catches these "passive" KOMs
+  // that the achievement-based scan structurally cannot see.
+  const achievementSegmentIds = [...new Set([...progress.koms, ...progress.top10s].map(k => k.segment_id))];
+  const allSegmentIds = [...new Set([...achievementSegmentIds, ...Object.keys(progress.allSegmentBests || {})])];
+  const toEnrich = allSegmentIds.filter(id => !enriched[id]).slice(0, SCAN_CHUNK_SIZE); // back to the larger chunk size now that it's 1 call/segment, not 3
 
   if (!toEnrich.length) {
-    return { processed: 0, remaining: 0, rateLimited: false, enriched, totalKomSegments: allAchievementSegmentIds.length };
+    return { processed: 0, remaining: 0, rateLimited: false, enriched, totalKomSegments: allSegmentIds.length };
   }
 
   let processed = 0;
@@ -1561,15 +1593,19 @@ async function enrichKomDetails(token, athleteId) {
         effort_count: seg ? seg.effort_count : null,
         kom_time: komTime,
         my_pr_time: myStats ? myStats.pr_elapsed_time : null,
-        my_effort_count: myStats ? myStats.effort_count : null
+        my_effort_count: myStats ? myStats.effort_count : null,
+        // A passive KOM: your live PR matches (or beats) the segment's
+        // live current-best time, even though no achievement was ever
+        // stamped on the activity that set this PR.
+        is_passive_kom: !!(myStats && myStats.pr_elapsed_time != null && komTime != null && myStats.pr_elapsed_time <= komTime)
       };
       processed++;
     } catch(e) { processed++; } // skip this segment, move on
   }
 
-  setCached(athleteId, 'kom_enriched_details_v5', enriched);
-  const remaining = allAchievementSegmentIds.filter(id => !enriched[id]).length;
-  return { processed, remaining, rateLimited, enriched, totalKomSegments: allAchievementSegmentIds.length };
+  setCached(athleteId, 'kom_enriched_details_v6', enriched);
+  const remaining = allSegmentIds.filter(id => !enriched[id]).length;
+  return { processed, remaining, rateLimited, enriched, totalKomSegments: allSegmentIds.length };
 }
 
 // DASHBOARD
@@ -3874,7 +3910,7 @@ async function renderKomScanUI() {
     statusEl.innerHTML = `Scanned ${progress.scannedIds.length} of ${allActivitiesToScan.length} activities (${pct}%) - found ${progress.koms.length} KOMs and ${progress.top10s.length} Top 10s so far. ${remaining} activities remaining.`;
     controlsEl.innerHTML = `<button class="gold-btn" id="kom-scan-btn" onclick="runKomScanChunk()">Scan next ${Math.min(SCAN_CHUNK_SIZE, remaining)}</button> <button onclick="restartKomScan()" style="background:#2d1a1a;border:1px solid #f85149;border-radius:6px;padding:8px 14px;color:#f85149;cursor:pointer;font-size:13px;margin-left:8px">Restart scan</button>`;
   } else {
-    const enrichedCache = (await getCached(athleteData.id, 'kom_enriched_details_v5', 7*24*60*60*1000)) || {};
+    const enrichedCache = (await getCached(athleteData.id, 'kom_enriched_details_v6', 7*24*60*60*1000)) || {};
     const allAchievementSegments = [...new Set([...progress.koms, ...progress.top10s].map(k => k.segment_id))];
     const enrichedCount = allAchievementSegments.filter(id => enrichedCache[id]).length;
 
@@ -3934,7 +3970,7 @@ async function restartKomScan() {
   if (!confirm('This clears all scan progress and starts over from scratch. Continue?')) return;
   if (!athleteData) return;
   await resetKomScan(athleteData.id);
-  await setCached(athleteData.id, 'kom_enriched_details_v5', {});
+  await setCached(athleteData.id, 'kom_enriched_details_v6', {});
   await renderKomScanUI();
 }
 
@@ -3944,7 +3980,7 @@ async function renderFullKomList() {
   if (!listEl || !athleteData) return;
 
   const progress = await getScanProgress(athleteData.id);
-  const enrichedCache = (await getCached(athleteData.id, 'kom_enriched_details_v5', 7*24*60*60*1000)) || {};
+  const enrichedCache = (await getCached(athleteData.id, 'kom_enriched_details_v6', 7*24*60*60*1000)) || {};
 
   // Determine which KOMs are still actually held vs lost, using enrichment
   // data (comparing the stored effort time against the segment's current
@@ -3957,7 +3993,21 @@ async function renderFullKomList() {
     const lost = !!(detail && detail.kom_time && detail.kom_time < k.elapsed);
     return { ...k, lost };
   });
-  const stillHeldKoms = allKoms.filter(k => !k.lost);
+
+  // Passive KOMs: segments where enrichment found your live PR matches the
+  // segment's live KOM time, even though Strava never stamped an
+  // achievement on the activity (achievements freeze at upload time, so a
+  // KOM earned passively later - e.g. a custom segment created after the
+  // ride, or a competitor's faster time later removed - never gets added
+  // retroactively to old activities). Excludes any segment already counted
+  // via the normal achievement path to avoid double-counting.
+  const achievementSegmentIds = new Set(progress.koms.map(k => k.segment_id));
+  const passiveKoms = Object.entries(progress.allSegmentBests || {})
+    .filter(([segId, best]) => !achievementSegmentIds.has(parseInt(segId)) && !achievementSegmentIds.has(segId))
+    .filter(([segId]) => enrichedCache[segId] && enrichedCache[segId].is_passive_kom)
+    .map(([segId, best]) => ({ ...best, lost: false, passiveKom: true }));
+
+  const stillHeldKoms = [...allKoms.filter(k => !k.lost), ...passiveKoms];
   const lostKoms = allKoms.filter(k => k.lost).map(k => ({ ...k, formerKom: true }));
 
   // Former KOMs get folded into the Top 10 list with a "(Former KOM)" tag,
@@ -4009,7 +4059,11 @@ async function renderFullKomList() {
       const totalAthletes = detail.athlete_count;
 
       let rankOfStr = '';
-      if (isKom) {
+      if (isKom && e.passiveKom) {
+        // Detected via live PR-vs-KOM-time comparison, not via Strava's
+        // achievements array (which never got stamped on this activity).
+        rankOfStr = ' &middot; 1st of ' + (totalAthletes ? totalAthletes.toLocaleString() : '?') + ' athletes <span style="color:#C9A227">(detected live - no achievement was ever recorded on this activity)</span>';
+      } else if (isKom) {
         // Still-held KOM (lost ones were already filtered out before reaching here)
         if (totalAthletes) rankOfStr = ' &middot; 1st of ' + totalAthletes.toLocaleString() + ' athletes (at time of ride)';
       } else if (e.formerKom) {
@@ -4028,7 +4082,9 @@ async function renderFullKomList() {
       : sportGroupForType(e.activity_type) === 'hike' ? ' <span class="badge" style="background:#21262d;color:#7d8590">HIKE</span>' : '';
 
     let rankBadge;
-    if (isKom) {
+    if (isKom && e.passiveKom) {
+      rankBadge = '<span class="badge b-gold" title="Detected via live comparison - no achievement was ever stamped by Strava on this activity">KOM*</span>';
+    } else if (isKom) {
       rankBadge = '<span class="badge b-gold">KOM</span>';
     } else if (e.formerKom) {
       // This was a KOM (rank 1) that's since been beaten - we know it's no
