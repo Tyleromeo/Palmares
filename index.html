@@ -779,6 +779,20 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
           <option value="metric">Km / Meters</option>
         </select>
       </div>
+      <div class="setting-row">
+        <div><div class="setting-label">Mapbox public token</div><div class="setting-sub">Optional for local testing. For the live site, use a URL-restricted public token.</div></div>
+        <input class="setting-input" id="set-mapbox-token" type="password" placeholder="pk..." onchange="saveSettings(); resetEldoradoMapTiles();" style="width:260px;text-align:left" />
+      </div>
+      <div class="setting-row">
+        <div><div class="setting-label">Map style</div><div class="setting-sub">Uses Mapbox tiles inside Leaflet.</div></div>
+        <select class="form-select" id="set-map-style" onchange="saveSettings(); resetEldoradoMapTiles();" style="width:160px">
+          <option value="outdoors-v12" selected>Outdoors</option>
+          <option value="streets-v12">Streets</option>
+          <option value="satellite-streets-v12">Satellite</option>
+          <option value="dark-v11">Dark</option>
+          <option value="light-v11">Light</option>
+        </select>
+      </div>
     </div>
     <button class="gold-btn" onclick="saveSettings(); showToast('✅','Settings saved','Your preferences have been updated.')">Save settings</button>
   </div>
@@ -1017,7 +1031,7 @@ async function loadPowerPRsFromSupabase(athlete_id) {
 }
 
 // ==================== SETTINGS ====================
-const DEFAULTS = { ftp:249, weight:75, runPace:'7:30', css:'1:45', restingHR:58, maxHR:192, ageGroup:'35_44', city:'Smithtown, NY', units:'imperial', age:null, measuredVO2Max:null };
+const DEFAULTS = { ftp:249, weight:75, runPace:'7:30', css:'1:45', restingHR:58, maxHR:192, ageGroup:'35_44', city:'Smithtown, NY', units:'imperial', mapboxToken:'', mapStyle:'outdoors-v12', age:null, measuredVO2Max:null };
 
 function getSettings() {
   try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('ed_settings')||'{}')); }
@@ -1036,6 +1050,8 @@ function saveSettings() {
     ageGroup: getVal('set-age-group', DEFAULTS.ageGroup) || DEFAULTS.ageGroup,
     city: getVal('set-city', DEFAULTS.city) || DEFAULTS.city,
     units: getVal('set-units', DEFAULTS.units) || DEFAULTS.units,
+    mapboxToken: getVal('set-mapbox-token', DEFAULTS.mapboxToken) || DEFAULTS.mapboxToken,
+    mapStyle: getVal('set-map-style', DEFAULTS.mapStyle) || DEFAULTS.mapStyle,
     age: parseInt(getVal('set-age', '')) || null,
     measuredVO2Max: parseFloat(getVal('set-measured-vo2', '')) || null
   };
@@ -1058,6 +1074,8 @@ function loadSettingsUI() {
   setVal('set-age-group', s.ageGroup);
   setVal('set-city', s.city);
   setVal('set-units', s.units);
+  setVal('set-mapbox-token', s.mapboxToken || '');
+  setVal('set-map-style', s.mapStyle || DEFAULTS.mapStyle);
   if (s.age) setVal('set-age', s.age);
   if (s.measuredVO2Max) setVal('set-measured-vo2', s.measuredVO2Max);
 }
@@ -4629,15 +4647,58 @@ let eldoradoMap = null;
 let eldoradoMapLayers = { achievements: null, heat: null };
 let eldoradoMapState = { koms:true, top10s:true, bike:true, run:true, wind:true, heat:false, windDay:'today' };
 
+// Put your URL-restricted Mapbox public token here for production, or paste it in Settings for local testing.
+// Public Mapbox tokens begin with "pk." and are safe to ship when URL-restricted in your Mapbox account.
+const MAPBOX_PUBLIC_TOKEN = '';
+let eldoradoBaseTileLayer = null;
+
+function getEldoradoMapboxToken() {
+  const s = getSettings ? getSettings() : {};
+  return (s.mapboxToken || MAPBOX_PUBLIC_TOKEN || '').trim();
+}
+
+function getEldoradoMapStyle() {
+  const s = getSettings ? getSettings() : {};
+  return (s.mapStyle || DEFAULTS.mapStyle || 'outdoors-v12');
+}
+
+function addEldoradoBaseTiles() {
+  if (!eldoradoMap || typeof L === 'undefined') return;
+  if (eldoradoBaseTileLayer) {
+    try { eldoradoMap.removeLayer(eldoradoBaseTileLayer); } catch(e) {}
+  }
+
+  const token = getEldoradoMapboxToken();
+  const style = getEldoradoMapStyle();
+
+  if (token && token.indexOf('pk.') === 0) {
+    eldoradoBaseTileLayer = L.tileLayer('https://api.mapbox.com/styles/v1/mapbox/' + style + '/tiles/512/{z}/{x}/{y}@2x?access_token=' + encodeURIComponent(token), {
+      maxZoom: 19,
+      tileSize: 512,
+      zoomOffset: -1,
+      attribution: '&copy; Mapbox &copy; OpenStreetMap'
+    }).addTo(eldoradoMap);
+    setMapStatus('Mapbox ' + style.replace('-v12','').replace('-v11','') + ' map style is active.');
+  } else {
+    // Safe fallback so the page never goes blank while you are out of API tokens or before a Mapbox token is added.
+    eldoradoBaseTileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(eldoradoMap);
+    setMapStatus('Using OpenStreetMap fallback. Add your Mapbox public token in Settings to enable Mapbox tiles.');
+  }
+}
+
+function resetEldoradoMapTiles() {
+  if (eldoradoMap) addEldoradoBaseTiles();
+}
+
 function initEldoradoMap() {
   const el = document.getElementById('eldorado-map');
   if (!el || typeof L === 'undefined') return;
   if (eldoradoMap) { setTimeout(function(){ eldoradoMap.invalidateSize(); }, 50); return; }
   eldoradoMap = L.map('eldorado-map', { scrollWheelZoom: false }).setView([40.86, -73.20], 11);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; OpenStreetMap contributors'
-  }).addTo(eldoradoMap);
+  addEldoradoBaseTiles();
   eldoradoMapLayers.achievements = L.layerGroup().addTo(eldoradoMap);
   eldoradoMapLayers.heat = L.layerGroup().addTo(eldoradoMap);
   setTimeout(function(){ eldoradoMap.invalidateSize(); }, 150);
