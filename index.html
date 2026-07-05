@@ -503,6 +503,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
         <button class="nav-btn" id="kom-filter-hike" onclick="filterKomScan('hike')">Hike</button>
       </div>
     </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+      <span style="font-size:12px;color:#7d8590">Show:</span>
+      <button class="nav-btn active" id="kom-view-koms" onclick="setKomView('koms')" style="font-size:12px;padding:4px 10px">KOMs</button>
+      <button class="nav-btn" id="kom-view-top10s" onclick="setKomView('top10s')" style="font-size:12px;padding:4px 10px">Top 10s</button>
+    </div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
       <span style="font-size:12px;color:#7d8590">Sort by:</span>
       <button class="nav-btn active" id="kom-sort-date" onclick="setKomSortMode('date')" style="font-size:12px;padding:4px 10px">Most recent</button>
@@ -3979,6 +3984,7 @@ function renderGear() {
 // ==================== FULL HISTORICAL KOM/CR SCAN UI ====================
 let komScanFilter = 'all';
 let komSortMode = 'date'; // 'date', 'popularity', 'duration-desc' (longest first), or 'duration-asc' (shortest first)
+let komView = 'koms'; // 'koms' or 'top10s' - which list section is visible
 let komScanRunning = false;
 
 function sportGroupForType(type) {
@@ -4000,6 +4006,14 @@ function setKomSortMode(mode) {
   komSortMode = mode;
   document.querySelectorAll('[id^=kom-sort-]').forEach(b => b.classList.remove('active'));
   const btn = document.getElementById('kom-sort-' + mode);
+  if (btn) btn.classList.add('active');
+  renderFullKomList();
+}
+
+function setKomView(view) {
+  komView = view;
+  document.querySelectorAll('[id^=kom-view-]').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById('kom-view-' + view);
   if (btn) btn.classList.add('active');
   renderFullKomList();
 }
@@ -4360,11 +4374,18 @@ async function renderFullKomList() {
   const sortedKoms = sortByMode(koms);
   const sortedTop10s = sortByMode(top10s);
 
+  // Show only one section at a time - matches Strava's own segment page
+  // pattern of separate KOM and Top 10 tabs, keeping each view focused.
   let html = '';
-  html += '<h3 style="font-size:13px;font-weight:600;color:#7d8590;margin:0 0 8px;text-transform:uppercase;letter-spacing:1px">KOMs / CRs (' + sortedKoms.length + ')</h3>';
-  html += sortedKoms.length ? sortedKoms.map(e => renderRow(e, true)).join('') : '<p style="font-size:12px;color:#7d8590;padding:8px 0">No KOMs found for this filter.</p>';
-  html += '<h3 style="font-size:13px;font-weight:600;color:#7d8590;margin:20px 0 8px;text-transform:uppercase;letter-spacing:1px">Top 10s (' + sortedTop10s.length + ')</h3>';
-  html += sortedTop10s.length ? sortedTop10s.map(e => renderRow(e, false)).join('') : '<p style="font-size:12px;color:#7d8590;padding:8px 0">No Top 10s found for this filter.</p>';
+  if (komView === 'koms') {
+    html += '<h3 style="font-size:13px;font-weight:600;color:#7d8590;margin:0 0 8px;text-transform:uppercase;letter-spacing:1px">KOMs / CRs (' + sortedKoms.length + ')' +
+      ' <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#484f58;margin-left:4px">&middot; ' + sortedTop10s.length + ' Top 10s hidden</span></h3>';
+    html += sortedKoms.length ? sortedKoms.map(e => renderRow(e, true)).join('') : '<p style="font-size:12px;color:#7d8590;padding:8px 0">No KOMs found for this filter.</p>';
+  } else {
+    html += '<h3 style="font-size:13px;font-weight:600;color:#7d8590;margin:0 0 8px;text-transform:uppercase;letter-spacing:1px">Top 10s (' + sortedTop10s.length + ')' +
+      ' <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#484f58;margin-left:4px">&middot; ' + sortedKoms.length + ' KOMs hidden</span></h3>';
+    html += sortedTop10s.length ? sortedTop10s.map(e => renderRow(e, false)).join('') : '<p style="font-size:12px;color:#7d8590;padding:8px 0">No Top 10s found for this filter.</p>';
+  }
 
   listEl.innerHTML = html;
 }
