@@ -1612,6 +1612,16 @@ async function enrichKomDetails(token, athleteId) {
       const komTimeStr = seg && seg.xoms ? (seg.xoms.kom || seg.xoms.overall) : null;
       const komTime = parseTimeStringToSeconds(komTimeStr);
 
+      // Hazardous segments have their leaderboards suppressed by Strava.
+      // The xoms data returned for them is unreliable (often echoing the
+      // user's own PR as the "KOM time"), which caused false-positive
+      // passive-KOM detection on segments the user does NOT actually hold
+      // (confirmed via "Greenway Climb": marked hazardous, PR=KOM=376s,
+      // but the leaderboard was hidden and the user did not actually hold
+      // the crown). We capture the flag so we can skip passive detection
+      // and neutralize lost detection on hazardous segments.
+      const hazardous = !!(seg && seg.hazardous);
+
       enriched[segId] = {
         distance: seg ? seg.distance : null,
         elevation_gain: seg ? seg.total_elevation_gain : null,
@@ -1621,10 +1631,12 @@ async function enrichKomDetails(token, athleteId) {
         kom_time: komTime,
         my_pr_time: myStats ? myStats.pr_elapsed_time : null,
         my_effort_count: myStats ? myStats.effort_count : null,
+        hazardous: hazardous,
         // A passive KOM: your live PR matches (or beats) the segment's
         // live current-best time, even though no achievement was ever
-        // stamped on the activity that set this PR.
-        is_passive_kom: !!(myStats && myStats.pr_elapsed_time != null && komTime != null && myStats.pr_elapsed_time <= komTime)
+        // stamped on the activity that set this PR. Suppressed on hazardous
+        // segments where xoms data can't be trusted.
+        is_passive_kom: !hazardous && !!(myStats && myStats.pr_elapsed_time != null && komTime != null && myStats.pr_elapsed_time <= komTime)
       };
       processed++;
     } catch(e) { processed++; } // skip this segment, move on
@@ -4021,7 +4033,25 @@ async function renderKomScanUI() {
       statusEl.innerHTML = `Activity scan complete: ${progress.koms.length} KOMs, ${progress.top10s.length} Top 10s found. Fetching segment details and current KOM times across all ${allAchievementSegments.length} segments you've ever had an effort on (this also lets us catch "passive" KOMs Strava never stamped an achievement on): ${enrichedCount} of ${allAchievementSegments.length} segments enriched. (Note: Strava restricts exact leaderboard rank/2nd-place data to subscriber API access, so we detect lost KOMs by comparing your time to the segment's current best, without an exact "now ranked #X.")`;
       controlsEl.innerHTML = `<button class="gold-btn" id="kom-enrich-btn" onclick="runKomEnrichChunk()">Enrich next ${Math.min(SCAN_CHUNK_SIZE, allAchievementSegments.length - enrichedCount)}</button> <button onclick="restartKomScan()" style="background:#2d1a1a;border:1px solid #f85149;border-radius:6px;padding:8px 14px;color:#f85149;cursor:pointer;font-size:13px;margin-left:8px">Restart scan</button>`;
     } else {
-      statusEl.innerHTML = `Full scan complete: ${progress.koms.length} KOMs and ${progress.top10s.length} Top 10s found across your entire history, with segment details and current-KOM-time comparison.`;
+      // Compute post-enrichment totals so this text matches the totals
+      // cards below - raw progress.koms/top10s counts don't reflect the
+      // held/lost reclassification, passive KOM detection, or dedup, so
+      // they'd appear inconsistent with the sport-broken-out cards.
+      const allKomsPost = progress.koms.map(k => {
+        const detail = enrichedCache[k.segment_id];
+        const myBest = detail && detail.my_pr_time != null ? Math.min(k.elapsed, detail.my_pr_time) : k.elapsed;
+        const lost = !!(detail && !detail.hazardous && detail.kom_time && detail.kom_time < myBest);
+        return { ...k, lost };
+      });
+      const achievementSegmentIdsSet = new Set(progress.koms.map(k => k.segment_id));
+      const passiveKomsPost = Object.entries(progress.allSegmentBests || {})
+        .filter(([segId]) => !achievementSegmentIdsSet.has(parseInt(segId)) && !achievementSegmentIdsSet.has(segId))
+        .filter(([segId]) => enrichedCache[segId] && enrichedCache[segId].is_passive_kom)
+        .map(([, best]) => best);
+      const stillHeldKomsPost = [...allKomsPost.filter(k => !k.lost), ...passiveKomsPost];
+      const lostKomsPost = allKomsPost.filter(k => k.lost);
+      const totalTop10sPost = progress.top10s.length + lostKomsPost.length;
+      statusEl.innerHTML = `Full scan complete: ${stillHeldKomsPost.length} KOMs currently held and ${totalTop10sPost} Top 10s (including former KOMs) across your entire history, with segment details and current-KOM-time comparison.`;
       controlsEl.innerHTML = `<button onclick="restartKomScan()" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:8px 14px;color:#7d8590;cursor:pointer;font-size:13px">Rescan (refresh data)</button>`;
     }
   }
@@ -4091,9 +4121,24 @@ async function renderFullKomList() {
   // segment and confirmed a faster current time exists - segments not yet
   // enriched are left as KOMs (we simply don't know yet) rather than
   // guessed at, so counts don't flicker as enrichment progresses.
+  //
+  // Comparison uses the user's TRUE best time (my_pr_time from live segment
+  // stats), not the elapsed time from the original achievement entry,
+  // because achievement entries freeze at the first ride that earned rank 1.
+  // If the user later runs a faster time on the same segment, the
+  // achievement's elapsed value becomes stale, and comparing kom_time
+  // against that stale value can incorrectly flag a still-held KOM as lost
+  // (confirmed via "Bridle to Roundabout": original achievement at 66s, but
+  // user's true PR is 59s matching the current KOM time - was showing as
+  // lost when actually still held).
   const allKoms = progress.koms.map(k => {
     const detail = enrichedCache[k.segment_id];
-    const lost = !!(detail && detail.kom_time && detail.kom_time < k.elapsed);
+    const myBest = detail && detail.my_pr_time != null ? Math.min(k.elapsed, detail.my_pr_time) : k.elapsed;
+    // Skip lost-detection on hazardous segments - Strava suppresses their
+    // leaderboards and the returned kom_time is unreliable, so we can't
+    // tell whether the user still holds the crown either way. Leaving them
+    // as held is the safer default than flagging them lost on bad data.
+    const lost = !!(detail && !detail.hazardous && detail.kom_time && detail.kom_time < myBest);
     return { ...k, lost };
   });
 
