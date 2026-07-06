@@ -206,6 +206,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .map-shell { position: relative; }
 #eldorado-map { height: 72vh; min-height: 520px; border-radius: 12px; overflow: hidden; background: #0d1117; border: 1px solid #30363d; }
 .map-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
+.segment-distance-filter { background:#0d1117; border:1px solid #30363d; border-radius:10px; padding:10px 12px; margin:-2px 0 12px; }
+.segment-distance-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.segment-distance-title { font-size:11px; color:#7d8590; text-transform:uppercase; letter-spacing:0.5px; font-weight:600; }
+.segment-distance-label { font-size:12px; color:#C9A227; font-weight:700; min-width:104px; }
+.segment-distance-range { flex:1; min-width:220px; accent-color:#C9A227; }
+.segment-distance-ticks { display:grid; grid-template-columns:repeat(10,1fr); gap:4px; margin-top:5px; font-size:9px; color:#7d8590; text-align:center; }
 .map-toggle { background:#0d1117; border:1px solid #30363d; color:#7d8590; border-radius:999px; padding:7px 11px; font-size:12px; cursor:pointer; }
 .map-toggle.active { background:#21262d; color:#e6edf3; border-color:#C9A227; }
 .map-toggle:hover { color:#e6edf3; border-color:#8b949e; }
@@ -691,6 +697,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
       <button class="map-toggle" id="map-toggle-wind-tomorrow" onclick="setEldoradoMapWind('tomorrow')">Wind Tomorrow</button>
       <button class="map-toggle" id="map-toggle-heat" onclick="toggleEldoradoMapLayer('heat')">Heatmap</button>
       <button class="map-toggle" id="map-toggle-route" onclick="toggleRouteBuilder()" style="border-color:#e0691a">Route builder</button>
+    </div>
+    <div class="segment-distance-filter">
+      <div class="segment-distance-row">
+        <div class="segment-distance-title">Segment length</div>
+        <input id="map-segment-distance" class="segment-distance-range" type="range" min="0" max="9" step="1" value="0" oninput="setEldoradoMapDistanceFilter(this.value)" />
+        <div class="segment-distance-label" id="map-segment-distance-label">All lengths</div>
+      </div>
+      <div class="segment-distance-ticks">
+        <span>All</span><span>&le;.25</span><span>.25-.5</span><span>.5-1</span><span>1-2</span><span>2-5</span><span>5-10</span><span>10-20</span><span>20-50</span><span>50+</span>
+      </div>
     </div>
     <div id="route-builder-panel" style="display:none;background:#161b22;border:1px solid #e0691a;border-radius:6px;padding:12px 14px;margin-bottom:8px">
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:space-between">
@@ -4796,7 +4812,7 @@ async function renderFullKomList() {
 // ==================== MAP ====================
 let eldoradoMap = null;
 let eldoradoMapLayers = { achievements: null, heat: null, route: null };
-let eldoradoMapState = { koms:true, top10s:true, bike:true, run:true, wind:true, heat:false, windDay:'today' };
+let eldoradoMapState = { koms:true, top10s:true, bike:true, run:true, wind:true, heat:false, windDay:'today', segmentDistanceIndex:0 };
 let eldoradoMapBoundsFit = false; // only auto-fit map bounds once; subsequent renders preserve the user's zoom/pan
 
 // Put your URL-restricted Mapbox public token here for production, or paste it in Settings for local testing.
@@ -4851,6 +4867,7 @@ function initEldoradoMap() {
   if (eldoradoMap) { setTimeout(function(){ eldoradoMap.invalidateSize(); }, 50); return; }
   eldoradoMap = L.map('eldorado-map', { scrollWheelZoom: false }).setView([40.86, -73.20], 11);
   addEldoradoBaseTiles();
+  setEldoradoMapDistanceFilter(eldoradoMapState.segmentDistanceIndex || 0);
   eldoradoMapLayers.achievements = L.layerGroup().addTo(eldoradoMap);
   eldoradoMapLayers.heat = L.layerGroup().addTo(eldoradoMap);
   // Route layer sits above achievements so the planned route line is
@@ -4887,6 +4904,57 @@ function setEldoradoMapWind(day) {
     if (btn) btn.classList.toggle('active', eldoradoMapState.wind && eldoradoMapState.windDay === d);
   });
   renderEldoradoMap();
+}
+
+const MAP_SEGMENT_DISTANCE_BINS = [
+  { label:'All lengths', min:null, max:null },
+  { label:'0.25 mi or less', min:0, max:0.25 },
+  { label:'0.25-0.5 mi', min:0.25, max:0.5 },
+  { label:'0.5-1 mi', min:0.5, max:1 },
+  { label:'1-2 mi', min:1, max:2 },
+  { label:'2-5 mi', min:2, max:5 },
+  { label:'5-10 mi', min:5, max:10 },
+  { label:'10-20 mi', min:10, max:20 },
+  { label:'20-50 mi', min:20, max:50 },
+  { label:'50+ mi', min:50, max:null }
+];
+
+function setEldoradoMapDistanceFilter(value) {
+  const idx = Math.max(0, Math.min(MAP_SEGMENT_DISTANCE_BINS.length - 1, parseInt(value, 10) || 0));
+  eldoradoMapState.segmentDistanceIndex = idx;
+  const slider = document.getElementById('map-segment-distance');
+  const label = document.getElementById('map-segment-distance-label');
+  if (slider) slider.value = idx;
+  if (label) label.textContent = MAP_SEGMENT_DISTANCE_BINS[idx].label;
+  renderEldoradoMap();
+}
+
+function currentMapSegmentDistanceLabel() {
+  const bin = MAP_SEGMENT_DISTANCE_BINS[eldoradoMapState.segmentDistanceIndex || 0] || MAP_SEGMENT_DISTANCE_BINS[0];
+  return bin.label;
+}
+
+function lineDistanceMiles(points) {
+  if (!points || points.length < 2) return null;
+  let meters = 0;
+  for (let i = 1; i < points.length; i++) meters += haversineMeters(points[i - 1], points[i]);
+  return meters / 1609.34;
+}
+
+function distanceMilesForMapEntry(entry, detail, points) {
+  if (detail && detail.distance != null) return detail.distance / 1609.34;
+  const fromLine = lineDistanceMiles(points);
+  return fromLine != null ? fromLine : null;
+}
+
+function isMapDistanceVisible(distanceMi) {
+  const idx = eldoradoMapState.segmentDistanceIndex || 0;
+  const bin = MAP_SEGMENT_DISTANCE_BINS[idx] || MAP_SEGMENT_DISTANCE_BINS[0];
+  if (idx === 0) return true;
+  if (distanceMi == null) return false;
+  const minOK = bin.min == null || distanceMi >= bin.min;
+  const maxOK = bin.max == null || distanceMi <= bin.max;
+  return minOK && maxOK;
 }
 
 
@@ -5693,13 +5761,23 @@ async function renderEldoradoMap() {
   eldoradoMapLayers.achievements.clearLayers();
 
   const result = await getMapAchievementEntries();
-  const entries = result.entries.filter(isMapEntryVisible);
+  const visibleSportKindEntries = result.entries.filter(isMapEntryVisible);
+  let hiddenByDistance = 0;
+  const entries = visibleSportKindEntries.filter(function(entry) {
+    const detail = result.enrichedCache[entry.segment_id];
+    const points = pointsForMapEntry(entry, detail);
+    const distanceMi = distanceMilesForMapEntry(entry, detail, points);
+    if (!isMapDistanceVisible(distanceMi)) { hiddenByDistance++; return false; }
+    entry._mapPoints = points;
+    entry._mapDistanceMi = distanceMi;
+    return true;
+  });
   const bounds = [];
   let drawn = 0, missingGeometry = 0;
 
   entries.forEach(function(entry) {
     const detail = result.enrichedCache[entry.segment_id];
-    const points = pointsForMapEntry(entry, detail);
+    const points = entry._mapPoints || pointsForMapEntry(entry, detail);
     if (points.length < 2) {
       // Segment isn't enriched yet, but we can still show an approximate
       // marker at the activity's midpoint so users see their KOM exists
@@ -5724,8 +5802,10 @@ async function renderEldoradoMap() {
     const wind = windForLine(points);
     const color = mapColorForEntry(entry, points);
     const weight = entry.kind === 'kom' ? 5 : 4;
-    const opacity = entry.kind === 'kom' ? 0.95 : 0.75;
-    const line = L.polyline(points, { color: color, weight: weight, opacity: opacity }).addTo(eldoradoMapLayers.achievements);
+    const opacity = entry.kind === 'kom' ? 0.95 : 0.78;
+    const lineOptions = { color: color, weight: weight, opacity: opacity, lineJoin: 'round' };
+    if (entry.kind === 'top10') lineOptions.dashArray = '8 6';
+    const line = L.polyline(points, lineOptions).addTo(eldoradoMapLayers.achievements);
     line.bindPopup(popupForMapEntry(entry, detail, wind));
     points.forEach(function(p){ bounds.push(p); });
     drawn++;
@@ -5751,7 +5831,10 @@ async function renderEldoradoMap() {
   }
 
   const countsEl = document.getElementById('map-counts');
-  if (countsEl) countsEl.textContent = drawn + ' mapped segments' + (eldoradoMapState.heat ? ' · ' + heatStats.activityCount + ' heatmap activities' : '');
+  if (countsEl) {
+    const rangeLabel = currentMapSegmentDistanceLabel();
+    countsEl.textContent = drawn + ' mapped segments' + (rangeLabel !== 'All lengths' ? ' · ' + rangeLabel : '') + (eldoradoMapState.heat ? ' · ' + heatStats.activityCount + ' heatmap activities' : '');
+  }
 
   let status = '';
   const hasWindData = !!window._wxData;
@@ -5764,7 +5847,8 @@ async function renderEldoradoMap() {
     else if (eldoradoMapState.wind && !hasWindData) mode = 'achievement type (wind forecast unavailable — visit the Weather tab and reload)';
     else mode = 'achievement type';
     status = 'Showing ' + drawn + ' KOM/Top 10 segment' + (drawn === 1 ? '' : 's') + ' colored by ' + mode + '.';
-    if (missingGeometry) status += ' ' + missingGeometry + ' segment' + (missingGeometry === 1 ? ' is' : 's are') + ' missing geometry entirely - enrich in the Segments tab to add them.';
+    if (hiddenByDistance) status += ' ' + hiddenByDistance + ' segment' + (hiddenByDistance === 1 ? ' is' : 's are') + ' hidden by the length filter (' + currentMapSegmentDistanceLabel() + ').';
+    if (missingGeometry) status += ' ' + missingGeometry + ' segment' + (missingGeometry === 1 ? ' is' : 's are') + ' missing geometry entirely - enrich in the Segments tab to add exact full-length lines.';
   }
   if (eldoradoMapState.heat) {
     status += ' Road heatmap: darker roads mean more rides/runs on them; light traces are places you visited once.';
