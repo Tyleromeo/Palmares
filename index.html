@@ -393,12 +393,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   <div class="g2">
     <div class="card" style="margin-bottom:0">
       <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Power curve — best efforts</div></div>
-      <div id="pc-filters" style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap">
-        <button class="nav-btn active" onclick="renderPowerCurveFor('all')">All time</button>
-        <button class="nav-btn" onclick="renderPowerCurveFor('lastyear')">Last year</button>
-        <button class="nav-btn" onclick="renderPowerCurveFor('thisyear')">This year</button>
-        <button class="nav-btn" onclick="renderPowerCurveFor('compare')">2025 vs 2026</button>
-      </div>
+      <div id="power-scan-status" style="font-size:12px;color:#7d8590;padding:2px 0 10px"></div>
+      <div id="power-scan-controls" style="margin-bottom:12px"></div>
       <div id="power-curve-bars"></div>
       <div class="chart-wrap chart-wrap-md" style="height:180px;position:relative;margin-top:1rem"><canvas id="power-chart"></canvas></div>
     </div>
@@ -415,6 +411,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
       <div class="chart-wrap chart-wrap-md" style="height:180px;position:relative"><canvas id="aero-chart"></canvas></div>
       <div id="aero-insight" style="margin-top:10px;font-size:12px;color:#7d8590;line-height:1.5"></div>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M17 3H7v6a5 5 0 0 0 10 0V3z"/></svg>All-time power bests — top 5 per duration</div></div>
+    <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Real best-sustained-power efforts computed from your actual power-meter data streams, not estimates. Scan below to build this out across your full history.</div>
+    <div id="power-top5-list"></div>
   </div>
 
   <div class="card">
@@ -2338,220 +2340,259 @@ function renderMilesByYear() {
   }, 100);
 }
 
+// Strava's own 14 power-curve durations (seconds), in order.
+const POWER_CURVE_DURATIONS = [5,10,30,60,300,600,1200,1800,3600,5400,7200,10800,14400,18000];
+const POWER_CURVE_LABELS    = ['5s','10s','30s','1min','5min','10min','20min','30min','1hr','90min','2hr','3hr','4hr','5hr'];
+// Streams calls are heavier (full time-series payload) than the KOM
+// scanner's activity-detail calls, so a smaller chunk than SCAN_CHUNK_SIZE.
+const POWER_SCAN_CHUNK_SIZE = 15;
+let powerScanRunning = false;
+
 function renderPowerCurve() {
-  renderPowerCurveFor('all');
+  renderPowerScanUI();
+  renderPowerCurveFromScan();
 }
 
-function renderPowerCurveFor(period) {
-  document.querySelectorAll('#pc-filters .nav-btn').forEach(b => {
-    b.classList.remove('active');
-    if ((period==='all' && b.textContent==='All time') ||
-        (period==='lastyear' && b.textContent==='Last year') ||
-        (period==='thisyear' && b.textContent==='This year') ||
-        (period==='compare' && b.textContent.includes('month'))) {
-      b.classList.add('active');
-    }
-  });
+async function getPowerScanProgress(athleteId) {
+  let progress = await getCached(athleteId, 'power_curve_scan_progress_v1', 365*24*60*60*1000);
+  if (!progress) return { scannedIds: [], top5: {}, complete: false };
+  if (!progress.top5) progress.top5 = {};
+  if (!progress.scannedIds) progress.scannedIds = [];
+  return progress;
+}
 
+function savePowerScanProgress(athleteId, progress) {
+  return setCached(athleteId, 'power_curve_scan_progress_v1', progress);
+}
+
+async function resetPowerScan(athleteId) {
+  if (!confirm('This clears all power curve scan progress and starts over from scratch. Continue?')) return;
+  await savePowerScanProgress(athleteId, { scannedIds: [], top5: {}, complete: false });
+  await renderPowerScanUI();
+  renderPowerCurveFromScan();
+}
+
+// Only rides with a real power meter get a watts stream - Strava's
+// estimated-power rides (no meter, speed/grade-based average_watts) return
+// no watts stream, so they're naturally skipped once fetched rather than
+// filtered out here (average_watts>0 alone can't distinguish the two).
+function powerScanEligibleActivities() {
+  return allActivities.filter(a => (a.type==='Ride'||a.type==='VirtualRide') && a.average_watts > 0);
+}
+
+// Resamples a Strava (time[], watts[]) stream pair to a 1Hz stepped series
+// (each sample's watts value holds until the next sample), then returns the
+// best sustained average power for each requested duration via a
+// prefix-sum sliding window. Works regardless of the stream's actual sample
+// rate - Strava caps streams around ~10k points, so long rides get
+// downsampled, and forward-filling across the resulting gaps keeps this
+// correct rather than silently mistreating gaps as 1-second samples.
+function computeBestPowerPerDuration(timeArr, wattsArr, durations) {
+  const n = timeArr ? timeArr.length : 0;
+  if (n < 2) return durations.map(() => 0);
+
+  const totalSeconds = Math.floor(timeArr[n - 1]);
+  if (totalSeconds < 1) return durations.map(() => 0);
+
+  const perSecond = new Float64Array(totalSeconds + 1);
+  let si = 0;
+  for (let t = 0; t <= totalSeconds; t++) {
+    while (si < n - 1 && timeArr[si + 1] <= t) si++;
+    perSecond[t] = wattsArr[si] || 0;
+  }
+
+  const prefix = new Float64Array(perSecond.length + 1);
+  for (let i = 0; i < perSecond.length; i++) prefix[i + 1] = prefix[i] + perSecond[i];
+
+  return durations.map(dur => {
+    if (dur > perSecond.length) return 0;
+    let best = 0;
+    for (let start = 0; start + dur <= perSecond.length; start++) {
+      const avg = (prefix[start + dur] - prefix[start]) / dur;
+      if (avg > best) best = avg;
+    }
+    return Math.round(best);
+  });
+}
+
+// Processes one chunk of not-yet-scanned power-meter rides. Returns
+// { processed, remaining, rateLimited } so the UI can show meaningful
+// status and decide whether to offer "scan next chunk" - mirrors
+// scanKomChunk's contract.
+async function scanPowerCurveChunk(token, athleteId) {
+  const headers = { Authorization: `Bearer ${token}` };
+  const progress = await getPowerScanProgress(athleteId);
+  const scannedSet = new Set(progress.scannedIds);
+  const eligible = powerScanEligibleActivities();
+  const toScan = eligible.filter(a => !scannedSet.has(a.id)).slice(0, POWER_SCAN_CHUNK_SIZE);
+
+  if (!toScan.length) {
+    progress.complete = true;
+    await savePowerScanProgress(athleteId, progress);
+    return { processed: 0, remaining: 0, rateLimited: false, totalEligible: eligible.length };
+  }
+
+  let processed = 0;
+  let rateLimited = false;
+
+  for (const ride of toScan) {
+    try {
+      const resp = await fetch(`https://www.strava.com/api/v3/activities/${ride.id}/streams?keys=watts,time&resolution=high&key_by_type=true`, { headers });
+      if (resp.status === 429) { rateLimited = true; break; }
+      const stream = await resp.json().catch(() => null);
+      progress.scannedIds.push(ride.id);
+      if (stream && stream.watts && stream.watts.data && stream.time && stream.time.data) {
+        const bests = computeBestPowerPerDuration(stream.time.data, stream.watts.data, POWER_CURVE_DURATIONS);
+        POWER_CURVE_DURATIONS.forEach((dur, i) => {
+          const watts = bests[i];
+          if (watts <= 0) return;
+          const list = progress.top5[dur] || [];
+          list.push({ watts, activity_id: ride.id, activity_name: ride.name, start_date: ride.start_date });
+          list.sort((a,b) => b.watts - a.watts);
+          progress.top5[dur] = list.slice(0, 5);
+        });
+      }
+      processed++;
+    } catch(e) {
+      progress.scannedIds.push(ride.id); // mark scanned so a bad/missing stream doesn't retry-loop forever
+      console.log('Power stream fetch error for', ride.id, e);
+    }
+    await new Promise(r => setTimeout(r, 150)); // stay well under Strava's rate limit
+  }
+
+  await savePowerScanProgress(athleteId, progress);
+  const nowScanned = new Set(progress.scannedIds);
+  const remaining = eligible.filter(a => !nowScanned.has(a.id)).length;
+  return { processed, remaining, rateLimited, totalEligible: eligible.length };
+}
+
+async function runPowerScanChunk() {
+  if (powerScanRunning) return;
+  powerScanRunning = true;
+  const btn = document.getElementById('power-scan-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Scanning...'; }
+
+  const token = await getToken();
+  if (!token || !athleteData) { powerScanRunning = false; return; }
+
+  const result = await scanPowerCurveChunk(token, athleteData.id);
+  powerScanRunning = false;
+
+  if (result.rateLimited) {
+    showToast('⚠️', 'Rate limit hit', 'Strava rate limit reached. Progress saved - try again in a few minutes.');
+  } else if (result.processed > 0) {
+    showToast('✅', 'Chunk scanned', `Processed ${result.processed} rides. ${result.remaining} remaining.`);
+  }
+  await renderPowerScanUI();
+  renderPowerCurveFromScan();
+}
+
+async function restartPowerScan() {
+  if (!athleteData) return;
+  await resetPowerScan(athleteData.id);
+}
+
+async function renderPowerScanUI() {
+  const statusEl = document.getElementById('power-scan-status');
+  const controlsEl = document.getElementById('power-scan-controls');
+  if (!statusEl || !controlsEl || !athleteData) return;
+
+  const progress = await getPowerScanProgress(athleteData.id);
+  const eligible = powerScanEligibleActivities();
+  const scannedSet = new Set(progress.scannedIds);
+  const remaining = eligible.filter(a => !scannedSet.has(a.id)).length;
+
+  if (!eligible.length) {
+    statusEl.textContent = 'No rides with power data found yet.';
+    controlsEl.innerHTML = '';
+    return;
+  }
+
+  if (progress.scannedIds.length === 0 && !progress.complete) {
+    statusEl.innerHTML = `Real power-curve data requires reading the per-second power stream from each of your <strong>${eligible.length}</strong> power-meter rides (Strava's estimated-power rides have no stream and are skipped automatically once fetched). Scanned in chunks of ${POWER_SCAN_CHUNK_SIZE} to stay well under Strava's rate limits - this may take a few clicks across sessions for a full history.`;
+    controlsEl.innerHTML = `<button class="gold-btn" id="power-scan-btn" onclick="runPowerScanChunk()">Start power curve scan</button>`;
+  } else if (!progress.complete) {
+    const pct = Math.round((progress.scannedIds.length / eligible.length) * 100);
+    statusEl.innerHTML = `Scanned ${progress.scannedIds.length} of ${eligible.length} rides (${pct}%). ${remaining} remaining.`;
+    controlsEl.innerHTML = `<button class="gold-btn" id="power-scan-btn" onclick="runPowerScanChunk()">Scan next ${Math.min(POWER_SCAN_CHUNK_SIZE, remaining)}</button> <button onclick="restartPowerScan()" style="background:#2d1a1a;border:1px solid #f85149;border-radius:6px;padding:8px 14px;color:#f85149;cursor:pointer;font-size:13px;margin-left:8px">Restart scan</button>`;
+  } else {
+    statusEl.innerHTML = `Full scan complete across ${eligible.length} power-meter rides.`;
+    controlsEl.innerHTML = `<button onclick="restartPowerScan()" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:8px 14px;color:#7d8590;cursor:pointer;font-size:13px">Rescan (refresh data)</button>`;
+  }
+}
+
+async function renderPowerCurveFromScan() {
+  if (!athleteData) return;
   const s = getSettings();
   const ftp = s.ftp || 220;
   const weight = s.weight || 75;
-  const now = new Date();
-  const thisYearStart = new Date(now.getFullYear(),0,1);
-  const lastYearStart = new Date(now.getFullYear()-1,0,1);
-  const lastYearEnd = new Date(now.getFullYear()-1,11,31);
-  const thisMonthStart = new Date(now.getFullYear(),now.getMonth(),1);
-  const lastYearMonthStart = new Date(now.getFullYear()-1,now.getMonth(),1);
-  const lastYearMonthEnd = new Date(now.getFullYear()-1,now.getMonth()+1,0);
+  const progress = await getPowerScanProgress(athleteData.id);
 
-  function filterActs(acts, p) {
-    return acts.filter(a => {
-      const d = new Date(a.start_date);
-      if (p==='all') return true;
-      if (p==='lastyear') return d>=lastYearStart && d<=lastYearEnd;
-      if (p==='thisyear') return d>=thisYearStart;
-      if (p==='thismonth') return d>=thisMonthStart;
-      if (p==='lastyrmonth') return d>=lastYearMonthStart && d<=lastYearMonthEnd;
-      return true;
-    }).filter(a=>(a.type==='Ride'||a.type==='VirtualRide')&&a.average_watts>0);
-  }
-
-  // Real all-time PRs from Strava (verified June 2026)
-  const REAL_POWER_PRS = {
-    5:    1077,
-    15:   853,
-    30:   766,
-    60:   642,
-    120:  487,
-    180:  400,
-    300:  319,
-    480:  284,
-    600:  290,
-    900:  265,
-    1200: 263,
-    1800: 249,
-    2700: 241,
-    3600: 231
-  };
-
-  function getBestPowers(rides) {
-    const durations = [5,30,60,180,300,600,1200,1800,3600];
-
-    return durations.map(function(dur) {
-      // Use real verified PR data where available
-      if (REAL_POWER_PRS[dur]) return REAL_POWER_PRS[dur];
-
-      // Interpolate for durations between known points
-      var keys = Object.keys(REAL_POWER_PRS).map(Number).sort(function(a,b){return a-b;});
-      var lower = null, upper = null;
-      for (var i=0; i<keys.length-1; i++) {
-        if (keys[i] <= dur && keys[i+1] >= dur) {
-          lower = keys[i]; upper = keys[i+1]; break;
-        }
-      }
-      if (lower && upper) {
-        var ratio = (dur - lower) / (upper - lower);
-        return Math.round(REAL_POWER_PRS[lower] + ratio * (REAL_POWER_PRS[upper] - REAL_POWER_PRS[lower]));
-      }
-
-      // Fallback to activity data for very long durations
-      const relevant = rides.filter(function(a){ return a.moving_time >= dur; });
-      if (!relevant.length) return 0;
-      return Math.round(Math.max.apply(null, relevant.map(function(a){ return a.average_watts || 0; })) * 0.97);
-    });
-  }
-
-  const labels = ['5s','30s','1min','3min','5min','10min','20min','30min','60min'];
-  const durations = [5,30,60,180,300,600,1200,1800,3600];
+  const bestPowers = POWER_CURVE_DURATIONS.map(dur => {
+    const list = progress.top5[dur];
+    return (list && list.length) ? list[0].watts : 0;
+  });
 
   const barsEl = document.getElementById('power-curve-bars');
+  if (!barsEl) return;
+  const validPowers = bestPowers.filter(p => p > 0);
 
-  if (period === 'compare') {
-    // Calculate 2025 vs 2026 from activity data
-    const now = new Date();
-    const thisYear = now.getFullYear();
-    const rides2026 = allActivities.filter(function(a){ return (a.type==='Ride'||a.type==='VirtualRide')&&a.average_watts>0&&new Date(a.start_date).getFullYear()===thisYear; });
-    const rides2025 = allActivities.filter(function(a){ return (a.type==='Ride'||a.type==='VirtualRide')&&a.average_watts>0&&new Date(a.start_date).getFullYear()===thisYear-1; });
-
-    function estimatePower(rides, dur) {
-      var relevant = rides.filter(function(a){ return a.moving_time >= dur; });
-      if (!relevant.length) return 0;
-      if (dur <= 5) {
-        var maxW = Math.max.apply(null, relevant.map(function(a){ return a.max_watts||0; }));
-        return maxW > 50 ? Math.min(maxW, 1200) : 0;
-      } else if (dur <= 30) {
-        var maxW2 = Math.max.apply(null, relevant.map(function(a){ return a.max_watts||0; }));
-        return maxW2 > 50 ? Math.round(Math.min(maxW2, 1000) * 0.85) : 0;
-      } else if (dur <= 60) {
-        var maxW3 = Math.max.apply(null, relevant.map(function(a){ return a.max_watts||0; }));
-        return maxW3 > 50 ? Math.round(Math.min(maxW3, 900) * 0.72) : 0;
-      } else if (dur <= 300) {
-        return Math.round(Math.max.apply(null, relevant.map(function(a){ return a.average_watts; })) * 1.08);
-      } else if (dur <= 1200) {
-        return Math.round(Math.max.apply(null, relevant.map(function(a){ return a.average_watts; })) * 1.03);
-      } else {
-        return Math.round(Math.max.apply(null, relevant.map(function(a){ return a.average_watts; })) * 0.98);
-      }
-    }
-
-    // Use verified real PRs for 2025 (from Strava screenshots)
-    const REAL_2025 = {5:1077,30:766,60:642,180:400,300:319,600:290,1200:263,1800:249,3600:231};
-    // Use verified stream data for 2026 short durations, estimates for long
-    const REAL_2026_SHORT = {5:842,30:500,60:402};
-
-    const thisPowers = durations.map(function(dur) {
-      if (REAL_2026_SHORT[dur]) return REAL_2026_SHORT[dur];
-      return estimatePower(rides2026, dur);
-    });
-    const lastPowers = durations.map(function(dur) {
-      if (REAL_2025[dur]) return REAL_2025[dur];
-      return estimatePower(rides2025, dur);
-    });
-
-    if (true) {
-
-    barsEl.innerHTML = labels.map(function(label,i) {
-      var tp = thisPowers[i], lp = lastPowers[i];
-      if (!tp && !lp) return '';
-      var maxP = Math.max(tp,lp,1);
-      var diff = (tp && lp) ? Math.round((tp-lp)/lp*100) : null;
-      var diffColor = diff > 0 ? '#3fb950' : diff < 0 ? '#f85149' : '#7d8590';
-      var diffStr = diff !== null ? '<span style="color:'+diffColor+'">'+(diff>0?'+':'')+diff+'% vs 2025</span>' : '';
-      return '<div style="margin-bottom:10px">' +
-        '<div style="display:flex;justify-content:space-between;font-size:11px;color:#7d8590;margin-bottom:3px"><span>'+label+'</span>'+diffStr+'</div>' +
-        '<div style="margin-bottom:2px"><div style="display:flex;align-items:center;gap:6px">' +
-          '<div style="width:50px;font-size:11px;color:#FC4C02">2026</div>' +
-          '<div class="pz-bar"><div class="pz-fill" style="width:'+(tp?Math.round(tp/maxP*100):0)+'%;background:#FC4C02"></div></div>' +
-          '<div style="width:50px;font-size:11px;color:#e6edf3;text-align:right">'+(tp?tp+'w':'--')+'</div>' +
-        '</div></div>' +
-        '<div><div style="display:flex;align-items:center;gap:6px">' +
-          '<div style="width:50px;font-size:11px;color:#888">2025</div>' +
-          '<div class="pz-bar"><div class="pz-fill" style="width:'+(lp?Math.round(lp/maxP*100):0)+'%;background:#666"></div></div>' +
-          '<div style="width:50px;font-size:11px;color:#e6edf3;text-align:right">'+(lp?lp+'w':'--')+'</div>' +
-        '</div></div></div>';
+  if (!validPowers.length) {
+    barsEl.innerHTML = '<p style="font-size:12px;color:#7d8590">No power data yet - run the scan above to build your real power curve.</p>';
+  } else {
+    const maxP = Math.max(...validPowers);
+    barsEl.innerHTML = bestPowers.map((p,i)=>{
+      if (!p) return `<div class="power-zone"><div class="pz-label">${POWER_CURVE_LABELS[i]}</div><div class="pz-bar"><div class="pz-fill" style="width:0%"></div></div><div class="pz-val" style="color:#444">--</div><div class="pz-wkg" style="color:#444">--</div></div>`;
+      const pct = Math.round(p/maxP*100);
+      const wkg = (p/weight).toFixed(1);
+      const color = p>=ftp ? '#FC4C02' : p>=ftp*0.9 ? '#C9A227' : '#3fb950';
+      return `<div class="power-zone">
+        <div class="pz-label">${POWER_CURVE_LABELS[i]}</div>
+        <div class="pz-bar"><div class="pz-fill" style="width:${pct}%;background:${color}"></div></div>
+        <div class="pz-val">${p}w</div>
+        <div class="pz-wkg">${wkg} w/kg</div>
+      </div>`;
     }).join('');
 
-    // Comparison chart
     if (charts['power']) charts['power'].destroy();
     const ctx = document.getElementById('power-chart').getContext('2d');
     charts['power'] = new Chart(ctx, {
       type:'line',
-      data:{labels, datasets:[
-        {label:'This month',data:thisPowers.map(p=>p||null),borderColor:'#FC4C02',borderWidth:2,pointRadius:3,pointBackgroundColor:'#FC4C02',tension:0.3,fill:false,spanGaps:true},
-        {label:'Last year same month',data:lastPowers.map(p=>p||null),borderColor:'#666',borderWidth:1.5,borderDash:[4,4],pointRadius:3,pointBackgroundColor:'#666',tension:0.3,fill:false,spanGaps:true},
-        {label:'FTP',data:durations.map(()=>ftp),borderColor:'#C9A227',borderWidth:1,borderDash:[2,4],pointRadius:0,fill:false}
+      data:{labels: POWER_CURVE_LABELS, datasets:[
+        {label:'Best power',data:bestPowers.map(p=>p||null),borderColor:'#FC4C02',backgroundColor:'rgba(252,76,2,0.08)',borderWidth:2,pointBackgroundColor:'#FC4C02',pointRadius:3,tension:0.3,fill:true,spanGaps:true},
+        {label:'FTP',data:POWER_CURVE_DURATIONS.map(()=>ftp),borderColor:'#C9A227',borderWidth:1,borderDash:[4,4],pointRadius:0,fill:false}
       ]},
       options:{responsive:true,maintainAspectRatio:false,
-        plugins:{legend:{display:true,labels:{color:'#7d8590',font:{size:11}}}},
+        plugins:{legend:{display:false}},
         scales:{x:{grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#7d8590',font:{size:11}}},
-                y:{grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#7d8590',font:{size:11},callback:function(v){return v+'w';}}}}}
+                y:{grid:{color:'rgba(255,255,255,0.04)'},min:0,ticks:{color:'#7d8590',font:{size:11},callback:function(v){return v+'w';}}}}}
     });
-    return;
   }
 
-  }  // end if (period === 'compare')
+  renderPowerTop5List(progress);
+}
 
-  // Single period view
-  const rides = filterActs(allActivities, period);
-  if (!rides.length) {
-    barsEl.innerHTML = '<p style="font-size:12px;color:#7d8590">No power data for this period.</p>';
-    return;
-  }
+function renderPowerTop5List(progress) {
+  const listEl = document.getElementById('power-top5-list');
+  if (!listEl) return;
 
-  const bestPowers = getBestPowers(rides);
-  const validPowers = bestPowers.filter(p=>p>0);
-  if (!validPowers.length) {
-    barsEl.innerHTML = '<p style="font-size:12px;color:#7d8590">No power data found. Make sure Garmin is recording power from your Assioma pedals.</p>';
-    return;
-  }
+  const sections = POWER_CURVE_DURATIONS.map((dur, i) => {
+    const entries = progress.top5[dur] || [];
+    if (!entries.length) return '';
+    const rows = entries.map((e, rank) => {
+      const date = e.start_date ? new Date(e.start_date).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '';
+      return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #21262d">' +
+        '<span class="badge b-blue" style="flex-shrink:0">#' + (rank+1) + '</span>' +
+        '<div style="flex:1;min-width:0"><a href="' + stravaActivityHref(e.activity_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">' + escapeHTML(e.activity_name || 'Activity') + '</a><div class="row-meta">' + date + '</div></div>' +
+        '<div style="flex-shrink:0;font-weight:600;color:#FC4C02">' + e.watts + 'w</div>' +
+      '</div>';
+    }).join('');
+    return '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:#7d8590;margin-bottom:4px">' + POWER_CURVE_LABELS[i] + '</div>' + rows + '</div>';
+  }).filter(Boolean);
 
-  const maxP = Math.max(...bestPowers.filter(p=>p>0));
-  barsEl.innerHTML = bestPowers.map((p,i)=>{
-    if (!p) return `<div class="power-zone"><div class="pz-label">${labels[i]}</div><div class="pz-bar"><div class="pz-fill" style="width:0%"></div></div><div class="pz-val" style="color:#444">--</div><div class="pz-wkg" style="color:#444">--</div></div>`;
-    const pct = Math.round(p/maxP*100);
-    const wkg = (p/weight).toFixed(1);
-    const color = p>=ftp ? '#FC4C02' : p>=ftp*0.9 ? '#C9A227' : '#3fb950';
-    return `<div class="power-zone">
-      <div class="pz-label">${labels[i]}</div>
-      <div class="pz-bar"><div class="pz-fill" style="width:${pct}%;background:${color}"></div></div>
-      <div class="pz-val">${p}w</div>
-      <div class="pz-wkg">${wkg} w/kg</div>
-    </div>`;
-  }).join('');
-
-  if (charts['power']) charts['power'].destroy();
-  const ctx = document.getElementById('power-chart').getContext('2d');
-  charts['power'] = new Chart(ctx, {
-    type:'line',
-    data:{labels, datasets:[
-      {label:'Best power',data:bestPowers.map(p=>p||null),borderColor:'#FC4C02',backgroundColor:'rgba(252,76,2,0.08)',borderWidth:2,pointBackgroundColor:'#FC4C02',pointRadius:3,tension:0.3,fill:true,spanGaps:true},
-      {label:'FTP',data:durations.map(()=>ftp),borderColor:'#C9A227',borderWidth:1,borderDash:[4,4],pointRadius:0,fill:false}
-    ]},
-    options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false}},
-      scales:{x:{grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#7d8590',font:{size:11}}},
-              y:{grid:{color:'rgba(255,255,255,0.04)'},min:0,ticks:{color:'#7d8590',font:{size:11},callback:function(v){return v+'w';}}}}}
-  });
+  listEl.innerHTML = sections.length
+    ? sections.join('')
+    : '<p style="font-size:13px;color:#7d8590">No power bests recorded yet - run the scan above.</p>';
 }
 
 
