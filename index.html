@@ -408,6 +408,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     </div>
     <div class="card" style="margin-bottom:0">
       <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Aerobic efficiency (HR:Power)</div><span id="aero-range-label" style="font-size:11px;color:#7d8590"></span></div>
+      <div id="aero-sport-toggle" style="display:flex;gap:4px;margin-bottom:10px">
+        <button class="nav-btn active" data-sport="ride" onclick="setAeroSport('ride')">Rides</button>
+        <button class="nav-btn" data-sport="run" onclick="setAeroSport('run')">Runs</button>
+      </div>
       <div id="aero-filters" style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap">
         <button class="nav-btn active" onclick="renderAeroFor(7)">7d</button>
         <button class="nav-btn" onclick="renderAeroFor(30)">1mo</button>
@@ -428,8 +432,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   </div>
 
   <div class="card">
-    <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M4 19h16M4 15l4-4 4 3 6-8"/></svg>Distance records — 400m to 100K</div></div>
-    <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Your top 10 fastest times at each standard distance, each linking to the activity. Built from the same full-history scan as your Segments/KOM data (400m-Marathon come from Strava directly; 50K/100K are computed from raw distance data since Strava doesn't track those natively).</div>
+    <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M4 19h16M4 15l4-4 4 3 6-8"/></svg>Distance records</div></div>
+    <div id="distance-sport-toggle" style="display:flex;gap:4px;margin-bottom:10px">
+      <button class="nav-btn active" data-sport="run" onclick="setDistanceSport('run')">Runs</button>
+      <button class="nav-btn" data-sport="ride" onclick="setDistanceSport('ride')">Rides</button>
+    </div>
+    <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Your top 10 fastest times at each standard distance, each linking to the activity. Runs: 400m-Marathon come from Strava directly, 50K/100K are computed from raw distance data. Rides: 5 mile-100 mile are all computed from raw distance data, since Strava doesn't track standard-distance bests for bikes at all.</div>
     <div id="distance-scan-status" style="font-size:12px;color:#7d8590;padding:2px 0 10px"></div>
     <div id="distance-scan-controls" style="margin-bottom:12px"></div>
     <div id="distance-records-list"></div>
@@ -2854,6 +2862,96 @@ const DISTANCE_RECORD_ORDER = ['400m','1/2 mile','1K','1 mile','2 mile','5K','10
 const ULTRA_DISTANCES = [{ name: '50K', meters: 50000 }, { name: '100K', meters: 100000 }];
 let ultraScanAttempted = false;
 
+// Ride distance records - unlike runs, Strava's best_efforts field doesn't
+// cover bike rides at all, so every ride distance checkpoint needs the same
+// stream-based computation used for ultra run distances above. Kept in its
+// own dedicated scan/cache key (not piggybacked on the KOM scan) since it
+// needs a much broader set of checkpoints scanned across many more rides
+// than the KOM scanner's segment-focused pass would naturally cover.
+const RIDE_DISTANCE_CHECKPOINTS = [
+  { name: '5 mile', meters: 8046.72 },
+  { name: '10K', meters: 10000 },
+  { name: '10 mile', meters: 16093.44 },
+  { name: '20K', meters: 20000 },
+  { name: '40K', meters: 40000 },
+  { name: '25 mile', meters: 40233.6 },
+  { name: '50K', meters: 50000 },
+  { name: '50 mile', meters: 80467.2 },
+  { name: '100K', meters: 100000 },
+  { name: '100 mile', meters: 160934.4 }
+].sort((a,b) => a.meters - b.meters);
+const BIKE_DISTANCE_CACHE_KEY = 'bike_distance_scan_progress_v1';
+
+async function getBikeDistanceProgress(athleteId) {
+  let progress = await getCached(athleteId, BIKE_DISTANCE_CACHE_KEY, 365*24*60*60*1000);
+  if (!progress) return { scannedIds: [], distanceRecords: {}, complete: false };
+  if (!progress.scannedIds) progress.scannedIds = [];
+  if (!progress.distanceRecords) progress.distanceRecords = {};
+  return progress;
+}
+
+function saveBikeDistanceProgress(athleteId, progress) {
+  return setCached(athleteId, BIKE_DISTANCE_CACHE_KEY, progress);
+}
+
+async function resetBikeDistanceScan(athleteId) {
+  if (!confirm('This clears all ride distance-record scan progress and starts over from scratch. Continue?')) return;
+  await saveBikeDistanceProgress(athleteId, { scannedIds: [], distanceRecords: {}, complete: false });
+  renderDistanceRecords();
+}
+
+function bikeDistanceEligibleActivities() {
+  const minMeters = RIDE_DISTANCE_CHECKPOINTS[0].meters;
+  return allActivities.filter(a => (a.type==='Ride'||a.type==='VirtualRide') && a.distance >= minMeters);
+}
+
+async function scanBikeDistanceChunk(token, athleteId) {
+  const headers = { Authorization: `Bearer ${token}` };
+  const progress = await getBikeDistanceProgress(athleteId);
+  const scannedSet = new Set(progress.scannedIds);
+  const eligible = bikeDistanceEligibleActivities();
+  const toScan = eligible.filter(a => !scannedSet.has(a.id)).slice(0, POWER_SCAN_CHUNK_SIZE);
+
+  if (!toScan.length) {
+    progress.complete = true;
+    await saveBikeDistanceProgress(athleteId, progress);
+    return { processed: 0, remaining: 0, rateLimited: false, totalEligible: eligible.length };
+  }
+
+  let processed = 0;
+  let rateLimited = false;
+
+  for (const ride of toScan) {
+    try {
+      const resp = await fetch(`https://www.strava.com/api/v3/activities/${ride.id}/streams?keys=distance,time&resolution=high&key_by_type=true`, { headers });
+      if (resp.status === 429) { rateLimited = true; break; }
+      const stream = await resp.json().catch(() => null);
+      progress.scannedIds.push(ride.id);
+      if (stream && stream.distance && stream.distance.data && stream.time && stream.time.data) {
+        RIDE_DISTANCE_CHECKPOINTS.forEach(({ name, meters }) => {
+          if (ride.distance < meters) return; // this ride never covers this checkpoint
+          const elapsed = bestTimeForDistance(stream.distance.data, stream.time.data, meters);
+          if (elapsed == null) return;
+          const list = progress.distanceRecords[name] || [];
+          list.push({ activity_id: ride.id, activity_name: ride.name, elapsed, distance: meters, date: ride.start_date });
+          list.sort((a,b) => a.elapsed - b.elapsed);
+          progress.distanceRecords[name] = list.slice(0, 10);
+        });
+      }
+      processed++;
+    } catch(e) {
+      progress.scannedIds.push(ride.id); // mark scanned so a bad/missing stream doesn't retry-loop forever
+      console.log('Bike distance stream fetch error for', ride.id, e);
+    }
+    await new Promise(r => setTimeout(r, 150)); // stay well under Strava's rate limit
+  }
+
+  await saveBikeDistanceProgress(athleteId, progress);
+  const nowScanned = new Set(progress.scannedIds);
+  const remaining = eligible.filter(a => !nowScanned.has(a.id)).length;
+  return { processed, remaining, rateLimited, totalEligible: eligible.length };
+}
+
 function formatElapsedClock(seconds) {
   seconds = Math.round(seconds);
   const h = Math.floor(seconds / 3600);
@@ -2925,11 +3023,21 @@ async function scanUltraDistancesChunk(token, athleteId) {
 }
 
 let distanceScanRunning = false;
+let currentDistanceSport = 'run';
 
-// Wraps the shared KOM/distance-records scan (scanKomChunk) so it can be
-// triggered directly from the Performance page's Distance Records card,
-// instead of requiring a trip to Segments - it's the same underlying scan
-// either way (one activity-detail fetch feeds both KOMs and best_efforts).
+function setDistanceSport(sport) {
+  currentDistanceSport = sport;
+  document.querySelectorAll('#distance-sport-toggle .nav-btn').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-sport') === sport);
+  });
+  renderDistanceRecords();
+}
+
+// For runs this wraps the shared KOM/distance-records scan (scanKomChunk) so
+// it can be triggered directly from the Performance page's Distance Records
+// card, instead of requiring a trip to Segments - it's the same underlying
+// scan either way (one activity-detail fetch feeds both KOMs and
+// best_efforts). For rides it drives the dedicated bike distance scan.
 async function runDistanceRecordsScanChunk() {
   if (distanceScanRunning) return;
   distanceScanRunning = true;
@@ -2939,7 +3047,9 @@ async function runDistanceRecordsScanChunk() {
   const token = await getToken();
   if (!token || !athleteData) { distanceScanRunning = false; return; }
 
-  const result = await scanKomChunk(token, athleteData.id);
+  const result = currentDistanceSport === 'ride'
+    ? await scanBikeDistanceChunk(token, athleteData.id)
+    : await scanKomChunk(token, athleteData.id);
   distanceScanRunning = false;
 
   if (result.rateLimited) {
@@ -2950,14 +3060,34 @@ async function runDistanceRecordsScanChunk() {
   await renderDistanceRecords();
   // Keep the Segments page's KOM scan UI in sync too, since it's the same
   // shared progress - only does anything if that page happens to be mounted.
-  if (document.getElementById('kom-scan-status')) renderKomScanUI();
+  if (currentDistanceSport === 'run' && document.getElementById('kom-scan-status')) renderKomScanUI();
 }
 
-async function renderDistanceScanUI(progress) {
+async function renderDistanceScanUI() {
   const statusEl = document.getElementById('distance-scan-status');
   const controlsEl = document.getElementById('distance-scan-controls');
   if (!statusEl || !controlsEl || !athleteData) return;
 
+  if (currentDistanceSport === 'ride') {
+    const progress = await getBikeDistanceProgress(athleteData.id);
+    const eligible = bikeDistanceEligibleActivities();
+    const scannedSet = new Set(progress.scannedIds);
+    const remaining = eligible.filter(a => !scannedSet.has(a.id)).length;
+
+    if (!eligible.length) {
+      statusEl.textContent = 'No rides long enough (5+ miles) for distance records found yet.';
+      controlsEl.innerHTML = '';
+    } else if (remaining === 0) {
+      statusEl.innerHTML = `Full scan complete across ${eligible.length} eligible rides.`;
+      controlsEl.innerHTML = `<button onclick="resetBikeDistanceScan(${athleteData.id})" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:8px 14px;color:#7d8590;cursor:pointer;font-size:13px">Rescan (refresh data)</button>`;
+    } else {
+      statusEl.innerHTML = `Ride distance records need their own stream scan (Strava doesn't compute these for bikes) - <strong>${remaining}</strong> of ${eligible.length} eligible rides still need processing.`;
+      controlsEl.innerHTML = `<button class="gold-btn" id="distance-scan-btn" onclick="runDistanceRecordsScanChunk()">Scan next ${Math.min(POWER_SCAN_CHUNK_SIZE, remaining)}</button>`;
+    }
+    return;
+  }
+
+  const progress = await getScanProgress(athleteData.id);
   const scannedSet = new Set(progress.scannedIds);
   const distanceScannedSet = new Set(progress.distanceScannedIds);
   const total = allActivities.length;
@@ -2979,12 +3109,14 @@ async function renderDistanceRecords() {
   const listEl = document.getElementById('distance-records-list');
   if (!listEl || !athleteData) return;
 
-  const progress = await getScanProgress(athleteData.id);
-  await renderDistanceScanUI(progress);
+  await renderDistanceScanUI();
 
+  const isRide = currentDistanceSport === 'ride';
+  const progress = isRide ? await getBikeDistanceProgress(athleteData.id) : await getScanProgress(athleteData.id);
   const records = progress.distanceRecords || {};
-  const known = DISTANCE_RECORD_ORDER.filter(name => records[name] && records[name].length);
-  const extra = Object.keys(records).filter(name => !DISTANCE_RECORD_ORDER.includes(name) && records[name] && records[name].length).sort();
+  const order = isRide ? RIDE_DISTANCE_CHECKPOINTS.map(c => c.name) : DISTANCE_RECORD_ORDER;
+  const known = order.filter(name => records[name] && records[name].length);
+  const extra = Object.keys(records).filter(name => !order.includes(name) && records[name] && records[name].length).sort();
   const names = [...known, ...extra];
 
   const sections = names.map(name => {
@@ -3001,14 +3133,15 @@ async function renderDistanceRecords() {
 
   listEl.innerHTML = sections.length
     ? sections.join('')
-    : '<p style="font-size:13px;color:#7d8590">No distance records yet - use the scan above to build these out (it captures distance PRs from the same activity data as your Segments/KOM scan, at no extra API cost for standard distances).</p>';
+    : `<p style="font-size:13px;color:#7d8590">No ${POWER_SPORTS[currentDistanceSport].label.toLowerCase()} distance records yet - use the scan above to build these out.</p>`;
 
-  // Ultra distances (50K/100K) aren't in Strava's native best_efforts, so
-  // they need their own small stream-based pass. The eligible set is
-  // normally tiny (few or zero ultra-distance activities), so this runs
-  // quietly in the background once per page load rather than needing a
-  // separate manual scan button.
-  if (!ultraScanAttempted) {
+  // Run-only: ultra distances (50K/100K) aren't in Strava's native
+  // best_efforts, so they need their own small stream-based pass. The
+  // eligible set is normally tiny, so this runs quietly in the background
+  // once per page load rather than needing a separate manual scan button.
+  // (Ride ultra-length checkpoints are already covered by the main ride
+  // distance scan above, which computes every checkpoint from streams.)
+  if (!isRide && !ultraScanAttempted) {
     ultraScanAttempted = true;
     const token = await getToken();
     if (token) {
@@ -3019,11 +3152,23 @@ async function renderDistanceRecords() {
 }
 
 
+let currentAeroSport = 'ride';
+let currentAeroRange = 7;
+
 function renderAeroChart() {
-  renderAeroFor(7);
+  renderAeroFor(currentAeroRange);
+}
+
+function setAeroSport(sport) {
+  currentAeroSport = sport;
+  document.querySelectorAll('#aero-sport-toggle .nav-btn').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-sport') === sport);
+  });
+  renderAeroFor(currentAeroRange);
 }
 
 function renderAeroFor(range) {
+  currentAeroRange = range;
   document.querySelectorAll('#aero-filters .nav-btn').forEach(function(b) {
     b.classList.remove('active');
     var txt = b.textContent.trim();
@@ -3034,13 +3179,16 @@ function renderAeroFor(range) {
     }
   });
 
+  const sportTypes = POWER_SPORTS[currentAeroSport].types;
+  const sportLabel = POWER_SPORTS[currentAeroSport].label.toLowerCase();
+
   const now = new Date();
   let cutoff;
   if (range === 'ytd') cutoff = new Date(now.getFullYear(),0,1);
   else { cutoff = new Date(now); cutoff.setDate(cutoff.getDate()-range); }
 
   const rides = allActivities
-    .filter(function(a){ return (a.type==='Ride'||a.type==='VirtualRide')&&a.average_watts>0&&a.average_heartrate>0&&new Date(a.start_date)>=cutoff; })
+    .filter(function(a){ return sportTypes.includes(a.type)&&a.average_watts>0&&a.average_heartrate>0&&new Date(a.start_date)>=cutoff; })
     .sort(function(a,b){ return new Date(a.start_date)-new Date(b.start_date); });
 
   const insightEl = document.getElementById('aero-insight');
@@ -3051,7 +3199,7 @@ function renderAeroFor(range) {
   const actualEnd = rides.length ? new Date(rides[rides.length-1].start_date).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
 
   if (rides.length < 2) {
-    if (insightEl) insightEl.textContent = 'Not enough power+HR rides in this period ('+rangeLabel+' requested, '+rides.length+' found). Try a longer range or check that your rides have HR data.';
+    if (insightEl) insightEl.textContent = 'Not enough power+HR '+sportLabel+' in this period ('+rangeLabel+' requested, '+rides.length+' found). Try a longer range or check that your '+sportLabel+' have HR data.';
     if (charts['aero']) charts['aero'].destroy();
     return;
   }
@@ -3069,7 +3217,7 @@ function renderAeroFor(range) {
 
   // Update range label
   var rangeEl = document.getElementById('aero-range-label');
-  if (rangeEl && actualStart && actualEnd) rangeEl.textContent = actualStart + ' - ' + actualEnd + ' (' + rides.length + ' rides)';
+  if (rangeEl && actualStart && actualEnd) rangeEl.textContent = actualStart + ' - ' + actualEnd + ' (' + rides.length + ' ' + sportLabel + ')';
 
   if (charts['aero']) charts['aero'].destroy();
   const ctx = document.getElementById('aero-chart').getContext('2d');
@@ -3090,7 +3238,7 @@ function renderAeroFor(range) {
   const trend = slope * (n-1);
   const avgEff = yMean.toFixed(2);
   const bestRide = rides.reduce((best,r)=>r.average_watts/r.average_heartrate > best.average_watts/best.average_heartrate ? r : best);
-  var rideCount = rides.length + ' rides';
+  var rideCount = rides.length + ' ' + sportLabel;
   var dateRange = actualStart && actualEnd && actualStart !== actualEnd ? ' (' + actualStart + ' - ' + actualEnd + ')' : '';
   var insight = trend > 0.05
     ? 'Efficiency trending up (+' + trend.toFixed(2) + ' W/bpm). Avg ' + avgEff + ' W/bpm over ' + rideCount + dateRange + '. Base fitness building well.'
