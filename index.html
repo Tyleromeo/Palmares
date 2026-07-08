@@ -393,6 +393,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   <div class="g2">
     <div class="card" style="margin-bottom:0">
       <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Power curve — best efforts</div></div>
+      <div id="power-sport-toggle" style="display:flex;gap:4px;margin-bottom:10px">
+        <button class="nav-btn active" data-sport="ride" onclick="setPowerCurveSport('ride')">Rides</button>
+        <button class="nav-btn" data-sport="run" onclick="setPowerCurveSport('run')">Runs</button>
+      </div>
       <div id="power-scan-status" style="font-size:12px;color:#7d8590;padding:2px 0 10px"></div>
       <div id="power-scan-controls" style="margin-bottom:12px"></div>
       <div id="power-curve-bars"></div>
@@ -417,6 +421,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M17 3H7v6a5 5 0 0 0 10 0V3z"/></svg>All-time power bests — top 5 per duration</div></div>
     <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Real best-sustained-power efforts computed from your actual power-meter data streams, not estimates. Scan below to build this out across your full history.</div>
     <div id="power-top5-list"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M4 19h16M4 15l4-4 4 3 6-8"/></svg>Distance records — 400m to 100K</div></div>
+    <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Your single fastest time at each standard distance, with a link to the activity. Built from the same full-history scan as your Segments/KOM data (400m-Marathon come from Strava directly; 50K/100K are computed from raw distance data since Strava doesn't track those natively).</div>
+    <div id="distance-records-list"></div>
   </div>
 
   <div class="card">
@@ -1184,11 +1194,12 @@ function showSection(name) {
         renderPRCards();
         renderYOY();
         renderCalendar();
-        renderPowerCurve(); 
+        renderPowerCurve();
+        renderDistanceRecords();
         renderAeroChart();
         renderHeatmap();
-      } catch(e) { console.error('renderPerformance:', e); } 
-    }, 500); 
+      } catch(e) { console.error('renderPerformance:', e); }
+    }, 500);
   }
 }
 let weatherLoaded = false;
@@ -1537,12 +1548,21 @@ const SCAN_CHUNK_SIZE = 40; // activities/segments processed per click - keeps
 async function getScanProgress(athleteId) {
   // Progress doesn't expire on its own; it's only cleared by a fresh restart.
   let progress = await getCached(athleteId, 'kom_scan_progress', 365*24*60*60*1000);
-  if (!progress) return { scannedIds: [], koms: [], top10s: [], allSegmentBests: {}, complete: false };
+  if (!progress) return { scannedIds: [], koms: [], top10s: [], allSegmentBests: {}, complete: false, distanceRecords: {}, distanceScannedIds: [], ultraScannedIds: [] };
 
   // Backfill allSegmentBests for progress saved before this field existed -
   // without this, resuming an old in-progress scan would crash trying to
   // write into an undefined object.
   if (!progress.allSegmentBests) progress.allSegmentBests = {};
+
+  // Backfill distance-records fields for progress saved before this feature
+  // existed. distanceScannedIds is deliberately separate from scannedIds:
+  // activities already in scannedIds from a prior KOM-only scan haven't had
+  // their best_efforts extracted yet, so they still need a one-time
+  // distance-records pass even though they don't need re-scanning for KOMs.
+  if (!progress.distanceRecords) progress.distanceRecords = {};
+  if (!progress.distanceScannedIds) progress.distanceScannedIds = [];
+  if (!progress.ultraScannedIds) progress.ultraScannedIds = [];
 
   // One-time self-heal for data scanned before the rank-vs-category fix
   // (achievement "type" is the leaderboard category, not the position -
@@ -1624,7 +1644,7 @@ function saveScanProgress(athleteId, progress) {
 }
 
 async function resetKomScan(athleteId) {
-  await saveScanProgress(athleteId, { scannedIds: [], koms: [], top10s: [], allSegmentBests: {}, complete: false });
+  await saveScanProgress(athleteId, { scannedIds: [], koms: [], top10s: [], allSegmentBests: {}, complete: false, distanceRecords: {}, distanceScannedIds: [], ultraScannedIds: [] });
 }
 
 // Processes one chunk of not-yet-scanned achievement-bearing activities.
@@ -1634,6 +1654,7 @@ async function scanKomChunk(token, athleteId) {
   const headers = { Authorization: `Bearer ${token}` };
   const progress = await getScanProgress(athleteId);
   const scannedSet = new Set(progress.scannedIds);
+  const distanceScannedSet = new Set(progress.distanceScannedIds);
 
   // NOTE: we intentionally do NOT filter on achievement_count > 0 here.
   // Strava's summary-list endpoint (used to populate allActivities) can
@@ -1644,7 +1665,15 @@ async function scanKomChunk(token, athleteId) {
   // KOMs. We scan every activity and let the detail endpoint (queried per
   // activity below) be the actual source of truth.
   const allAchievementRides = allActivities;
-  const toScan = allAchievementRides.filter(a => !scannedSet.has(a.id)).slice(0, SCAN_CHUNK_SIZE);
+  // An activity needs (re)processing if it's missing from EITHER the KOM
+  // scan or the distance-records scan - both read from the same detail
+  // endpoint, so a not-yet-KOM-scanned activity gets both extracted in one
+  // fetch. distanceScannedIds exists separately so activities already
+  // KOM-scanned before the distance-records feature existed get one
+  // catch-up fetch for just that half, rather than needing a full rescan.
+  const toScan = allAchievementRides
+    .filter(a => !scannedSet.has(a.id) || !distanceScannedSet.has(a.id))
+    .slice(0, SCAN_CHUNK_SIZE);
 
   if (!toScan.length) {
     progress.complete = true;
@@ -1656,13 +1685,21 @@ async function scanKomChunk(token, athleteId) {
   let rateLimited = false;
 
   for (const ride of toScan) {
+    const needsKom = !scannedSet.has(ride.id);
+    const needsDistance = !distanceScannedSet.has(ride.id);
     try {
       const resp = await fetch(`https://www.strava.com/api/v3/activities/${ride.id}?include_all_efforts=true`, { headers });
       if (resp.status === 429) { rateLimited = true; break; }
-      if (!resp.ok) { progress.scannedIds.push(ride.id); processed++; continue; } // mark as scanned even on error so we don't loop forever on a bad activity
+      if (!resp.ok) {
+        // mark as scanned even on error so we don't loop forever on a bad activity
+        if (needsKom) progress.scannedIds.push(ride.id);
+        if (needsDistance) progress.distanceScannedIds.push(ride.id);
+        processed++;
+        continue;
+      }
       const detail = await resp.json();
 
-      if (detail.segment_efforts) {
+      if (needsKom && detail.segment_efforts) {
         detail.segment_efforts.forEach(e => {
           // Track EVERY segment effort, not just ones with achievements -
           // Strava only stamps achievements onto an effort at upload time,
@@ -1706,15 +1743,37 @@ async function scanKomChunk(token, athleteId) {
           });
         });
       }
-      progress.scannedIds.push(ride.id);
+
+      if (needsDistance && detail.best_efforts) {
+        // Standard-distance PRs (400m through Marathon) - Strava computes
+        // these directly on run activities, no streams call needed. Ultra
+        // distances (50K/100K) aren't included here; those are handled by
+        // a separate stream-based pass since Strava doesn't compute them.
+        detail.best_efforts.forEach(e => {
+          const existing = progress.distanceRecords[e.name];
+          if (!existing || e.elapsed_time < existing.elapsed) {
+            progress.distanceRecords[e.name] = {
+              activity_id: ride.id, activity_name: ride.name,
+              elapsed: e.elapsed_time, distance: e.distance, date: ride.start_date
+            };
+          }
+        });
+      }
+
+      if (needsKom) progress.scannedIds.push(ride.id);
+      if (needsDistance) progress.distanceScannedIds.push(ride.id);
       processed++;
     } catch(e) {
-      progress.scannedIds.push(ride.id); // mark scanned so a single bad activity doesn't block forever
+      // mark scanned so a single bad activity doesn't block forever
+      if (needsKom) progress.scannedIds.push(ride.id);
+      if (needsDistance) progress.distanceScannedIds.push(ride.id);
       processed++;
     }
   }
 
-  const remaining = allAchievementRides.filter(a => !new Set(progress.scannedIds).has(a.id)).length;
+  const scannedNow = new Set(progress.scannedIds);
+  const distanceScannedNow = new Set(progress.distanceScannedIds);
+  const remaining = allAchievementRides.filter(a => !scannedNow.has(a.id) || !distanceScannedNow.has(a.id)).length;
   if (remaining === 0) progress.complete = true;
   saveScanProgress(athleteId, progress);
   return { processed, remaining, rateLimited, progress, totalAchievementRides: allAchievementRides.length };
@@ -2352,36 +2411,56 @@ const POWER_CURVE_LABELS    = ['5s','10s','30s','1min','5min','10min','20min','3
 const POWER_SCAN_CHUNK_SIZE = 15;
 let powerScanRunning = false;
 
+// Bike and run power curves are scanned/stored completely separately (own
+// cache key, own progress) since they come from different activities and a
+// rider's watts have no relationship to their running watts. 'ride' keeps
+// the original cache key so existing scan progress isn't lost by this split.
+const POWER_SPORTS = {
+  ride: { types: ['Ride','VirtualRide'], label: 'Rides', cacheKey: 'power_curve_scan_progress_v1' },
+  run:  { types: ['Run','TrailRun'],     label: 'Runs',  cacheKey: 'power_curve_scan_progress_v1_run' }
+};
+let currentPowerSport = 'ride';
+
 function renderPowerCurve() {
+  setPowerCurveSport(currentPowerSport);
+}
+
+function setPowerCurveSport(sport) {
+  currentPowerSport = sport;
+  document.querySelectorAll('#power-sport-toggle .nav-btn').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-sport') === sport);
+  });
   renderPowerScanUI();
   renderPowerCurveFromScan();
 }
 
-async function getPowerScanProgress(athleteId) {
-  let progress = await getCached(athleteId, 'power_curve_scan_progress_v1', 365*24*60*60*1000);
+async function getPowerScanProgress(athleteId, sport) {
+  const cacheKey = POWER_SPORTS[sport].cacheKey;
+  let progress = await getCached(athleteId, cacheKey, 365*24*60*60*1000);
   if (!progress) return { scannedIds: [], top5: {}, complete: false };
   if (!progress.top5) progress.top5 = {};
   if (!progress.scannedIds) progress.scannedIds = [];
   return progress;
 }
 
-function savePowerScanProgress(athleteId, progress) {
-  return setCached(athleteId, 'power_curve_scan_progress_v1', progress);
+function savePowerScanProgress(athleteId, sport, progress) {
+  return setCached(athleteId, POWER_SPORTS[sport].cacheKey, progress);
 }
 
-async function resetPowerScan(athleteId) {
-  if (!confirm('This clears all power curve scan progress and starts over from scratch. Continue?')) return;
-  await savePowerScanProgress(athleteId, { scannedIds: [], top5: {}, complete: false });
+async function resetPowerScan(athleteId, sport) {
+  if (!confirm(`This clears all ${POWER_SPORTS[sport].label.toLowerCase()} power curve scan progress and starts over from scratch. Continue?`)) return;
+  await savePowerScanProgress(athleteId, sport, { scannedIds: [], top5: {}, complete: false });
   await renderPowerScanUI();
   renderPowerCurveFromScan();
 }
 
-// Only rides with a real power meter get a watts stream - Strava's
+// Only activities with a real power meter get a watts stream - Strava's
 // estimated-power rides (no meter, speed/grade-based average_watts) return
 // no watts stream, so they're naturally skipped once fetched rather than
 // filtered out here (average_watts>0 alone can't distinguish the two).
-function powerScanEligibleActivities() {
-  return allActivities.filter(a => (a.type==='Ride'||a.type==='VirtualRide') && a.average_watts > 0);
+function powerScanEligibleActivities(sport) {
+  const types = POWER_SPORTS[sport].types;
+  return allActivities.filter(a => types.includes(a.type) && a.average_watts > 0);
 }
 
 // Resamples a Strava (time[], watts[]) stream pair to a 1Hz stepped series
@@ -2423,16 +2502,16 @@ function computeBestPowerPerDuration(timeArr, wattsArr, durations) {
 // { processed, remaining, rateLimited } so the UI can show meaningful
 // status and decide whether to offer "scan next chunk" - mirrors
 // scanKomChunk's contract.
-async function scanPowerCurveChunk(token, athleteId) {
+async function scanPowerCurveChunk(token, athleteId, sport) {
   const headers = { Authorization: `Bearer ${token}` };
-  const progress = await getPowerScanProgress(athleteId);
+  const progress = await getPowerScanProgress(athleteId, sport);
   const scannedSet = new Set(progress.scannedIds);
-  const eligible = powerScanEligibleActivities();
+  const eligible = powerScanEligibleActivities(sport);
   const toScan = eligible.filter(a => !scannedSet.has(a.id)).slice(0, POWER_SCAN_CHUNK_SIZE);
 
   if (!toScan.length) {
     progress.complete = true;
-    await savePowerScanProgress(athleteId, progress);
+    await savePowerScanProgress(athleteId, sport, progress);
     return { processed: 0, remaining: 0, rateLimited: false, totalEligible: eligible.length };
   }
 
@@ -2464,7 +2543,7 @@ async function scanPowerCurveChunk(token, athleteId) {
     await new Promise(r => setTimeout(r, 150)); // stay well under Strava's rate limit
   }
 
-  await savePowerScanProgress(athleteId, progress);
+  await savePowerScanProgress(athleteId, sport, progress);
   const nowScanned = new Set(progress.scannedIds);
   const remaining = eligible.filter(a => !nowScanned.has(a.id)).length;
   return { processed, remaining, rateLimited, totalEligible: eligible.length };
@@ -2479,13 +2558,13 @@ async function runPowerScanChunk() {
   const token = await getToken();
   if (!token || !athleteData) { powerScanRunning = false; return; }
 
-  const result = await scanPowerCurveChunk(token, athleteData.id);
+  const result = await scanPowerCurveChunk(token, athleteData.id, currentPowerSport);
   powerScanRunning = false;
 
   if (result.rateLimited) {
     showToast('⚠️', 'Rate limit hit', 'Strava rate limit reached. Progress saved - try again in a few minutes.');
   } else if (result.processed > 0) {
-    showToast('✅', 'Chunk scanned', `Processed ${result.processed} rides. ${result.remaining} remaining.`);
+    showToast('✅', 'Chunk scanned', `Processed ${result.processed} activities. ${result.remaining} remaining.`);
   }
   await renderPowerScanUI();
   renderPowerCurveFromScan();
@@ -2493,7 +2572,7 @@ async function runPowerScanChunk() {
 
 async function restartPowerScan() {
   if (!athleteData) return;
-  await resetPowerScan(athleteData.id);
+  await resetPowerScan(athleteData.id, currentPowerSport);
 }
 
 async function renderPowerScanUI() {
@@ -2501,36 +2580,40 @@ async function renderPowerScanUI() {
   const controlsEl = document.getElementById('power-scan-controls');
   if (!statusEl || !controlsEl || !athleteData) return;
 
-  const progress = await getPowerScanProgress(athleteData.id);
-  const eligible = powerScanEligibleActivities();
+  const sport = currentPowerSport;
+  const sportLabel = POWER_SPORTS[sport].label.toLowerCase();
+  const progress = await getPowerScanProgress(athleteData.id, sport);
+  const eligible = powerScanEligibleActivities(sport);
   const scannedSet = new Set(progress.scannedIds);
   const remaining = eligible.filter(a => !scannedSet.has(a.id)).length;
 
   if (!eligible.length) {
-    statusEl.textContent = 'No rides with power data found yet.';
+    statusEl.textContent = `No ${sportLabel} with power data found yet.`;
     controlsEl.innerHTML = '';
     return;
   }
 
   if (progress.scannedIds.length === 0 && !progress.complete) {
-    statusEl.innerHTML = `Real power-curve data requires reading the per-second power stream from each of your <strong>${eligible.length}</strong> power-meter rides (Strava's estimated-power rides have no stream and are skipped automatically once fetched). Scanned in chunks of ${POWER_SCAN_CHUNK_SIZE} to stay well under Strava's rate limits - this may take a few clicks across sessions for a full history.`;
+    statusEl.innerHTML = `Real power-curve data requires reading the per-second power stream from each of your <strong>${eligible.length}</strong> power-meter ${sportLabel} (activities without a real power meter have no stream and are skipped automatically once fetched). Scanned in chunks of ${POWER_SCAN_CHUNK_SIZE} to stay well under Strava's rate limits - this may take a few clicks across sessions for a full history.`;
     controlsEl.innerHTML = `<button class="gold-btn" id="power-scan-btn" onclick="runPowerScanChunk()">Start power curve scan</button>`;
   } else if (!progress.complete) {
     const pct = Math.round((progress.scannedIds.length / eligible.length) * 100);
-    statusEl.innerHTML = `Scanned ${progress.scannedIds.length} of ${eligible.length} rides (${pct}%). ${remaining} remaining.`;
+    statusEl.innerHTML = `Scanned ${progress.scannedIds.length} of ${eligible.length} ${sportLabel} (${pct}%). ${remaining} remaining.`;
     controlsEl.innerHTML = `<button class="gold-btn" id="power-scan-btn" onclick="runPowerScanChunk()">Scan next ${Math.min(POWER_SCAN_CHUNK_SIZE, remaining)}</button> <button onclick="restartPowerScan()" style="background:#2d1a1a;border:1px solid #f85149;border-radius:6px;padding:8px 14px;color:#f85149;cursor:pointer;font-size:13px;margin-left:8px">Restart scan</button>`;
   } else {
-    statusEl.innerHTML = `Full scan complete across ${eligible.length} power-meter rides.`;
+    statusEl.innerHTML = `Full scan complete across ${eligible.length} power-meter ${sportLabel}.`;
     controlsEl.innerHTML = `<button onclick="restartPowerScan()" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:8px 14px;color:#7d8590;cursor:pointer;font-size:13px">Rescan (refresh data)</button>`;
   }
 }
 
 async function renderPowerCurveFromScan() {
   if (!athleteData) return;
+  const sport = currentPowerSport;
+  const isRide = sport === 'ride';
   const s = getSettings();
   const ftp = s.ftp || 220;
   const weight = s.weight || 75;
-  const progress = await getPowerScanProgress(athleteData.id);
+  const progress = await getPowerScanProgress(athleteData.id, sport);
 
   const bestPowers = POWER_CURVE_DURATIONS.map(dur => {
     const list = progress.top5[dur];
@@ -2542,30 +2625,33 @@ async function renderPowerCurveFromScan() {
   const validPowers = bestPowers.filter(p => p > 0);
 
   if (!validPowers.length) {
-    barsEl.innerHTML = '<p style="font-size:12px;color:#7d8590">No power data yet - run the scan above to build your real power curve.</p>';
+    barsEl.innerHTML = `<p style="font-size:12px;color:#7d8590">No power data yet for ${POWER_SPORTS[sport].label.toLowerCase()} - run the scan above to build a real power curve.</p>`;
   } else {
     const maxP = Math.max(...validPowers);
+    // FTP and w/kg are cycling-specific concepts; for runs, just show watts
+    // with a flat accent color rather than an FTP-relative threshold color.
     barsEl.innerHTML = bestPowers.map((p,i)=>{
       if (!p) return `<div class="power-zone"><div class="pz-label">${POWER_CURVE_LABELS[i]}</div><div class="pz-bar"><div class="pz-fill" style="width:0%"></div></div><div class="pz-val" style="color:#444">--</div><div class="pz-wkg" style="color:#444">--</div></div>`;
       const pct = Math.round(p/maxP*100);
-      const wkg = (p/weight).toFixed(1);
-      const color = p>=ftp ? '#FC4C02' : p>=ftp*0.9 ? '#C9A227' : '#3fb950';
+      const color = isRide ? (p>=ftp ? '#FC4C02' : p>=ftp*0.9 ? '#C9A227' : '#3fb950') : '#58a6ff';
+      const sub = isRide ? `<div class="pz-wkg">${(p/weight).toFixed(1)} w/kg</div>` : `<div class="pz-wkg">&nbsp;</div>`;
       return `<div class="power-zone">
         <div class="pz-label">${POWER_CURVE_LABELS[i]}</div>
         <div class="pz-bar"><div class="pz-fill" style="width:${pct}%;background:${color}"></div></div>
         <div class="pz-val">${p}w</div>
-        <div class="pz-wkg">${wkg} w/kg</div>
+        ${sub}
       </div>`;
     }).join('');
 
     if (charts['power']) charts['power'].destroy();
     const ctx = document.getElementById('power-chart').getContext('2d');
+    const datasets = [
+      {label:'Best power',data:bestPowers.map(p=>p||null),borderColor:isRide?'#FC4C02':'#58a6ff',backgroundColor:isRide?'rgba(252,76,2,0.08)':'rgba(88,166,255,0.08)',borderWidth:2,pointBackgroundColor:isRide?'#FC4C02':'#58a6ff',pointRadius:3,tension:0.3,fill:true,spanGaps:true}
+    ];
+    if (isRide) datasets.push({label:'FTP',data:POWER_CURVE_DURATIONS.map(()=>ftp),borderColor:'#C9A227',borderWidth:1,borderDash:[4,4],pointRadius:0,fill:false});
     charts['power'] = new Chart(ctx, {
       type:'line',
-      data:{labels: POWER_CURVE_LABELS, datasets:[
-        {label:'Best power',data:bestPowers.map(p=>p||null),borderColor:'#FC4C02',backgroundColor:'rgba(252,76,2,0.08)',borderWidth:2,pointBackgroundColor:'#FC4C02',pointRadius:3,tension:0.3,fill:true,spanGaps:true},
-        {label:'FTP',data:POWER_CURVE_DURATIONS.map(()=>ftp),borderColor:'#C9A227',borderWidth:1,borderDash:[4,4],pointRadius:0,fill:false}
-      ]},
+      data:{labels: POWER_CURVE_LABELS, datasets},
       options:{responsive:true,maintainAspectRatio:false,
         plugins:{legend:{display:false}},
         scales:{x:{grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#7d8590',font:{size:11}}},
@@ -2597,6 +2683,121 @@ function renderPowerTop5List(progress) {
   listEl.innerHTML = sections.length
     ? sections.join('')
     : '<p style="font-size:13px;color:#7d8590">No power bests recorded yet - run the scan above.</p>';
+}
+
+// ==================== DISTANCE RECORDS (400m - 100K) ====================
+// Standard-distance PRs come from two sources: Strava computes best_efforts
+// (400m through Marathon) natively on run activities, captured for free
+// during the KOM/segment scan above since it hits the same detail endpoint.
+// Ultra distances (50K/100K) aren't computed by Strava at all, so those are
+// derived here from raw distance/time streams on sufficiently long activities.
+const DISTANCE_RECORD_ORDER = ['400m','1/2 mile','1K','1 mile','2 mile','5K','10K','15K','10 mile','20K','Half-Marathon','30K','Marathon','50K','100K'];
+const ULTRA_DISTANCES = [{ name: '50K', meters: 50000 }, { name: '100K', meters: 100000 }];
+let ultraScanAttempted = false;
+
+function formatElapsedClock(seconds) {
+  seconds = Math.round(seconds);
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const sec = seconds % 60;
+  const mm = h > 0 ? String(m).padStart(2,'0') : m;
+  const ss = String(sec).padStart(2,'0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+// Two-pointer scan for the minimum elapsed time to cover targetMeters,
+// given monotonically increasing cumulative distance/time arrays. Mirrors
+// computeBestPowerPerDuration's approach but inverted: fixed distance,
+// minimize time, instead of fixed time, maximize average power.
+function bestTimeForDistance(distanceArr, timeArr, targetMeters) {
+  const n = distanceArr ? distanceArr.length : 0;
+  if (n < 2) return null;
+  let right = 0;
+  let best = Infinity;
+  for (let left = 0; left < n; left++) {
+    if (right < left) right = left;
+    while (right < n && distanceArr[right] - distanceArr[left] < targetMeters) right++;
+    if (right >= n) break; // no window starting here reaches targetMeters - and it only gets harder further right
+    const elapsed = timeArr[right] - timeArr[left];
+    if (elapsed < best) best = elapsed;
+  }
+  return best === Infinity ? null : Math.round(best);
+}
+
+async function scanUltraDistancesChunk(token, athleteId) {
+  const headers = { Authorization: `Bearer ${token}` };
+  const progress = await getScanProgress(athleteId);
+  const scannedSet = new Set(progress.ultraScannedIds);
+  const eligible = allActivities.filter(a => a.distance >= 50000 && (a.type==='Run'||a.type==='TrailRun'||a.type==='Hike'));
+  const toScan = eligible.filter(a => !scannedSet.has(a.id)).slice(0, POWER_SCAN_CHUNK_SIZE);
+
+  if (!toScan.length) return { processed: 0, remaining: 0, rateLimited: false, totalEligible: eligible.length };
+
+  let processed = 0;
+  let rateLimited = false;
+
+  for (const act of toScan) {
+    try {
+      const resp = await fetch(`https://www.strava.com/api/v3/activities/${act.id}/streams?keys=distance,time&resolution=high&key_by_type=true`, { headers });
+      if (resp.status === 429) { rateLimited = true; break; }
+      const stream = await resp.json().catch(() => null);
+      progress.ultraScannedIds.push(act.id);
+      if (stream && stream.distance && stream.distance.data && stream.time && stream.time.data) {
+        ULTRA_DISTANCES.forEach(({ name, meters }) => {
+          const elapsed = bestTimeForDistance(stream.distance.data, stream.time.data, meters);
+          if (elapsed == null) return;
+          const existing = progress.distanceRecords[name];
+          if (!existing || elapsed < existing.elapsed) {
+            progress.distanceRecords[name] = { activity_id: act.id, activity_name: act.name, elapsed, distance: meters, date: act.start_date };
+          }
+        });
+      }
+      processed++;
+    } catch(e) {
+      progress.ultraScannedIds.push(act.id);
+    }
+    await new Promise(r => setTimeout(r, 150));
+  }
+
+  await saveScanProgress(athleteId, progress);
+  const nowScanned = new Set(progress.ultraScannedIds);
+  const remaining = eligible.filter(a => !nowScanned.has(a.id)).length;
+  return { processed, remaining, rateLimited, totalEligible: eligible.length };
+}
+
+async function renderDistanceRecords() {
+  const listEl = document.getElementById('distance-records-list');
+  if (!listEl || !athleteData) return;
+
+  const progress = await getScanProgress(athleteData.id);
+  const records = progress.distanceRecords || {};
+  const known = DISTANCE_RECORD_ORDER.filter(name => records[name]);
+  const extra = Object.keys(records).filter(name => !DISTANCE_RECORD_ORDER.includes(name)).sort();
+  const names = [...known, ...extra];
+
+  listEl.innerHTML = names.length ? names.map(name => {
+    const r = records[name];
+    const date = new Date(r.date).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #21262d">' +
+      '<div style="width:92px;flex-shrink:0;font-weight:600;color:#e6edf3">' + name + '</div>' +
+      '<div style="flex:1;min-width:0"><a href="' + stravaActivityHref(r.activity_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">' + escapeHTML(r.activity_name || 'Activity') + '</a><div class="row-meta">' + date + '</div></div>' +
+      '<div style="flex-shrink:0;font-weight:600;color:#58a6ff">' + formatElapsedClock(r.elapsed) + '</div>' +
+    '</div>';
+  }).join('') : '<p style="font-size:13px;color:#7d8590">No distance records yet - run the scan in Segments to build these out (it captures distance PRs from the same activity data, at no extra API cost).</p>';
+
+  // Ultra distances (50K/100K) aren't in Strava's native best_efforts, so
+  // they need their own small stream-based pass. The eligible set is
+  // normally tiny (few or zero ultra-distance activities), so this runs
+  // quietly in the background once per page load rather than needing a
+  // third manual scan button alongside the KOM and power curve ones.
+  if (!ultraScanAttempted) {
+    ultraScanAttempted = true;
+    const token = await getToken();
+    if (token) {
+      const result = await scanUltraDistancesChunk(token, athleteData.id);
+      if (result.processed > 0) renderDistanceRecords();
+    }
+  }
 }
 
 
