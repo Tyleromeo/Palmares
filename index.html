@@ -359,7 +359,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div class="card" style="margin-bottom:0">
       <div class="card-title">
         <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Recent activities</div>
-        <a class="ext-link" href="https://www.strava.com/athlete/training" target="_blank">Strava <svg class="ext-icon" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></a>
+        <a class="ext-link" href="https://www.strava.com/athlete/training" target="_blank" rel="noopener noreferrer">Strava <svg class="ext-icon" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></a>
       </div>
       <div id="recent-list"></div>
     </div>
@@ -370,6 +370,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
       <div id="coaching-area"></div>
     </div>
   </div>
+
+  <div class="card" style="margin-top:1.5rem">
+    <div class="card-title">
+      <div class="card-title-left">
+        <svg class="card-icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        Upcoming group events
+      </div>
+      <span id="events-count" style="font-size:12px;color:#7d8590"></span>
+    </div>
+    <div id="events-list"><div style="font-size:12px;color:#7d8590;padding:8px 0">Loading club events...</div></div>
+  </div>
+
 </div>
 
 <!-- PERFORMANCE -->
@@ -581,21 +593,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   </div>
 
 </div>
-  <div class="card" style="margin-top:1.5rem">
-    <div class="card-title">
-      <div class="card-title-left">
-        <svg class="card-icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        Upcoming group events
-      </div>
-      <span id="events-count" style="font-size:12px;color:#7d8590"></span>
-    </div>
-    <div id="events-list"><div style="font-size:12px;color:#7d8590;padding:8px 0">Loading club events...</div></div>
-  </div>
-
-
-
-
-
 <!-- GOALS -->
 <div id="section-goals" class="section">
   <div class="section-header"><h2>Goals</h2><p>Set targets and track your progress automatically from Strava data.</p></div>
@@ -869,17 +866,19 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 
 <script>
 const CLIENT_ID = '257624';
-const CLIENT_SECRET = 'a649b9610e77abb13c8384c4c6a51e78a4c3354b';
 const SUPABASE_URL = 'https://chvrtqrjnatjftqzvgbv.supabase.co';
+// Public anon key, used only to invoke the Supabase Edge Function. Keep all
+// table writes and Strava secrets inside Supabase with RLS/service-role code.
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNodnJ0cXJqbmF0amZ0cXp2Z2J2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1MzM5NTgsImV4cCI6MjA5NzEwOTk1OH0.LtpcWIUO0hGSfoggIkcz7vuXm_0_F7_1uSHhMsUgtDU';
 const EDGE_FN = SUPABASE_URL + '/functions/v1/sync-strava';
-const APP_VERSION = 'v4.30';
+const APP_VERSION = 'v4.31-secure';
 
 // Clear stale tokens on version change
 (function() {
   if (localStorage.getItem('ed_version') !== APP_VERSION) {
-    var keys = ['ed_token','ed_refresh','ed_expires'];
+    var keys = ['ed_token','ed_refresh','ed_access_token','ed_session','ed_expires'];
     keys.forEach(function(k) { localStorage.removeItem(k); });
+    try { sessionStorage.removeItem('ed_access_token'); } catch(e) {}
     localStorage.setItem('ed_version', APP_VERSION);
   }
 })();
@@ -888,37 +887,58 @@ const FTP = 249;
 const WEIGHT_KG = 75;
 
 
-// ==================== SUPABASE SYNC ====================
-const SB_REST = SUPABASE_URL + '/rest/v1';
-const SB_HEADERS = {
-  'Content-Type': 'application/json',
-  'apikey': SUPABASE_ANON_KEY,
-  'Prefer': 'resolution=merge-duplicates'
-};
+// ==================== SUPABASE EDGE API ====================
+// Browser code talks to a single Edge Function instead of writing directly to
+// Supabase tables or exchanging Strava OAuth tokens itself. The Edge Function
+// should support these actions:
+//   exchange_token { code, redirect_uri } -> { access_token, expires_at, session_id, athlete }
+//   refresh_token  { session_id, athlete_id } -> { access_token, expires_at }
+//   get_cache      { athlete_id, cache_key, max_age_ms } -> { payload }
+//   set_cache      { athlete_id, cache_key, payload } -> ok
+//   list_activities { athlete_id, limit } -> { activities }
+//   sync_activities { athlete, activities } -> ok
+//   load_power_prs { athlete_id } -> { prs }
+//   patch_achievement_counts { corrections } -> ok
+//   disconnect { session_id } -> ok
+async function callEdge(action, payload) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (SUPABASE_ANON_KEY) {
+    headers.apikey = SUPABASE_ANON_KEY;
+    headers.Authorization = 'Bearer ' + SUPABASE_ANON_KEY;
+  }
+
+  const resp = await fetch(EDGE_FN, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(Object.assign({ action: action }, payload || {}))
+  });
+
+  const text = await resp.text();
+  let data = {};
+  if (text) {
+    try { data = JSON.parse(text); }
+    catch(e) { data = { message: text }; }
+  }
+  if (!resp.ok || data.error) {
+    throw new Error(data.error_description || data.error || data.message || ('Edge function returned ' + resp.status));
+  }
+  return data;
+}
 
 // ==================== GENERIC API CACHE ====================
-// Reusable cache layer for Strava API responses that don't change often
-// (gear, segment achievements, club events). Uses a single Supabase table
-// (api_cache) keyed by athlete_id + cache_key, storing the raw JSON payload
-// and a timestamp, so we can avoid re-hitting Strava on every page load for
-// data that's expensive to fetch but slow-changing.
-//
-// Requires a Supabase table named "api_cache" with columns:
-//   athlete_id (int8), cache_key (text), payload (jsonb), updated_at (timestamptz)
-//   primary key (athlete_id, cache_key)
+// Reusable cache layer for Strava API responses that don't change often. The
+// cache is still stored in Supabase, but all reads/writes go through the Edge
+// Function so the browser cannot directly upsert arbitrary athlete rows.
 
 async function getCached(athleteId, key, maxAgeMs) {
+  if (!athleteId) return null;
   try {
-    const resp = await fetch(SB_REST + '/api_cache?athlete_id=eq.' + athleteId + '&cache_key=eq.' + encodeURIComponent(key), {
-      headers: { 'apikey': SUPABASE_ANON_KEY }
+    const data = await callEdge('get_cache', {
+      athlete_id: athleteId,
+      cache_key: key,
+      max_age_ms: maxAgeMs
     });
-    if (!resp.ok) return null;
-    const rows = await resp.json();
-    if (!rows.length) return null;
-    const row = rows[0];
-    const age = Date.now() - new Date(row.updated_at).getTime();
-    if (age > maxAgeMs) return null; // stale, treat as a cache miss
-    return row.payload;
+    return data && typeof data === 'object' && data.hasOwnProperty('payload') ? data.payload : data;
   } catch(e) { console.log('Cache read error for', key, ':', e); return null; }
 }
 
@@ -930,12 +950,13 @@ function setCached(athleteId, key, payload) {
   // background cache writes), but it's important this CAN be awaited when
   // needed rather than always resolving instantly regardless of write status.
   return (async () => {
+    if (!athleteId) return;
     try {
-      const resp = await fetch(SB_REST + '/api_cache?on_conflict=athlete_id,cache_key', {
-        method: 'POST', headers: SB_HEADERS,
-        body: JSON.stringify({ athlete_id: athleteId, cache_key: key, payload: payload, updated_at: new Date().toISOString() })
+      await callEdge('set_cache', {
+        athlete_id: athleteId,
+        cache_key: key,
+        payload: payload
       });
-      if (!resp.ok) console.log('Cache write failed for', key, ':', resp.status, await resp.text());
     } catch(e) { console.log('Cache write error for', key, ':', e); }
   })();
 }
@@ -1010,18 +1031,6 @@ async function applyActivityGeometryCache(athleteId) {
 function syncActivitiesToSupabase(activities, athlete_id) {
   (async () => {
     try {
-      // Upsert athlete record alongside the activity cache write
-      await fetch(SB_REST + '/athletes?on_conflict=id', {
-        method: 'POST',
-        headers: SB_HEADERS,
-        body: JSON.stringify({
-          id: athlete_id, strava_id: athlete_id,
-          firstname: athleteData ? athleteData.firstname : '',
-          lastname: athleteData ? athleteData.lastname : '',
-          updated_at: new Date().toISOString()
-        })
-      });
-
       const rows = activities.map(a => ({
         id: a.id, athlete_id: athlete_id, name: a.name, type: a.type,
         distance: a.distance, moving_time: a.moving_time,
@@ -1039,13 +1048,15 @@ function syncActivitiesToSupabase(activities, athlete_id) {
       }));
       for (let i = 0; i < rows.length; i += 50) {
         const batch = rows.slice(i, i + 50);
-        const resp = await fetch(SB_REST + '/activities?on_conflict=id', {
-          method: 'POST', headers: SB_HEADERS, body: JSON.stringify(batch)
+        await callEdge('sync_activities', {
+          athlete: {
+            id: athlete_id,
+            strava_id: athlete_id,
+            firstname: athleteData ? athleteData.firstname : '',
+            lastname: athleteData ? athleteData.lastname : ''
+          },
+          activities: batch
         });
-        if (!resp.ok) {
-          const errBody = await resp.text();
-          console.log('Activities upsert batch failed:', resp.status, errBody);
-        }
       }
       console.log('Cache updated:', rows.length, 'activities written to Supabase');
     } catch(e) { console.log('Background cache write error:', e); }
@@ -1054,10 +1065,8 @@ function syncActivitiesToSupabase(activities, athlete_id) {
 
 async function loadPowerPRsFromSupabase(athlete_id) {
   try {
-    const r = await fetch(SB_REST + '/power_prs?athlete_id=eq.' + athlete_id + '&order=duration_seconds', {
-      headers: { 'apikey': SUPABASE_ANON_KEY }
-    });
-    const prs = await r.json();
+    const data = await callEdge('load_power_prs', { athlete_id: athlete_id });
+    const prs = data.prs || data.power_prs || data || [];
     if (Array.isArray(prs) && prs.length) {
       var byYear = {};
       prs.forEach(function(pr) {
@@ -1126,9 +1135,14 @@ function loadSettingsUI() {
 
 function disconnectStrava() {
   if (!confirm('Disconnect Strava and return to login?')) return;
+  const sessionId = localStorage.getItem('ed_session');
+  if (sessionId) callEdge('disconnect', { session_id: sessionId }).catch(function(e){ console.log('Disconnect edge cleanup failed:', e); });
   localStorage.removeItem('ed_token');
   localStorage.removeItem('ed_refresh');
+  localStorage.removeItem('ed_access_token');
+  localStorage.removeItem('ed_session');
   localStorage.removeItem('ed_expires');
+  try { sessionStorage.removeItem('ed_access_token'); } catch(e) {}
   location.reload();
 }
 
@@ -1201,20 +1215,10 @@ async function handleCallback() {
   setLoading('Connecting to Strava...');
 
   try {
-    // Direct Strava token exchange (fast, reliable)
-    const r = await fetch('https://www.strava.com/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-        code: code,
-        grant_type: 'authorization_code'
-      })
+    const data = await callEdge('exchange_token', {
+      code: code,
+      redirect_uri: window.location.href.split('?')[0]
     });
-
-    let data;
-    try { data = await r.json(); } catch(e) { data = {}; }
 
     if (!data || !data.access_token) {
       const msg = data ? (data.message || data.error || JSON.stringify(data).slice(0,200)) : 'Auth failed';
@@ -1222,10 +1226,7 @@ async function handleCallback() {
       return true;
     }
 
-    localStorage.setItem('ed_token', data.access_token);
-    localStorage.setItem('ed_refresh', data.refresh_token);
-    localStorage.setItem('ed_expires', data.expires_at);
-    if (data.athlete) localStorage.setItem('ed_athlete_id', data.athlete.id);
+    storeToken(data);
 
     // Log and store the scope Strava actually granted, since this is the
     // authoritative source - the developer settings page (My API Application)
@@ -1245,34 +1246,39 @@ async function handleCallback() {
     return true;
 
   } catch(e) {
-    showError('Network error: ' + e.message);
+    showError('Connection failed: ' + e.message);
     return true;
   }
 }
 
 function storeToken(data) {
-  localStorage.setItem('ed_token', data.access_token);
-  localStorage.setItem('ed_refresh', data.refresh_token);
-  localStorage.setItem('ed_expires', data.expires_at);
+  if (data.access_token) {
+    try { sessionStorage.setItem('ed_access_token', data.access_token); }
+    catch(e) { localStorage.setItem('ed_access_token', data.access_token); }
+  }
+  if (data.expires_at) localStorage.setItem('ed_expires', data.expires_at);
+  const sessionId = data.session_id || data.edge_session || data.edge_session_id;
+  if (sessionId) localStorage.setItem('ed_session', sessionId);
+  if (data.athlete && data.athlete.id) localStorage.setItem('ed_athlete_id', data.athlete.id);
 }
 
 async function getToken() {
   const exp = parseInt(localStorage.getItem('ed_expires')||'0');
-  if (localStorage.getItem('ed_token') && Date.now()/1000 < exp-60) return localStorage.getItem('ed_token');
-  const refresh = localStorage.getItem('ed_refresh');
-  if (!refresh) return null;
+  let current = null;
+  try { current = sessionStorage.getItem('ed_access_token'); } catch(e) {}
+  current = current || localStorage.getItem('ed_access_token');
+  if (current && Date.now()/1000 < exp-60) return current;
+
+  const sessionId = localStorage.getItem('ed_session');
+  const athleteId = localStorage.getItem('ed_athlete_id');
+  if (!sessionId && !athleteId) return null;
   try {
-    const r = await fetch('https://www.strava.com/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, refresh_token: refresh, grant_type: 'refresh_token' })
+    const data = await callEdge('refresh_token', {
+      session_id: sessionId,
+      athlete_id: athleteId
     });
-    let data;
-    try { data = await r.json(); } catch(e) { data = {}; }
     if (data && data.access_token) {
-      localStorage.setItem('ed_token', data.access_token);
-      localStorage.setItem('ed_refresh', data.refresh_token);
-      localStorage.setItem('ed_expires', data.expires_at);
+      storeToken(data);
       return data.access_token;
     }
   } catch(e) {}
@@ -1282,7 +1288,8 @@ async function getToken() {
 function loadWithManualToken() {
   const t = document.getElementById('manual-token').value.trim();
   if (!t) return;
-  localStorage.setItem('ed_token', t);
+  try { sessionStorage.setItem('ed_access_token', t); }
+  catch(e) { localStorage.setItem('ed_access_token', t); }
   localStorage.setItem('ed_expires', Math.floor(Date.now()/1000)+21600);
   loadAll(t);
 }
@@ -1321,12 +1328,9 @@ async function loadAll(token) {
   let cacheIsStale = true;
 
   try {
-    const cacheResp = await fetch(SB_REST + '/activities?athlete_id=eq.' + athlete.id + '&order=start_date.desc&limit=500', {
-      headers: { 'apikey': SUPABASE_ANON_KEY }
-    });
-    if (cacheResp.ok) {
-      cachedActivities = await cacheResp.json();
-    }
+    const cacheData = await callEdge('list_activities', { athlete_id: athlete.id, limit: 500 });
+    cachedActivities = cacheData.activities || cacheData.rows || cacheData || [];
+    if (!Array.isArray(cachedActivities)) cachedActivities = [];
   } catch(e) { console.log('Cache read error:', e); }
 
   // Check freshness: if the most recently cached activity's updated_at (or just
@@ -1478,16 +1482,10 @@ async function correctRecentAchievementCounts(token, athleteId) {
 }
 
 async function persistAchievementCorrections(corrections) {
-  for (const c of corrections) {
-    try {
-      await fetch(SB_REST + '/activities?id=eq.' + c.id, {
-        method: 'PATCH',
-        headers: SB_HEADERS,
-        body: JSON.stringify({ achievement_count: c.achievement_count })
-      });
-    } catch(e) { console.log('Achievement correction sync error:', e); }
-  }
-  console.log('Corrected achievement_count for ' + corrections.length + ' activities in Supabase');
+  try {
+    await callEdge('patch_achievement_counts', { corrections: corrections });
+    console.log('Corrected achievement_count for ' + corrections.length + ' activities in Supabase');
+  } catch(e) { console.log('Achievement correction sync error:', e); }
 }
 
 // ==================== FULL HISTORICAL KOM/CR SCANNER ====================
@@ -2053,7 +2051,7 @@ function activityRow(r) {
   const watts = r.average_watts ? `<span style="font-size:11px;color:#7d8590">${Math.round(r.average_watts)}w</span>` : '';
   return `<div class="row">
     <div>
-      <div class="row-name"><a href="https://www.strava.com/activities/${r.id}" target="_blank" style="color:#e6edf3;text-decoration:none">${r.name}</a>${typeTag}${achTag}</div>
+      <div class="row-name"><a href="${stravaActivityHref(r.id)}" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">${escapeHTML(r.name || 'Untitled activity')}</a>${typeTag}${achTag}</div>
       <div class="row-meta">${date} &middot; ${t} ${watts}</div>
     </div>
     <div class="row-right">${mi} mi<small>${elev}</small></div>
@@ -2789,7 +2787,7 @@ function renderCalendar() {
     const tss = acts.length ? Math.round(acts.reduce((s,a)=>s+estimateTSS(a),0)) : '';
     const title = acts.length ? acts.map(a=>`${a.name} (${(a.distance/1609.34).toFixed(1)}mi)`).join(', ') + (tss?` — ${tss} TSS`:'') : '';
 
-    html += `<div title="${title}" style="background:${bg};border:1px solid ${borderColor};border-radius:6px;padding:4px;min-height:52px;cursor:${acts.length?'pointer':'default'}" ${acts.length?`onclick="showCalDay('${dateStr}')"`:''}>
+    html += `<div title="${escapeHTML(title)}" style="background:${bg};border:1px solid ${borderColor};border-radius:6px;padding:4px;min-height:52px;cursor:${acts.length?'pointer':'default'}" ${acts.length?`onclick="showCalDay('${dateStr}')"`:''}>
       <div style="font-size:11px;font-weight:${isToday?700:400};color:${isToday?'#C9A227':'#7d8590'};text-align:right">${day}</div>
       ${totalMi?`<div style="font-size:10px;color:#e6edf3;text-align:center;margin-top:1px">${totalMi}mi</div>`:''}
       ${dots}
@@ -2871,7 +2869,7 @@ function addGoal() {
   goals.push({id:Date.now(),type,target,name,deadline,created:new Date().toISOString()});
   saveGoals(goals);
   renderGoals();
-  showToast('Goal added',name,'');
+  showToast('Goal added', name, '');
 }
 
 function deleteGoal(id) {
@@ -2922,7 +2920,7 @@ function renderGoals() {
     const {current,pct,unit,detail,daysLeft} = getGoalProgress(g,allActivities);
     const color = pct>=100?'#3fb950':pct>=60?'#C9A227':'#FC4C02';
     const deadlineStr = g.deadline ? new Date(g.deadline).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : 'No deadline';
-    return '<div class="goal-card"><div class="goal-header"><div><div class="goal-title">'+(pct>=100?'OK ':'')+g.name+'</div><div class="goal-type">'+deadlineStr+(g.deadline?' &middot; '+daysLeft+' days left':'')+'</div></div><div style="display:flex;align-items:center;gap:12px"><div class="goal-pct" style="color:'+color+'">'+pct+'%</div><button onclick="deleteGoal('+g.id+')" style="background:transparent;border:none;color:#444;cursor:pointer;font-size:16px">x</button></div></div><div class="goal-progress"><div class="goal-bar-track"><div class="goal-bar-fill" style="width:'+pct+'%;background:'+color+'"></div></div><div class="goal-stats"><span>'+detail+'</span><span>Target: '+g.target.toLocaleString()+' '+unit+'</span></div></div>'+(pct>=100?'<div class="goal-milestone">Goal achieved!</div>':pct>=75?'<div class="goal-milestone">Almost there - you are on track!</div>':'')+'</div>';
+    return '<div class="goal-card"><div class="goal-header"><div><div class="goal-title">'+(pct>=100?'OK ':'')+escapeHTML(g.name || 'Goal')+'</div><div class="goal-type">'+deadlineStr+(g.deadline?' &middot; '+daysLeft+' days left':'')+'</div></div><div style="display:flex;align-items:center;gap:12px"><div class="goal-pct" style="color:'+color+'">'+pct+'%</div><button onclick="deleteGoal('+parseInt(g.id,10)+')" style="background:transparent;border:none;color:#444;cursor:pointer;font-size:16px">x</button></div></div><div class="goal-progress"><div class="goal-bar-track"><div class="goal-bar-fill" style="width:'+pct+'%;background:'+color+'"></div></div><div class="goal-stats"><span>'+escapeHTML(detail)+'</span><span>Target: '+Number(g.target || 0).toLocaleString()+' '+escapeHTML(unit)+'</span></div></div>'+(pct>=100?'<div class="goal-milestone">Goal achieved!</div>':pct>=75?'<div class="goal-milestone">Almost there - you are on track!</div>':'')+'</div>';
   }).join('');
 }
 
@@ -3382,16 +3380,18 @@ async function loadClubEvents() {
       const typeColor = isRun ? '#58a6ff' : '#FC4C02';
       const typeLabel = isRun ? 'RUN' : 'RIDE';
       const urgent = daysUntil <= 1 ? 'border-left:3px solid #C9A227;' : '';
+      const desc = e.description || '';
+      const descShort = desc.slice(0, 80);
       
       return `<div class="row" style="${urgent}padding-left:${daysUntil<=1?'10px':'0'}">
         <div>
           <div class="row-name" style="display:flex;align-items:center;gap:6px">
             <span style="font-size:10px;background:${typeColor}22;color:${typeColor};border:1px solid ${typeColor};border-radius:4px;padding:1px 6px;font-weight:600">${typeLabel}</span>
-            <a href="${e.club_url ? 'https://www.strava.com/clubs/'+e.club_url : (e.club_id ? 'https://www.strava.com/clubs/'+e.club_id : 'https://www.strava.com/athlete/clubs')}" target="_blank" style="color:#e6edf3;text-decoration:none" title="Opens this club's main page on Strava - exact event links aren't reliably constructable from the API, and /group_events sub-paths 404 on Strava's current site">${e.title}</a>
+            <a href="${stravaClubHref(e)}" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="Opens this club's main page on Strava - exact event links aren't reliably constructable from the API, and /group_events sub-paths 404 on Strava's current site">${escapeHTML(e.title || 'Untitled event')}</a>
             ${isToday||isTomorrow ? `<span class="badge b-gold">${dayLabel}</span>` : ''}
           </div>
-          <div class="row-meta">${dateStr} at ${timeStr} &middot; ${e.club_name}</div>
-          ${e.description ? `<div style="font-size:11px;color:#444d56;margin-top:2px">${e.description.slice(0,80)}${e.description.length>80?'...':''}` + '</div>' : ''}
+          <div class="row-meta">${dateStr} at ${timeStr} &middot; ${escapeHTML(e.club_name || 'Club')}</div>
+          ${desc ? `<div style="font-size:11px;color:#444d56;margin-top:2px">${escapeHTML(descShort)}${desc.length>80?'...':''}</div>` : ''}
         </div>
         <div class="row-right" style="text-align:right">
           <div style="font-size:13px;font-weight:500;color:${daysUntil<=1?'#C9A227':'#7d8590'}">${isToday?'Today':isTomorrow?'Tomorrow':'in '+daysUntil+'d'}</div>
@@ -3405,12 +3405,12 @@ async function loadClubEvents() {
     if (evList) {
       const sbra = document.createElement('div');
       sbra.style.cssText = 'padding:10px 0;border-top:1px solid #21262d;margin-top:8px';
-      sbra.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between"><div><div style="font-size:13px;font-weight:500;color:#e6edf3">SBRA A-rides</div><div style="font-size:11px;color:#7d8590">Suffolk Bicycle Riders Association upcoming rides</div></div><a href="https://www.sbraweb.org/upcoming_rides?q=upcoming_rides_a" target="_blank" style="font-size:12px;color:#FC4C02;text-decoration:none;border:1px solid #FC4C02;border-radius:6px;padding:4px 10px">View rides</a></div>';
+      sbra.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between"><div><div style="font-size:13px;font-weight:500;color:#e6edf3">SBRA A-rides</div><div style="font-size:11px;color:#7d8590">Suffolk Bicycle Riders Association upcoming rides</div></div><a href="https://www.sbraweb.org/upcoming_rides?q=upcoming_rides_a" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:#FC4C02;text-decoration:none;border:1px solid #FC4C02;border-radius:6px;padding:4px 10px">View rides</a></div>';
       evList.appendChild(sbra);
     }
 
   } catch(e) {
-    document.getElementById('events-list').innerHTML = '<p style="font-size:13px;color:#7d8590">Could not load events: ' + e.message + '</p>';
+    document.getElementById('events-list').innerHTML = '<p style="font-size:13px;color:#7d8590">Could not load events: ' + escapeHTML(e.message || 'Unknown error') + '</p>';
   }
 }
 
@@ -3514,13 +3514,13 @@ async function fetchAndRenderWxAlerts() {
         <div style="display:flex;align-items:flex-start;gap:10px">
           <div style="flex-shrink:0;color:${style.icon};font-size:16px;line-height:1.2">⚠</div>
           <div style="flex:1;min-width:0">
-            <div style="font-size:13px;font-weight:600;color:#e6edf3;margin-bottom:4px">${a.event || 'Advisory'}${a.severity && a.severity !== 'Unknown' ? ` <span style="font-size:11px;font-weight:400;color:${style.icon};margin-left:6px">${a.severity}</span>` : ''}</div>
-            <div style="font-size:12px;color:#7d8590;margin-bottom:6px">${headline}${endsTime ? ` &middot; until ${endsTime}` : ''}</div>
-            ${shortDesc ? `<div id="${alertId}-short" style="font-size:12px;color:#c9d1d9;white-space:pre-wrap;line-height:1.5">${shortDesc}</div>
-              ${desc.length > 350 ? `<div id="${alertId}-full" style="display:none;font-size:12px;color:#c9d1d9;white-space:pre-wrap;line-height:1.5">${desc}</div>
+            <div style="font-size:13px;font-weight:600;color:#e6edf3;margin-bottom:4px">${escapeHTML(a.event || 'Advisory')}${a.severity && a.severity !== 'Unknown' ? ` <span style="font-size:11px;font-weight:400;color:${style.icon};margin-left:6px">${escapeHTML(a.severity)}</span>` : ''}</div>
+            <div style="font-size:12px;color:#7d8590;margin-bottom:6px">${escapeHTML(headline)}${endsTime ? ` &middot; until ${endsTime}` : ''}</div>
+            ${shortDesc ? `<div id="${alertId}-short" style="font-size:12px;color:#c9d1d9;white-space:pre-wrap;line-height:1.5">${escapeHTML(shortDesc)}</div>
+              ${desc.length > 350 ? `<div id="${alertId}-full" style="display:none;font-size:12px;color:#c9d1d9;white-space:pre-wrap;line-height:1.5">${escapeHTML(desc)}</div>
                 <button onclick="document.getElementById('${alertId}-short').style.display=this.dataset.expanded==='1'?'block':'none';document.getElementById('${alertId}-full').style.display=this.dataset.expanded==='1'?'none':'block';this.textContent=this.dataset.expanded==='1'?'Read more':'Show less';this.dataset.expanded=this.dataset.expanded==='1'?'0':'1'" data-expanded="0" style="margin-top:6px;background:none;border:none;color:${style.icon};font-size:11px;cursor:pointer;padding:0">Read more</button>` : ''}
             ` : ''}
-            ${a.instruction ? `<div style="font-size:12px;color:#e6edf3;margin-top:8px;padding-top:8px;border-top:1px solid ${style.border};font-weight:500">${a.instruction.trim()}</div>` : ''}
+            ${a.instruction ? `<div style="font-size:12px;color:#e6edf3;margin-top:8px;padding-top:8px;border-top:1px solid ${style.border};font-weight:500">${escapeHTML(a.instruction.trim())}</div>` : ''}
           </div>
         </div>
       </div>`;
@@ -3974,7 +3974,7 @@ function renderCollaborators(filter) {
       const isCrew = ['LiVelo','Wolfpack','Wolf Pack','WolfPack'].includes(c.name);
       const badge = isFamily ? '<span class="badge b-green" style="margin-left:4px">Family</span>' : (isCrew ? '<span class="badge b-purple" style="margin-left:4px">Crew</span>' : '');
       const groupBit = c.groupCount ? ` &middot; ${c.groupCount} group` : '';
-      return progressRow(c.name + badge, c.count, c.miles, maxMi, isFamily ? '#C9A227' : (isCrew ? '#bc8cff' : '#FC4C02'), `${elev>0?' &middot; '+elev+'k ft':''}${groupBit}`);
+      return progressRow(escapeHTML(c.name) + badge, c.count, c.miles, maxMi, isFamily ? '#C9A227' : (isCrew ? '#bc8cff' : '#FC4C02'), `${elev>0?' &middot; '+elev+'k ft':''}${groupBit}`);
     }).join('');
   }
 
@@ -3984,7 +3984,7 @@ function renderCollaborators(filter) {
     return crews.map(c => {
       const groupBit = c.groupCount ? ` &middot; ${c.groupCount} group` : '';
       const biggest = c.biggestGroup ? ` &middot; biggest ${c.biggestGroup}` : '';
-      return progressRow(c.name + '<span class="badge b-purple" style="margin-left:4px">Crew</span>', c.count, c.miles, maxMi, '#bc8cff', groupBit + biggest);
+      return progressRow(escapeHTML(c.name) + '<span class="badge b-purple" style="margin-left:4px">Crew</span>', c.count, c.miles, maxMi, '#bc8cff', groupBit + biggest);
     }).join('');
   }
 
@@ -3994,12 +3994,12 @@ function renderCollaborators(filter) {
     return recent.map(a => {
       const date = new Date(a.start_date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
       const crew = detectCrewName(a);
-      const tag = crew ? ` <span class="badge b-purple">${crew}</span>` : '';
+      const tag = crew ? ` <span class="badge b-purple">${escapeHTML(crew)}</span>` : '';
       const type = isRideType(a) ? 'Ride' : 'Run';
       const mi = ((a.distance||0)/1609.34).toFixed(1);
       const athletes = parseInt(a.athlete_count||0,10);
       return `<div class="row">
-        <div><div class="row-name"><a href="https://www.strava.com/activities/${a.id}" target="_blank" style="color:#e6edf3;text-decoration:none">${a.name||'Untitled activity'}</a>${tag}</div><div class="row-meta">${date} &middot; ${type} &middot; ${athletes} athletes</div></div>
+        <div><div class="row-name"><a href="${stravaActivityHref(a.id)}" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">${escapeHTML(a.name || 'Untitled activity')}</a>${tag}</div><div class="row-meta">${date} &middot; ${type} &middot; ${athletes} athletes</div></div>
         <div class="row-right">${mi} mi<small>${Math.round((a.total_elevation_gain||0)*3.281).toLocaleString()} ft</small></div>
       </div>`;
     }).join('');
@@ -4018,7 +4018,7 @@ function renderCollaborators(filter) {
   // Custom keywords chips
   const chips = document.getElementById('custom-keywords');
   chips.innerHTML = customKeywords.map(kw =>
-    `<span style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:4px 10px;font-size:12px;color:#e6edf3;display:inline-flex;align-items:center;gap:6px">${kw}<span onclick="removeKeyword('${kw.replace(/'/g,"\\'")}')" style="cursor:pointer;color:#7d8590;font-size:14px">&times;</span></span>`
+    `<span style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:4px 10px;font-size:12px;color:#e6edf3;display:inline-flex;align-items:center;gap:6px">${escapeHTML(kw)}<span onclick="removeKeyword(decodeURIComponent('${encodeURIComponent(kw)}'))" style="cursor:pointer;color:#7d8590;font-size:14px">&times;</span></span>`
   ).join('');
 }
 
@@ -4183,7 +4183,7 @@ function renderActivityList() {
   if (!list) return;
   if (!filtered.length) {
     const msg = actSearchQuery ? `No activities matching "${actSearchQuery}".` : 'No activities found.';
-    list.innerHTML = `<p style="font-size:13px;color:#7d8590;padding:1rem 0">${msg}</p>`;
+    list.innerHTML = `<p style="font-size:13px;color:#7d8590;padding:1rem 0">${escapeHTML(msg)}</p>`;
     return;
   }
   // Show more results when actively searching, since a search is a deliberate
@@ -4201,8 +4201,8 @@ function renderActivityList() {
     const typeTag = isRun ? ' <span class="badge b-run">RUN</span>' : '';
     const achTag = r.achievement_count > 0 ? ' <span class="badge b-gold">+' + r.achievement_count + '</span>' : '';
     const gear = r.gear_id ? gearData.find(g => g.id === r.gear_id) : null;
-    const gearLabel = gear ? ' <span style="font-size:10px;color:#7d8590">' + gear.name + '</span>' : '';
-    return '<div class="row"><div><div class="row-name"><a href="https://www.strava.com/activities/' + r.id + '" target="_blank" style="color:#e6edf3;text-decoration:none">' + r.name + '</a>' + typeTag + achTag + gearLabel + '</div><div class="row-meta">' + date + ' &middot; ' + t + ' &middot; ' + watts + hr + elev + '</div></div><div class="row-right">' + mi + ' mi<small>' + (r.suffer_score ? 'Suffer: ' + r.suffer_score : '') + '</small></div></div>';
+    const gearLabel = gear ? ' <span style="font-size:10px;color:#7d8590">' + escapeHTML(gear.name || '') + '</span>' : '';
+    return '<div class="row"><div><div class="row-name"><a href="' + stravaActivityHref(r.id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">' + escapeHTML(r.name || 'Untitled activity') + '</a>' + typeTag + achTag + gearLabel + '</div><div class="row-meta">' + date + ' &middot; ' + t + ' &middot; ' + watts + hr + elev + '</div></div><div class="row-right">' + mi + ' mi<small>' + (r.suffer_score ? 'Suffer: ' + r.suffer_score : '') + '</small></div></div>';
   }).join('');
 }
 
@@ -4275,7 +4275,7 @@ async function renderGear() {
     const lastDate = lastUsed ? new Date(lastUsed.start_date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : 'Unknown';
     const counts = gearAchievementCounts[g.id] || { koms: 0, top10s: 0 };
     return '<div class="card" style="margin-bottom:0">' +
-      '<div class="card-title"><div class="card-title-left">' + icon + g.name + '</div>' +
+      '<div class="card-title"><div class="card-title-left">' + icon + escapeHTML(g.name || 'Gear') + '</div>' +
       (g.primary ? '<span class="badge b-green">Primary</span>' : '') + '</div>' +
       '<div style="font-size:28px;font-weight:600;color:#e6edf3;margin-bottom:4px">' + mi.toLocaleString() + ' mi</div>' +
       '<div style="font-size:11px;color:#7d8590;margin-bottom:12px">Last used: ' + lastDate + '</div>' +
@@ -4343,7 +4343,7 @@ function renderTownExpansion(entries, view) {
     return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px">' +
       '<div style="flex-shrink:0">' + badge + '</div>' +
       '<div style="flex:1;min-width:0;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-        '<a href="https://www.strava.com/segments/' + e.segment_id + '" target="_blank" style="color:#e6edf3;text-decoration:none">' + e.segment_name + '</a>' +
+        '<a href="' + stravaSegmentHref(e.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">' + escapeHTML(e.segment_name || 'Segment') + '</a>' +
       '</div>' +
       '<div style="flex-shrink:0;color:#7d8590;font-size:11px">' + date + ' &middot; ' + t + '</div>' +
     '</div>';
@@ -4656,11 +4656,12 @@ async function renderFullKomList() {
           const expanded = expandedTowns.has(t.key);
           const arrow = expanded ? '&#9660;' : '&#9654;'; // filled down/right triangle
           const expandedContent = expanded ? renderTownExpansion(townEntries[t.key], komView) : '';
+          const townKeyArg = encodeURIComponent(t.key);
           return '<div style="border-bottom:1px solid #21262d">' +
-            '<div onclick="toggleTown(\'' + t.key.replace(/'/g, "\\'") + '\')" style="display:flex;align-items:center;gap:10px;padding:6px 0;cursor:pointer">' +
+            '<div onclick="toggleTown(decodeURIComponent(\'' + townKeyArg + '\'))" style="display:flex;align-items:center;gap:10px;padding:6px 0;cursor:pointer">' +
               '<div style="flex-shrink:0;width:14px;font-size:9px;color:#7d8590">' + arrow + '</div>' +
               '<div style="flex-shrink:0;width:22px;font-size:12px;color:#7d8590;text-align:right">' + (i + 1) + '.</div>' +
-              '<div style="flex:1;min-width:0"><div style="font-size:13px;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + t.town + '</div>' +
+              '<div style="flex:1;min-width:0"><div style="font-size:13px;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHTML(t.town) + '</div>' +
               '<div style="height:4px;background:#21262d;border-radius:2px;margin-top:3px"><div style="height:4px;width:' + barWidth + '%;background:' + barColor + ';border-radius:2px"></div></div></div>' +
               '<div style="flex-shrink:0;font-size:12px;text-align:right;min-width:80px;color:' + barColor + '">' + count + ' ' + (komView === 'koms' ? (count === 1 ? 'KOM' : 'KOMs') : (count === 1 ? 'T10' : 'T10s')) + '</div>' +
             '</div>' +
@@ -4750,7 +4751,7 @@ async function renderFullKomList() {
       rankBadge = '<span class="badge b-blue">#' + e.rank + '</span>';
     }
 
-    return '<div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid #21262d"><div style="flex-shrink:0;padding-top:1px">' + rankBadge + '</div><div><div class="row-name"><a href="https://www.strava.com/segments/' + e.segment_id + '" target="_blank" style="color:#e6edf3;text-decoration:none">' + e.segment_name + '</a>' + sportBadge + '</div><div class="row-meta">' + date + ' &middot; ' + t + '</div>' + detailLine + '</div></div>';
+    return '<div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid #21262d"><div style="flex-shrink:0;padding-top:1px">' + rankBadge + '</div><div><div class="row-name"><a href="' + stravaSegmentHref(e.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">' + escapeHTML(e.segment_name || 'Segment') + '</a>' + sportBadge + '</div><div class="row-meta">' + date + ' &middot; ' + t + '</div>' + detailLine + '</div></div>';
   }
 
   function sortByMode(list) {
@@ -4879,7 +4880,7 @@ function initEldoradoMap() {
 
 function setMapStatus(msg) {
   const el = document.getElementById('map-status');
-  if (el) el.innerHTML = msg;
+  if (el) el.textContent = msg;
 }
 
 function toggleEldoradoMapLayer(key) {
@@ -5384,6 +5385,24 @@ function escapeHTML(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+function safePathPart(s) {
+  return encodeURIComponent(String(s == null ? '' : s).replace(/^\/+/, '').split('/')[0]);
+}
+
+function stravaActivityHref(id) {
+  return 'https://www.strava.com/activities/' + safePathPart(id);
+}
+
+function stravaSegmentHref(id) {
+  return 'https://www.strava.com/segments/' + safePathPart(id);
+}
+
+function stravaClubHref(event) {
+  if (event && event.club_url) return 'https://www.strava.com/clubs/' + safePathPart(event.club_url);
+  if (event && event.club_id) return 'https://www.strava.com/clubs/' + safePathPart(event.club_id);
+  return 'https://www.strava.com/athlete/clubs';
+}
+
 async function saveRouteCollection(routes) {
   savedRoutesCache = routes || [];
   const payload = savedRoutesCache;
@@ -5689,12 +5708,12 @@ function popupForMapEntry(entry, detail, wind) {
   const elev = detail && detail.elevation_gain ? Math.round(detail.elevation_gain*3.281) + ' ft gain' : '';
   const windLine = wind ? '<div><strong>' + (eldoradoMapState.windDay === 'today' ? 'Today' : 'Tomorrow') + ':</strong> ' + wind.label + ' <span style="color:#57606a">(' + Math.round(wind.windSpeed) + ' mph wind)</span></div>' : '<div><strong>Wind:</strong> needs segment direction + forecast</div>';
   return '<div class="map-popup">' +
-    '<div class="map-popup-title">' + entry.segment_name + '</div>' +
+    '<div class="map-popup-title">' + escapeHTML(entry.segment_name || 'Segment') + '</div>' +
     '<div><strong>' + rank + '</strong> &middot; ' + sport + '</div>' +
     '<div>' + [date, formatSeconds(entry.elapsed)].filter(Boolean).join(' &middot; ') + '</div>' +
     (dist || elev ? '<div>' + [dist, elev].filter(Boolean).join(' &middot; ') + '</div>' : '') +
     windLine +
-    '<div style="margin-top:6px"><a href="https://www.strava.com/segments/' + entry.segment_id + '" target="_blank">Open segment in Strava</a></div>' +
+    '<div style="margin-top:6px"><a href="' + stravaSegmentHref(entry.segment_id) + '" target="_blank" rel="noopener noreferrer">Open segment in Strava</a></div>' +
   '</div>';
 }
 
