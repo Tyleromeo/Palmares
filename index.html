@@ -2261,6 +2261,17 @@ async function renderLastActivityHighlight() {
 // The polyline comes straight off the activity object (backfilled from the
 // activity-geometry cache during loadAll if it wasn't already present from
 // a live fetch), so no extra API call is needed to draw this.
+// Compass bearing (0=north, 90=east) from p1 to p2, so a direction arrow
+// glyph that points up/north by default can be rotated directly by this
+// value with a plain CSS rotate().
+function bearingBetween(p1, p2) {
+  const lat1 = p1[0] * Math.PI/180, lat2 = p2[0] * Math.PI/180;
+  const dLng = (p2[1]-p1[1]) * Math.PI/180;
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1)*Math.sin(lat2) - Math.sin(lat1)*Math.cos(lat2)*Math.cos(dLng);
+  return (Math.atan2(y, x) * 180/Math.PI + 360) % 360;
+}
+
 let lastActivityMap = null;
 function renderLastActivityRouteMap(activity) {
   const container = document.getElementById('last-activity-map');
@@ -2278,7 +2289,36 @@ function renderLastActivityRouteMap(activity) {
   }).addTo(lastActivityMap);
 
   const isRun = activity.type === 'Run' || activity.type === 'TrailRun';
-  const line = L.polyline(points, { color: isRun ? '#58a6ff' : '#FC4C02', weight: 4 }).addTo(lastActivityMap);
+  const lineColor = isRun ? '#58a6ff' : '#FC4C02';
+  const line = L.polyline(points, { color: lineColor, weight: 4 }).addTo(lastActivityMap);
+
+  // Start (green dot) and finish (checkered flag) markers.
+  L.circleMarker(points[0], { radius: 7, color: '#fff', weight: 2, fillColor: '#3fb950', fillOpacity: 1 })
+    .addTo(lastActivityMap).bindTooltip('Start');
+  L.marker(points[points.length - 1], {
+    icon: L.divIcon({ className: '', html: '<div style="font-size:20px;line-height:1;transform:translate(-6px,-18px)">🏁</div>', iconSize: [0, 0] }),
+    interactive: false
+  }).addTo(lastActivityMap).bindTooltip('Finish');
+
+  // Direction arrows spaced along the route, each rotated to the bearing of
+  // travel at that point, so it's visible at a glance which way the route
+  // was ridden/run rather than just seeing a static line.
+  const arrowCount = Math.min(8, Math.max(1, Math.floor(points.length / 20)));
+  for (let i = 1; i <= arrowCount; i++) {
+    const idx = Math.round((points.length - 1) * (i / (arrowCount + 1)));
+    const p1 = points[Math.max(0, idx - 1)];
+    const p2 = points[Math.min(points.length - 1, idx + 1)];
+    const bearing = bearingBetween(p1, p2);
+    L.marker(points[idx], {
+      icon: L.divIcon({
+        className: '',
+        html: `<div style="font-size:18px;font-weight:bold;color:${lineColor};transform:translate(-9px,-9px) rotate(${bearing}deg);text-shadow:0 0 3px #0d1117,0 0 3px #0d1117,0 0 3px #0d1117">↑</div>`,
+        iconSize: [0, 0]
+      }),
+      interactive: false
+    }).addTo(lastActivityMap);
+  }
+
   lastActivityMap.fitBounds(line.getBounds(), { padding: [16, 16] });
   setTimeout(function(){ if (lastActivityMap) lastActivityMap.invalidateSize(); }, 50);
 }
