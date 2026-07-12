@@ -1940,12 +1940,33 @@ async function enrichKomDetails(token, athleteId) {
 
 // DASHBOARD
 
+// ==================== LOCAL-DATE HELPERS ====================
+// Calendar-day bucketing (streaks, weekly totals, the training calendar,
+// goal/VO2max grouping) must never be done from the UTC date directly -
+// Strava's start_date is true UTC, and any evening activity in a
+// UTC-behind timezone (roughly anything after 8pm Eastern) has already
+// rolled into the next UTC day, so naive splitting or toISOString-then-
+// split silently buckets it onto the wrong calendar day (confirmed: an
+// 8:46pm Wednesday Eastern run was showing up on Thursday). These two
+// helpers are the only correct way to get a YYYY-MM-DD key for "which
+// local day did this happen on."
+function localDateKey(date) {
+  const d = (date instanceof Date) ? date : new Date(date);
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function activityLocalDateKey(activity) {
+  // start_date_local is Strava's local wall-clock time (misleadingly
+  // suffixed like UTC) - its date portion IS the correct local calendar
+  // day, no further timezone conversion needed or wanted.
+  return (activity.start_date_local || activity.start_date).split('T')[0];
+}
+
 // ==================== NOTIFICATIONS ====================
 function checkNotifications(activities, metrics) {
   const now = new Date();
   const lastAny = activities[0];
   const dismissed = JSON.parse(localStorage.getItem('ed_dismissed_notifs')||'[]');
-  const todayKey = now.toISOString().split('T')[0];
+  const todayKey = localDateKey(now);
   const notifications = [];
 
   if (lastAny) {
@@ -1976,20 +1997,20 @@ function checkNotifications(activities, metrics) {
 
 function getActiveDays() {
   var activeDays = {};
-  allActivities.forEach(function(a) { activeDays[a.start_date.split('T')[0]] = true; });
+  allActivities.forEach(function(a) { activeDays[activityLocalDateKey(a)] = true; });
   return activeDays;
 }
 
 
 function calcDailyStreak() {
   var now = new Date();
-  var todayStr = now.toISOString().split('T')[0];
+  var todayStr = localDateKey(now);
   var activeDays = getActiveDays();
   var streak = 0;
   var d = new Date(now);
   if (!activeDays[todayStr]) d.setDate(d.getDate()-1);
   while (true) {
-    var ds = d.toISOString().split('T')[0];
+    var ds = localDateKey(d);
     if (activeDays[ds]) { streak++; d.setDate(d.getDate()-1); }
     else break;
   }
@@ -2018,12 +2039,12 @@ function getWeekStart(dateStr) {
   var day = d.getUTCDay(); // 0=Sun, 1=Mon
   var diff = (day === 0) ? 6 : day - 1;
   d.setUTCDate(d.getUTCDate() - diff);
-  return d.toISOString().split('T')[0];
+  return localDateKey(d);
 }
 
 function calcWeeklyStreak() {
   var now = new Date();
-  var todayUTC = now.toISOString().split('T')[0];
+  var todayUTC = localDateKey(now);
   var activeDays = getActiveDays();
   var activeWeeks = {};
   Object.keys(activeDays).forEach(function(ds) {
@@ -2043,7 +2064,7 @@ function calcWeeklyStreak() {
   }
 
   while (true) {
-    var ws = weekDate.toISOString().split('T')[0];
+    var ws = localDateKey(weekDate);
     if (activeWeeks[ws]) { streak++; weekDate.setUTCDate(weekDate.getUTCDate()-7); }
     else break;
   }
@@ -2188,6 +2209,21 @@ function activityRow(r) {
 // than waiting for the background scanners to reach it, and the result is
 // merged into the same progress stores those scanners use so this activity
 // doesn't get redundantly re-fetched later.
+// Jumps a clicked achievement badge to where that record actually lives on
+// the Performance page - switches the relevant Rides/Runs toggle first so
+// the record is actually visible, then scrolls its card into view.
+function navigateToPerformance(sport, view) {
+  showSection('performance');
+  if (view === 'power') setPowerCurveSport(sport);
+  else if (view === 'distance') setDistanceSport(sport);
+  setTimeout(function() {
+    const containerId = view === 'power' ? 'power-top5-list' : 'distance-records-list';
+    const el = document.getElementById(containerId);
+    const card = el && el.closest('.card');
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 60);
+}
+
 async function renderLastActivityHighlight() {
   const card = document.getElementById('last-activity-card');
   const body = document.getElementById('last-activity-body');
@@ -2250,7 +2286,12 @@ async function renderLastActivityHighlight() {
     const badges = await checkActivityAchievements(a);
     const achEl = document.getElementById('last-activity-achievements');
     if (achEl && badges.length) {
-      achEl.innerHTML = badges.map(b => `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;color:#e6edf3"><span style="font-size:16px">${b.icon}</span>${escapeHTML(b.text)}</div>`).join('');
+      achEl.innerHTML = badges.map(b => {
+        const style = 'display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;color:#e6edf3' + (b.action ? ';cursor:pointer' : '');
+        const onclick = b.action ? ` onclick="${b.action}"` : '';
+        const textStyle = b.action ? 'text-decoration:underline;text-underline-offset:2px' : '';
+        return `<div${onclick} style="${style}"><span style="font-size:16px">${b.icon}</span><span style="${textStyle}">${escapeHTML(b.text)}</span></div>`;
+      }).join('');
     }
   }
 }
@@ -2376,8 +2417,8 @@ async function checkActivityAchievements(activity) {
       if (!progress.scannedIds.includes(activity.id)) progress.scannedIds.push(activity.id);
       await savePowerScanProgress(athleteData.id, sport, progress);
 
-      if (bestAllTimeLabel) badges.push({ icon: '🏆', text: `New all-time best power at ${bestAllTimeLabel} (${bestAllTimeWatts}w)` });
-      else if (anyYear) badges.push({ icon: '📅', text: `New ${year} best power on at least one duration` });
+      if (bestAllTimeLabel) badges.push({ icon: '🏆', text: `New all-time best power at ${bestAllTimeLabel} (${bestAllTimeWatts}w)`, action: `navigateToPerformance('${sport}','power')` });
+      else if (anyYear) badges.push({ icon: '📅', text: `New ${year} best power on at least one duration`, action: `navigateToPerformance('${sport}','power')` });
     }
 
     // ---- Distance: stream-computed checkpoints only (full list for rides, ultra-only for runs) ----
@@ -2408,7 +2449,7 @@ async function checkActivityAchievements(activity) {
       }
 
       if (bestRank !== null) {
-        badges.push({ icon: bestRank === 0 ? '🥇' : '🎖️', text: `#${bestRank+1} fastest ${bestName} ever` });
+        badges.push({ icon: bestRank === 0 ? '🥇' : '🎖️', text: `#${bestRank+1} fastest ${bestName} ever`, action: `navigateToPerformance('${sport}','distance')` });
       }
     }
 
@@ -2448,10 +2489,10 @@ async function checkActivityAchievements(activity) {
               };
               if (ach.rank === 1) {
                 komProgress.koms.push(obj);
-                badges.push({ icon: '🏆', text: `KOM: ${e.name} (${formatElapsedClock(e.elapsed_time)})` });
+                badges.push({ icon: '🏆', text: `KOM: ${e.name} (${formatElapsedClock(e.elapsed_time)})`, action: `showSection('segments')` });
               } else if (ach.rank >= 2 && ach.rank <= 10) {
                 komProgress.top10s.push(obj);
-                badges.push({ icon: '🎖️', text: `#${ach.rank} overall: ${e.name} (${formatElapsedClock(e.elapsed_time)})` });
+                badges.push({ icon: '🎖️', text: `#${ach.rank} overall: ${e.name} (${formatElapsedClock(e.elapsed_time)})`, action: `showSection('segments')` });
               }
             });
           });
@@ -2485,11 +2526,11 @@ function renderCoaching(metrics, allActs) {
 
   // ---- Consecutive training days / rest day pattern ----
   const activeDaySet = {};
-  allActs.forEach(a => { activeDaySet[a.start_date.split('T')[0]] = true; });
+  allActs.forEach(a => { activeDaySet[activityLocalDateKey(a)] = true; });
   let consecutiveDays = 0;
   for (let i = 0; i < 30; i++) {
     const d = new Date(now); d.setDate(d.getDate()-i);
-    const key = d.toISOString().split('T')[0];
+    const key = localDateKey(d);
     if (activeDaySet[key]) consecutiveDays++;
     else break;
   }
@@ -2592,7 +2633,7 @@ function renderFitnessChart(rides) {
   let seedSum = 0, seedDays = 0;
   for (let i = totalCalcDays; i >= totalCalcDays - 13 && i >= 0; i--) {
     const d = new Date(now); d.setDate(d.getDate()-i);
-    const key = d.toISOString().split('T')[0];
+    const key = localDateKey(d);
     seedSum += dayMap[key]||0; seedDays++;
   }
   const seed = seedDays ? seedSum/seedDays : 20;
@@ -2602,7 +2643,7 @@ function renderFitnessChart(rides) {
   
   for (let i=totalCalcDays; i>=0; i--) {
     const d=new Date(now); d.setDate(d.getDate()-i);
-    const key=d.toISOString().split('T')[0];
+    const key=localDateKey(d);
     ctl=ctl+((dayMap[key]||0)-ctl)/42;
     atl=atl+((dayMap[key]||0)-atl)/7;
     
@@ -3685,14 +3726,14 @@ function renderCalendar() {
   // Build day map
   const dayMap = {};
   allActivities.forEach(a => {
-    const d = a.start_date.split('T')[0];
+    const d = activityLocalDateKey(a);
     if (!dayMap[d]) dayMap[d] = [];
     dayMap[d].push(a);
   });
   const firstDayRaw = new Date(calYear, calMonth, 1).getDay(); // 0=Sun
   const firstDay = (firstDayRaw === 0) ? 6 : firstDayRaw - 1; // convert to Monday-first offset
   const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
-  const todayStr = now.toISOString().split('T')[0];
+  const todayStr = localDateKey(now);
 
   const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
@@ -3707,7 +3748,13 @@ function renderCalendar() {
     const dateStr = calYear+'-'+String(calMonth+1).padStart(2,'0')+'-'+String(day).padStart(2,'0');
     const acts = dayMap[dateStr] || [];
     const isToday = dateStr === todayStr;
-    const isFuture = new Date(dateStr) > now;
+    // Plain string comparison works correctly here since both are
+    // zero-padded YYYY-MM-DD - avoids the same UTC-midnight parsing pitfall
+    // as new Date(dateStr), which would flip isFuture a few hours early
+    // every evening (a date-only string is parsed as UTC midnight, so
+    // comparing it against a same-timezone "now" instant is consistent,
+    // but comparing it against local "now" isn't).
+    const isFuture = dateStr > todayStr;
 
     const rides = acts.filter(a=>a.type==='Ride'||a.type==='VirtualRide');
     const runs = acts.filter(a=>a.type==='Run'||a.type==='TrailRun');
@@ -4114,7 +4161,7 @@ function renderVO2Trend(range) {
     const diff = (day===0) ? 6 : day-1;
     const monday = new Date(d);
     monday.setUTCDate(monday.getUTCDate()-diff);
-    const key = monday.toISOString().split('T')[0];
+    const key = localDateKey(monday);
     const paceSecsPerMile = 1609.34 / r.average_speed;
     if (!weekBuckets[key] || paceSecsPerMile < weekBuckets[key].paceSecs) {
       weekBuckets[key] = { paceSecs: paceSecsPerMile, date: monday };
@@ -5035,7 +5082,7 @@ function estimateTSS(activity) {
 
 function buildDayMap(rides) {
   const m={};
-  rides.forEach(r=>{const d=r.start_date.split('T')[0];m[d]=(m[d]||0)+estimateTSS(r);});
+  rides.forEach(r=>{const d=activityLocalDateKey(r);m[d]=(m[d]||0)+estimateTSS(r);});
   return m;
 }
 
@@ -5055,7 +5102,7 @@ function computeMetrics(rides) {
   let seedSum = 0, seedDays = 0;
   for (let i = daysOfHistory; i >= daysOfHistory - 13 && i >= 0; i--) {
     const d = new Date(now); d.setDate(d.getDate()-i);
-    const key = d.toISOString().split('T')[0];
+    const key = localDateKey(d);
     seedSum += dayMap[key]||0; seedDays++;
   }
   const seed = seedDays ? seedSum/seedDays : 20;
@@ -5063,7 +5110,7 @@ function computeMetrics(rides) {
   let ctl=seed, atl=seed, prevCtl=seed;
   for (let i=daysOfHistory;i>=0;i--) {
     const d=new Date(now); d.setDate(d.getDate()-i);
-    const key=d.toISOString().split('T')[0];
+    const key=localDateKey(d);
     const tss=dayMap[key]||0;
     if (i===7) prevCtl=ctl;
     ctl=ctl+(tss-ctl)/42;
