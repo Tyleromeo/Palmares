@@ -2411,6 +2411,55 @@ async function checkActivityAchievements(activity) {
         badges.push({ icon: bestRank === 0 ? '🥇' : '🎖️', text: `#${bestRank+1} fastest ${bestName} ever` });
       }
     }
+
+    // ---- Segment KOMs/Top10s: same detail endpoint and extraction logic
+    // the Segments scanner uses (scanKomChunk), so this activity's real
+    // standing shows up immediately instead of waiting for a manual scan to
+    // reach it. Merges into that same shared progress (allSegmentBests,
+    // koms, top10s, scannedIds) so the Segments page and this dashboard
+    // badge never disagree, and the scanner won't redundantly re-fetch this
+    // activity later.
+    const komProgress = await getScanProgress(athleteData.id);
+    if (!komProgress.scannedIds.includes(activity.id)) {
+      const detailResp = await fetch(`https://www.strava.com/api/v3/activities/${activity.id}?include_all_efforts=true`, { headers: { Authorization: `Bearer ${token}` } });
+      if (detailResp.ok) {
+        const detail = await detailResp.json();
+        if (detail.segment_efforts) {
+          detail.segment_efforts.forEach(e => {
+            const existingBest = komProgress.allSegmentBests[e.segment.id];
+            if (!existingBest || e.elapsed_time < existingBest.elapsed) {
+              komProgress.allSegmentBests[e.segment.id] = {
+                activity_id: activity.id, activity_name: activity.name, activity_type: activity.type,
+                segment_name: e.name, segment_id: e.segment.id,
+                elapsed: e.elapsed_time, date: activity.start_date
+              };
+            }
+            if (!e.achievements || !e.achievements.length) return;
+            e.achievements.forEach(ach => {
+              // Only 'overall' achievements are real competitive standing -
+              // 'pr'/'year_pr' are personal-best medals with rank 1 often
+              // meaning nothing more than "your only attempt so far."
+              if (ach.type !== 'overall') return;
+              const obj = {
+                activity_id: activity.id, activity_name: activity.name, activity_type: activity.type,
+                segment_name: e.name, segment_id: e.segment.id,
+                elapsed: e.elapsed_time, rank: ach.rank, category: ach.type,
+                date: activity.start_date
+              };
+              if (ach.rank === 1) {
+                komProgress.koms.push(obj);
+                badges.push({ icon: '🏆', text: `KOM: ${e.name} (${formatElapsedClock(e.elapsed_time)})` });
+              } else if (ach.rank >= 2 && ach.rank <= 10) {
+                komProgress.top10s.push(obj);
+                badges.push({ icon: '🎖️', text: `#${ach.rank} overall: ${e.name} (${formatElapsedClock(e.elapsed_time)})` });
+              }
+            });
+          });
+        }
+        komProgress.scannedIds.push(activity.id);
+        await saveScanProgress(athleteData.id, komProgress);
+      }
+    }
   } catch(e) {
     console.log('Activity achievement check error:', e);
   }
