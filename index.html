@@ -22,6 +22,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .status-pill { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #7d8590; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: #444; }
 .dot.on { background: #3fb950; }
+.settings-icon-btn { background: transparent; border: none; color: #7d8590; cursor: pointer; padding: 4px; display: flex; align-items: center; border-radius: 6px; }
+.settings-icon-btn:hover { background: #21262d; color: #e6edf3; }
 
 /* LAYOUT */
 .container { max-width: 1040px; margin: 0 auto; padding: 1.5rem; }
@@ -278,17 +280,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
       <button class="nav-btn active" onclick="showSection('dashboard')">Dashboard</button>
       <button class="nav-btn" onclick="showSection('performance')">Performance</button>
       <button class="nav-btn" onclick="showSection('activities')">Activities</button>
-      <button class="nav-btn" onclick="showSection('gear')">Gear</button>
       <button class="nav-btn" onclick="showSection('segments')">Segments</button>
       <button class="nav-btn" onclick="showSection('map')">Map</button>
-      <button class="nav-btn" onclick="showSection('collaborators')">Collaborators</button>
-      <button class="nav-btn" onclick="showSection('weather')">Weather</button>
-      <button class="nav-btn" onclick="showSection('goals')">Goals</button>
-      <button class="nav-btn" onclick="showSection('zones')">Zones</button>
-      <button class="nav-btn" onclick="showSection('settings')">Settings</button>
     </div>
   </div>
-  <div class="status-pill"><span class="dot" id="dot"></span><span id="auth-name">not connected</span></div>
+  <div style="display:flex;align-items:center;gap:14px">
+    <div class="status-pill"><span class="dot" id="dot"></span><span id="auth-name">not connected</span></div>
+    <button class="settings-icon-btn" onclick="showSection('settings')" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </div>
 </nav>
 
 <div class="container">
@@ -383,6 +384,39 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     </div>
   </div>
 
+  <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #21262d">
+    <div class="section-header"><h2>Weather forecast</h2><p>7-day outlook for Smithtown, NY with wind analysis for ride planning.</p></div>
+    <div id="wx-loading" style="font-size:13px;color:#7d8590;padding:1rem 0">Loading forecast...</div>
+    <div id="wx-content" style="display:none">
+      <div id="wx-alerts" style="margin-bottom:1rem"></div>
+      <div class="wx-grid" id="wx-days"></div>
+      <div class="g2">
+        <div class="card" style="margin-bottom:0">
+          <div class="card-title" id="wx-detail-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg>Today — detail</div></div>
+          <div id="wx-wind-today"></div>
+          <div style="margin-top:1rem">
+            <div style="font-size:12px;font-weight:600;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Hourly</div>
+            <div id="wx-hourly"></div>
+          </div>
+          <div style="margin-top:1rem">
+            <div style="font-size:12px;font-weight:600;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Rain probability by hour</div>
+            <div class="chart-wrap" style="height:100px"><canvas id="wx-rain-chart"></canvas></div>
+          </div>
+          <div style="margin-top:1rem">
+            <div style="font-size:12px;font-weight:600;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Temperature through the day</div>
+            <div class="chart-wrap" style="height:100px"><canvas id="wx-temp-chart"></canvas></div>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Ride advisory</div></div>
+          <div id="wx-advisory"></div>
+          <div class="card-title" style="margin-top:1.5rem"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>7-day wind speeds</div></div>
+          <div class="chart-wrap chart-wrap-md"><canvas id="wx-wind-chart"></canvas></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="card" style="margin-top:1.5rem">
     <div class="card-title">
       <div class="card-title-left">
@@ -457,6 +491,88 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div id="distance-scan-controls" style="margin-bottom:12px"></div>
     <div id="distance-records-list"></div>
   </div>
+
+  <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #21262d">
+    <div class="section-header"><h2>Goals</h2><p>Set targets and track your progress automatically from Strava data.</p></div>
+    <div class="add-goal-form" id="add-goal-form">
+      <div style="font-size:14px;font-weight:600;color:#e6edf3;margin-bottom:12px">+ Add a new goal</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Goal type</label>
+          <select class="form-select" id="goal-type" onchange="updateGoalForm()">
+            <option value="century">Ride a century (100 mi)</option>
+            <option value="distance_ride">Total ride miles</option>
+            <option value="distance_run">Total run miles</option>
+            <option value="elevation">Total elevation (ft)</option>
+            <option value="ctl">Reach fitness (CTL)</option>
+            <option value="frequency">Ride X days per week</option>
+            <option value="custom_ride">Custom ride distance</option>
+            <option value="custom_run">Custom run distance (race)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Target</label>
+          <input class="form-input" id="goal-target" type="number" placeholder="e.g. 100" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Goal name</label>
+          <input class="form-input" id="goal-name" type="text" placeholder="e.g. Ride a century by October" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Deadline</label>
+          <input class="form-input" id="goal-deadline" type="date" />
+        </div>
+      </div>
+      <button class="gold-btn" onclick="addGoal()">Add goal</button>
+    </div>
+    <div id="goals-list"></div>
+  </div>
+
+  <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #21262d">
+    <div class="section-header"><h2>Training zones</h2><p>Power zones for cycling and pace zones for running, calculated from your settings.</p></div>
+    <div class="g2">
+      <div class="card" style="margin-bottom:0">
+        <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Cycling power zones <span id="ftp-display" style="font-size:12px;font-weight:400;color:#7d8590;margin-left:6px"></span></div></div>
+        <table class="zone-table" id="power-zones-table"></table>
+        <div style="margin-top:1rem;font-size:12px;color:#7d8590">Based on your FTP. Update in <a href="#" onclick="showSection('settings')" style="color:#C9A227">Settings</a>.</div>
+      </div>
+      <div class="card" style="margin-bottom:0">
+        <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Run pace zones <span id="ftp-pace-display" style="font-size:12px;font-weight:400;color:#7d8590;margin-left:6px"></span></div></div>
+        <table class="zone-table" id="run-zones-table"></table>
+        <div style="margin-top:1rem;font-size:12px;color:#7d8590">Based on your threshold pace. Update in <a href="#" onclick="showSection('settings')" style="color:#C9A227">Settings</a>.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Swim zones <span id="swim-pace-display" style="font-size:12px;font-weight:400;color:#7d8590;margin-left:6px"></span></div></div>
+      <table class="zone-table" id="swim-zones-table"></table>
+      <div style="margin-top:1rem;font-size:12px;color:#7d8590">Based on your CSS (Critical Swim Speed). Update in <a href="#" onclick="showSection('settings')" style="color:#C9A227">Settings</a>.</div>
+    </div>
+    <div class="card">
+      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>VO2 max estimate</div></div>
+      <div id="vo2max-display"></div>
+      <div style="margin-top:1.5rem;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:13px;font-weight:600;color:#e6edf3">Trend over time</div>
+        <div id="vo2-filters" style="display:flex;gap:4px">
+          <button class="nav-btn" onclick="renderVO2Trend(7)">7d</button>
+          <button class="nav-btn" onclick="renderVO2Trend(30)">1mo</button>
+          <button class="nav-btn" onclick="renderVO2Trend(60)">2mo</button>
+          <button class="nav-btn" onclick="renderVO2Trend(90)">3mo</button>
+          <button class="nav-btn" onclick="renderVO2Trend(180)">6mo</button>
+          <button class="nav-btn" onclick="renderVO2Trend('ytd')">YTD</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:#7d8590;margin:4px 0 8px" id="vo2-range-label"></div>
+      <div style="position:relative;height:220px"><canvas id="vo2-chart"></canvas></div>
+      <div id="vo2-insight" style="margin-top:0.75rem;font-size:13px;color:#7d8590"></div>
+      <div style="margin-top:1rem;font-size:12px;color:#7d8590">Estimates derived from your data, not a lab or wearable measurement. Daniels' formula uses your threshold pace setting; the HR-based figure uses your highest observed max heart rate from recent runs and your resting HR setting. The trend line recalculates VDOT week-by-week from your fastest sustained run pace, so it reflects actual changes in run performance over time.</div>
+    </div>
+    <div class="card">
+      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Recent activity zone breakdown</div></div>
+      <div id="zone-breakdown"></div>
+    </div>
+  </div>
 </div>
 
 <!-- ACTIVITIES -->
@@ -500,97 +616,55 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     </div>
     <div id="activity-list"></div>
   </div>
-</div>
 
-<!-- GEAR -->
-<div id="section-gear" class="section">
-  <div class="section-header"><h2>Gear tracker</h2><p>Mileage, wear estimates, and service reminders for your bikes and shoes.</p></div>
-  <div id="bikes-section"></div>
-  <div id="shoes-section"></div>
-</div>
-
-<!-- COLLABORATORS -->
-<div id="section-collaborators" class="section">
-  <div class="section-header"><h2>Crew</h2><p>Solo vs group activities, ride crews like LiVelo and Wolfpack, and people or keywords found in your activity titles/descriptions.</p></div>
-  <div style="display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap">
-    <button class="nav-btn active" id="collab-filter-all" onclick="filterCollabs('all')">All time</button>
-    <button class="nav-btn" id="collab-filter-year" onclick="filterCollabs('year')">This year</button>
-  </div>
-
-  <div class="g4" id="crew-summary" style="margin-bottom:1.5rem"></div>
-
-  <div class="g2" style="margin-bottom:1.5rem">
-    <div class="card" style="margin-bottom:0">
-      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Solo vs group</div></div>
-      <div id="solo-group-breakdown"></div>
+  <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #21262d">
+    <div class="section-header"><h2>Crew</h2><p>Solo vs group activities, ride crews like LiVelo and Wolfpack, and people or keywords found in your activity titles/descriptions.</p></div>
+    <div style="display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap">
+      <button class="nav-btn active" id="collab-filter-all" onclick="filterCollabs('all')">All time</button>
+      <button class="nav-btn" id="collab-filter-year" onclick="filterCollabs('year')">This year</button>
     </div>
-    <div class="card" style="margin-bottom:0">
-      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Ride crews</div></div>
-      <div id="crew-collabs"></div>
-    </div>
-  </div>
 
-  <div class="g2" style="margin-bottom:1.5rem">
-    <div class="card" style="margin-bottom:0">
-      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Ride keywords</div></div>
-      <div id="ride-collabs"></div>
-    </div>
-    <div class="card" style="margin-bottom:0">
-      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Run keywords</div></div>
-      <div id="run-collabs"></div>
-    </div>
-  </div>
+    <div class="g4" id="crew-summary" style="margin-bottom:1.5rem"></div>
 
-  <div class="card">
-    <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>Recent group activities</div></div>
-    <div id="recent-group-activities"></div>
-  </div>
-
-  <div class="card">
-    <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>All keywords — combined</div></div>
-    <div id="all-collabs"></div>
-  </div>
-
-  <div class="card" style="margin-top:0">
-    <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add custom keyword to track</div></div>
-    <div style="display:flex;gap:8px;margin-bottom:1rem">
-      <input type="text" id="custom-keyword" placeholder="e.g. LiVelo, Wolfpack, Carlos, Gretchen..." style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px 10px;font-size:13px;color:#e6edf3;" />
-      <button class="gold-btn" onclick="addCustomKeyword()">Add</button>
-    </div>
-    <div id="custom-keywords" style="display:flex;gap:6px;flex-wrap:wrap"></div>
-  </div>
-</div>
-
-<!-- WEATHER -->
-<div id="section-weather" class="section">
-  <div class="section-header"><h2>Weather forecast</h2><p>7-day outlook for Smithtown, NY with wind analysis for ride planning.</p></div>
-  <div id="wx-loading" style="font-size:13px;color:#7d8590;padding:1rem 0">Loading forecast...</div>
-  <div id="wx-content" style="display:none">
-    <div id="wx-alerts" style="margin-bottom:1rem"></div>
-    <div class="wx-grid" id="wx-days"></div>
-    <div class="g2">
+    <div class="g2" style="margin-bottom:1.5rem">
       <div class="card" style="margin-bottom:0">
-        <div class="card-title" id="wx-detail-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg>Today — detail</div></div>
-        <div id="wx-wind-today"></div>
-        <div style="margin-top:1rem">
-          <div style="font-size:12px;font-weight:600;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Hourly</div>
-          <div id="wx-hourly"></div>
-        </div>
-        <div style="margin-top:1rem">
-          <div style="font-size:12px;font-weight:600;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Rain probability by hour</div>
-          <div class="chart-wrap" style="height:100px"><canvas id="wx-rain-chart"></canvas></div>
-        </div>
-        <div style="margin-top:1rem">
-          <div style="font-size:12px;font-weight:600;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Temperature through the day</div>
-          <div class="chart-wrap" style="height:100px"><canvas id="wx-temp-chart"></canvas></div>
-        </div>
+        <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Solo vs group</div></div>
+        <div id="solo-group-breakdown"></div>
       </div>
       <div class="card" style="margin-bottom:0">
-        <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Ride advisory</div></div>
-        <div id="wx-advisory"></div>
-        <div class="card-title" style="margin-top:1.5rem"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>7-day wind speeds</div></div>
-        <div class="chart-wrap chart-wrap-md"><canvas id="wx-wind-chart"></canvas></div>
+        <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Ride crews</div></div>
+        <div id="crew-collabs"></div>
       </div>
+    </div>
+
+    <div class="g2" style="margin-bottom:1.5rem">
+      <div class="card" style="margin-bottom:0">
+        <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Ride keywords</div></div>
+        <div id="ride-collabs"></div>
+      </div>
+      <div class="card" style="margin-bottom:0">
+        <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Run keywords</div></div>
+        <div id="run-collabs"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>Recent group activities</div></div>
+      <div id="recent-group-activities"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>All keywords — combined</div></div>
+      <div id="all-collabs"></div>
+    </div>
+
+    <div class="card" style="margin-top:0">
+      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add custom keyword to track</div></div>
+      <div style="display:flex;gap:8px;margin-bottom:1rem">
+        <input type="text" id="custom-keyword" placeholder="e.g. LiVelo, Wolfpack, Carlos, Gretchen..." style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px 10px;font-size:13px;color:#e6edf3;" />
+        <button class="gold-btn" onclick="addCustomKeyword()">Add</button>
+      </div>
+      <div id="custom-keywords" style="display:flex;gap:6px;flex-wrap:wrap"></div>
     </div>
   </div>
 </div>
@@ -629,91 +703,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div id="full-kom-list"></div>
   </div>
 
-</div>
-<!-- GOALS -->
-<div id="section-goals" class="section">
-  <div class="section-header"><h2>Goals</h2><p>Set targets and track your progress automatically from Strava data.</p></div>
-  <div class="add-goal-form" id="add-goal-form">
-    <div style="font-size:14px;font-weight:600;color:#e6edf3;margin-bottom:12px">+ Add a new goal</div>
-    <div class="form-row">
-      <div class="form-group">
-        <label class="form-label">Goal type</label>
-        <select class="form-select" id="goal-type" onchange="updateGoalForm()">
-          <option value="century">Ride a century (100 mi)</option>
-          <option value="distance_ride">Total ride miles</option>
-          <option value="distance_run">Total run miles</option>
-          <option value="elevation">Total elevation (ft)</option>
-          <option value="ctl">Reach fitness (CTL)</option>
-          <option value="frequency">Ride X days per week</option>
-          <option value="custom_ride">Custom ride distance</option>
-          <option value="custom_run">Custom run distance (race)</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Target</label>
-        <input class="form-input" id="goal-target" type="number" placeholder="e.g. 100" />
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label class="form-label">Goal name</label>
-        <input class="form-input" id="goal-name" type="text" placeholder="e.g. Ride a century by October" />
-      </div>
-      <div class="form-group">
-        <label class="form-label">Deadline</label>
-        <input class="form-input" id="goal-deadline" type="date" />
-      </div>
-    </div>
-    <button class="gold-btn" onclick="addGoal()">Add goal</button>
+  <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #21262d">
+    <div class="section-header"><h2>Gear tracker</h2><p>Mileage, wear estimates, and service reminders for your bikes and shoes.</p></div>
+    <div id="bikes-section"></div>
+    <div id="shoes-section"></div>
   </div>
-  <div id="goals-list"></div>
-</div>
 
-<!-- ZONES -->
-<div id="section-zones" class="section">
-  <div class="section-header"><h2>Training zones</h2><p>Power zones for cycling and pace zones for running, calculated from your settings.</p></div>
-  <div class="g2">
-    <div class="card" style="margin-bottom:0">
-      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Cycling power zones <span id="ftp-display" style="font-size:12px;font-weight:400;color:#7d8590;margin-left:6px"></span></div></div>
-      <table class="zone-table" id="power-zones-table"></table>
-      <div style="margin-top:1rem;font-size:12px;color:#7d8590">Based on your FTP. Update in <a href="#" onclick="showSection('settings')" style="color:#C9A227">Settings</a>.</div>
-    </div>
-    <div class="card" style="margin-bottom:0">
-      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Run pace zones <span id="ftp-pace-display" style="font-size:12px;font-weight:400;color:#7d8590;margin-left:6px"></span></div></div>
-      <table class="zone-table" id="run-zones-table"></table>
-      <div style="margin-top:1rem;font-size:12px;color:#7d8590">Based on your threshold pace. Update in <a href="#" onclick="showSection('settings')" style="color:#C9A227">Settings</a>.</div>
-    </div>
-  </div>
-  <div class="card">
-    <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Swim zones <span id="swim-pace-display" style="font-size:12px;font-weight:400;color:#7d8590;margin-left:6px"></span></div></div>
-    <table class="zone-table" id="swim-zones-table"></table>
-    <div style="margin-top:1rem;font-size:12px;color:#7d8590">Based on your CSS (Critical Swim Speed). Update in <a href="#" onclick="showSection('settings')" style="color:#C9A227">Settings</a>.</div>
-  </div>
-  <div class="card">
-    <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>VO2 max estimate</div></div>
-    <div id="vo2max-display"></div>
-    <div style="margin-top:1.5rem;display:flex;justify-content:space-between;align-items:center">
-      <div style="font-size:13px;font-weight:600;color:#e6edf3">Trend over time</div>
-      <div id="vo2-filters" style="display:flex;gap:4px">
-        <button class="nav-btn" onclick="renderVO2Trend(7)">7d</button>
-        <button class="nav-btn" onclick="renderVO2Trend(30)">1mo</button>
-        <button class="nav-btn" onclick="renderVO2Trend(60)">2mo</button>
-        <button class="nav-btn" onclick="renderVO2Trend(90)">3mo</button>
-        <button class="nav-btn" onclick="renderVO2Trend(180)">6mo</button>
-        <button class="nav-btn" onclick="renderVO2Trend('ytd')">YTD</button>
-      </div>
-    </div>
-    <div style="font-size:12px;color:#7d8590;margin:4px 0 8px" id="vo2-range-label"></div>
-    <div style="position:relative;height:220px"><canvas id="vo2-chart"></canvas></div>
-    <div id="vo2-insight" style="margin-top:0.75rem;font-size:13px;color:#7d8590"></div>
-    <div style="margin-top:1rem;font-size:12px;color:#7d8590">Estimates derived from your data, not a lab or wearable measurement. Daniels' formula uses your threshold pace setting; the HR-based figure uses your highest observed max heart rate from recent runs and your resting HR setting. The trend line recalculates VDOT week-by-week from your fastest sustained run pace, so it reflects actual changes in run performance over time.</div>
-  </div>
-  <div class="card">
-    <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Recent activity zone breakdown</div></div>
-    <div id="zone-breakdown"></div>
-  </div>
 </div>
-
 <!-- MAP -->
 <div id="section-map" class="section">
   <div class="section-header"><h2>Map</h2><p>Turn on KOMs, Top 10s, wind advantage, and ride/run heat from your Strava history.</p></div>
@@ -1206,23 +1202,26 @@ function showSection(name) {
   const sec = document.getElementById('section-' + name);
   if (sec) sec.classList.add('active');
   document.querySelectorAll('.nav-btn').forEach(b => { if (b.textContent.toLowerCase().includes(name) || (name==='dashboard' && b.textContent==='Dashboard')) b.classList.add('active'); });
-  if (name === 'weather' && !weatherLoaded) { weatherLoaded = true; loadWeather(); }
+  // Gear, Collaborators, Weather, Goals, and Zones are no longer independently
+  // navigable sections - their markup was merged onto the bottom of Segments,
+  // Activities, Dashboard, and Performance respectively (mobile app has room
+  // for 5 bottom tabs, not 11), so their render calls fire alongside whatever
+  // section they now physically live in instead of their own `name === ...`.
+  if (name === 'dashboard' && !weatherLoaded) { weatherLoaded = true; loadWeather(); }
   if (name === 'map') { setTimeout(function(){ try { initEldoradoMap(); renderEldoradoMap(); } catch(e) { console.error('renderMap:', e); } }, 80); }
-  if (name === 'goals') { try { renderGoals(); } catch(e) { console.error('renderGoals:', e); } }
-  if (name === 'zones') { try { renderZones(); } catch(e) { console.error('renderZones:', e); } }
   if (name === 'settings') { try { loadSettingsUI(); } catch(e) { console.error('loadSettingsUI:', e); } }
-  if (name === 'activities' && allActivities.length) { try { renderActivities(); renderHeatmap(); } catch(e) { console.error('renderActivities:', e); } }
-  if (name === 'gear' && allActivities.length) { try { renderGear(); } catch(e) { console.error('renderGear:', e); } }
-  if (name === 'segments' && allActivities.length) { try { renderKomScanUI(); } catch(e) { console.error('renderKomScanUI:', e); } }
-  if (name === 'collaborators' && allActivities.length) { try { renderCollaborators(collabFilter||'all'); } catch(e) { console.error('renderCollaborators:', e); } }
-  if (name === 'performance' && allActivities.length) { 
-    setTimeout(function() { 
+  if (name === 'activities' && allActivities.length) { try { renderActivities(); renderHeatmap(); renderCollaborators(collabFilter||'all'); } catch(e) { console.error('renderActivities:', e); } }
+  if (name === 'segments' && allActivities.length) { try { renderKomScanUI(); renderGear(); } catch(e) { console.error('renderKomScanUI:', e); } }
+  if (name === 'performance' && allActivities.length) {
+    setTimeout(function() {
       try {
         renderPRCards();
         renderYOY();
         renderPowerCurve();
         renderDistanceRecords();
         renderAeroChart();
+        renderGoals();
+        renderZones();
       } catch(e) { console.error('renderPerformance:', e); }
     }, 500);
   }
@@ -1485,7 +1484,13 @@ async function loadAll(token) {
   // Render everything
   hideLoading();
   document.getElementById('connect-view').style.display = 'none';
-  document.getElementById('nav-links').style.display = 'flex';
+  // Clear the inline display:none (set in markup to hide nav-links before
+  // login) rather than forcing display:flex - an inline style always wins
+  // over the @media(max-width:720px) rule that's supposed to hide this on
+  // mobile, which was silently defeating it. Removing the inline override
+  // lets the stylesheet's normal cascade (flex on desktop, none on mobile)
+  // apply correctly based on actual viewport width.
+  document.getElementById('nav-links').style.removeProperty('display');
   showSection('dashboard');
 
   renderDashboard();
