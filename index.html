@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>ElDorado</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -31,14 +31,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .section { display: none; }
 .section.active { display: block; }
 
-/* Native iOS app: only the settings icon stays up top, everything else
-   (page links, logo, connection status) is driven by the app's own bottom
-   tabs. body.native-app is set from a WKUserScript injected before this
-   page's own scripts run - see WebView.swift - so it's not a width guess. */
-body.native-app .nav { position: fixed; top: 0; left: 0; right: 0; width: 100%; height: 48px; flex-direction: row; align-items: center; justify-content: flex-end; background: #161b22; border-bottom: 1px solid #30363d; padding: 0.5rem 1rem; overflow: visible; z-index: 9999; }
-body.native-app .logo, body.native-app .nav-links, body.native-app .status-pill { display: none !important; }
+/* Native iOS app: page links are dropped from the top bar since the app's
+   own bottom tabs already cover that navigation - but the logo, slogan,
+   and connection status stay visible. body.native-app is set from a
+   WKUserScript injected before this page's own scripts run - see
+   WebView.swift - so it's not a width guess, and holds regardless of
+   orientation (landscape never brings the sidebar back). */
+body.native-app .nav-links { display: none !important; }
+body.native-app .nav { position: fixed; top: 0; left: 0; right: 0; width: 100%; height: auto; flex-direction: row; align-items: center; justify-content: space-between; background: #161b22; border-right: none; border-bottom: 1px solid #30363d; padding: 0.65rem 1.1rem; overflow: visible; z-index: 9999; }
 body.native-app .nav-bottom { flex-direction: row; margin-top: 0; }
-body.native-app .container { margin-left: 0; padding-top: 3.25rem; }
+body.native-app .container { margin-left: 0; padding-top: 4.5rem; }
 
 /* CONNECT */
 .connect-wrap { max-width: 460px; margin: 3rem auto; text-align: center; }
@@ -361,9 +363,9 @@ body.native-app .container { margin-left: 0; padding-top: 3.25rem; }
       <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Fitness trend</div>
       <select id="trend-range-select" onchange="setTrendRange(this.value)" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px">
         <option value="7">7d</option>
-        <option value="30">1mo</option>
+        <option value="30" selected>1mo</option>
         <option value="60">2mo</option>
-        <option value="84" selected>3mo</option>
+        <option value="84">3mo</option>
         <option value="168">6mo</option>
         <option value="ytd">YTD</option>
       </select>
@@ -594,7 +596,6 @@ body.native-app .container { margin-left: 0; padding-top: 3.25rem; }
 <!-- ACTIVITIES -->
 <div id="section-activities" class="section">
   <div class="section-header"><h2>Activities</h2><p>Full history with splits, best efforts, and segment achievements.</p></div>
-  <div class="g4" id="activity-totals"></div>
 
   <div class="card">
     <div class="card-title">
@@ -632,6 +633,8 @@ body.native-app .container { margin-left: 0; padding-top: 3.25rem; }
     </div>
     <div id="activity-list"></div>
   </div>
+
+  <div class="g4" id="activity-totals"></div>
 
   <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #21262d">
     <div class="section-header"><h2>Crew</h2><p>Solo vs group activities, ride crews like LiVelo and Wolfpack, and people or keywords found in your activity titles/descriptions.</p></div>
@@ -2612,7 +2615,7 @@ function renderCoaching(metrics, allActs) {
 }
 
 // FITNESS CHART
-let currentTrendRange = 84;
+let currentTrendRange = 30;
 
 function setTrendRange(range) {
   currentTrendRange = (range === 'ytd') ? 'ytd' : Number(range);
