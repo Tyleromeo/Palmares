@@ -1006,7 +1006,7 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
   <div class="card">
     <div class="settings-title">Data & sync</div>
     <div class="setting-row">
-      <div><div class="setting-label">Force full resync</div><div class="setting-sub">Re-fetches your complete activity history from Strava and refreshes the cache. Normally happens automatically every 6 hours, use this if data looks out of date (e.g. yearly totals missing older activities) and you don't want to wait.</div></div>
+      <div><div class="setting-label">Force full resync</div><div class="setting-sub">Re-fetches your complete activity history from Strava and refreshes the cache. Normal loads use the cache and only pull new activities, so use this only if older data looks wrong (e.g. you edited or deleted an old activity on Strava).</div></div>
       <button onclick="forceFullResync()" style="background:#1a2332;border:1px solid #58a6ff;border-radius:6px;padding:6px 14px;color:#58a6ff;cursor:pointer;font-size:13px">Resync now</button>
     </div>
   </div>
@@ -1316,7 +1316,7 @@ function disconnectStrava() {
 
 function forceFullResync() {
   if (!confirm('This will re-fetch your complete activity history from Strava (up to 36 pages) and may take a moment. Continue?')) return;
-  localStorage.removeItem('ed_last_full_sync');
+  localStorage.setItem('ed_force_full_sync', '1');
   location.reload();
 }
 
@@ -1509,34 +1509,69 @@ async function loadAll(token) {
     if (!Array.isArray(cachedActivities)) cachedActivities = [];
   } catch(e) { console.log('Cache read error:', e); }
 
-  // Check freshness: if the most recently cached activity's updated_at (or just
-  // its presence) is recent, and we have a reasonable number of cached rows,
-  // treat the cache as fresh enough to skip a full Strava re-fetch.
-  const lastSyncStr = localStorage.getItem('ed_last_full_sync');
-  const lastSync = lastSyncStr ? new Date(lastSyncStr) : null;
-  const sixHoursAgo = new Date(Date.now() - 6*60*60*1000);
-  cacheIsStale = !lastSync || lastSync < sixHoursAgo || cachedActivities.length === 0;
+  // The cache is trusted whenever it has rows. There used to be a 6-hour
+  // staleness rule here that threw the whole cache away and re-fetched all
+  // 36 pages from Strava sequentially - that was the "over a minute to load
+  // after 6 hours" experience, and it bought nothing: the incremental
+  // top-up below already catches everything new, and the full path remains
+  // reachable via Settings > Force full resync for the rare case where old
+  // history was edited on Strava. First-ever load (empty cache) still does
+  // the full fetch, and the force button sets a one-shot flag.
+  const forceFull = localStorage.getItem('ed_force_full_sync') === '1';
+  cacheIsStale = forceFull || cachedActivities.length === 0;
 
   if (!cacheIsStale) {
-    // Cache is fresh: use it directly, then just pull anything newer than the
-    // most recent cached activity in case something was logged since the cache
-    // was last written (cheap - usually 1 page, often 0 results).
+    // Cache-first: use it directly, then top up incrementally - keep
+    // paginating (newest first) only until a page dips into what's already
+    // cached. Day-to-day that's one 12-activity call; even a two-week gap
+    // is a page or two, never the full 36.
     setLoading('Loading activities...', `Using cached data (${cachedActivities.length} activities) — checking for new ones...`);
     allActivities = cachedActivities.map(mapCachedRowToActivity);
     await applyActivityGeometryCache(athlete.id);
     const mostRecentCached = allActivities.length ? new Date(allActivities[0].start_date) : null;
+    const cachedIds = new Set(allActivities.map(a => a.id));
 
     try {
-      const newBatch = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=30&page=1`, {headers}).then(r=>r.json()).catch(()=>[]);
-      if (Array.isArray(newBatch)) {
-        const newOnes = mostRecentCached
-          ? newBatch.filter(a => new Date(a.start_date) > mostRecentCached)
-          : newBatch;
-        if (newOnes.length) {
-          allActivities = [...newOnes, ...allActivities];
-          syncActivitiesToSupabase(newOnes, athlete.id); // fire and forget cache update
-          saveActivityGeometryCache(athlete.id, newOnes, true); // preserve polylines for the Map heatmap
+      const newOnes = [], updated = [];
+      // Two-pass fetch. Pass 0 is a single tiny probe (12 newest) that
+      // covers the everyday "0-2 new activities" case in one cheap call.
+      // If the probe doesn't dip into cached history, pass 1 restarts
+      // pagination from page 1 at 50/page - restarts, rather than
+      // continuing, because Strava computes offsets as page x per_page, so
+      // switching page size mid-pagination would silently skip rows
+      // (page 1 @ 12 then page 2 @ 50 = rows 1-12 then 51-100, dropping
+      // 13-50). Refetching the 12 probe rows costs nothing by comparison.
+      let reachedCached = false;
+      for (let pass = 0; pass < 2 && !reachedCached; pass++) {
+        const perPage = pass === 0 ? 12 : 50;
+        const maxPages = pass === 0 ? 1 : 10;
+        newOnes.length = 0; updated.length = 0;
+        for (let page = 1; page <= maxPages && !reachedCached; page++) {
+          const batch = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=${perPage}&page=${page}`, {headers}).then(r=>r.json()).catch(()=>[]);
+          if (!Array.isArray(batch) || batch.length === 0) { reachedCached = true; break; } // true end of history
+          batch.forEach(a => {
+            if (mostRecentCached && new Date(a.start_date) <= mostRecentCached) {
+              reachedCached = true;
+              // Refresh the cached copy of anything re-fetched: names get
+              // edited and achievement counts settle in the hours after an
+              // upload, and without this those fixes never landed until a
+              // full resync.
+              if (cachedIds.has(a.id)) updated.push(a);
+            } else if (!cachedIds.has(a.id)) {
+              newOnes.push(a);
+            }
+          });
         }
+      }
+      if (updated.length) {
+        const byId = new Map(updated.map(a => [a.id, a]));
+        allActivities = allActivities.map(a => byId.get(a.id) || a);
+      }
+      if (newOnes.length) allActivities = [...newOnes, ...allActivities];
+      const toSync = [...newOnes, ...updated];
+      if (toSync.length) {
+        syncActivitiesToSupabase(toSync, athlete.id); // fire and forget cache update
+        saveActivityGeometryCache(athlete.id, toSync, true); // preserve polylines for the Map heatmap
       }
     } catch(e) { console.log('Incremental fetch error:', e); }
   } else {
@@ -1553,7 +1588,7 @@ async function loadAll(token) {
       if (!Array.isArray(batch) || batch.length === 0) break; // only stop on a genuinely empty page (true end of history) -
       allActivities = [...allActivities, ...batch];            // a partial page (e.g. 38 of 50) does NOT mean history has ended,
     }                                                            // it can happen mid-history, so we keep fetching until truly empty
-    localStorage.setItem('ed_last_full_sync', new Date().toISOString());
+    localStorage.removeItem('ed_force_full_sync'); // one-shot: next load goes back to the fast cache path
     syncActivitiesToSupabase(allActivities, athlete.id); // fire and forget cache write
     saveActivityGeometryCache(athlete.id, allActivities, false); // preserve polylines for the Map heatmap
 
@@ -1591,19 +1626,30 @@ async function loadAll(token) {
     setCached(athlete.id, gearCacheKey, gearData);
   }
 
-  // Fetch power streams for recent rides (limited to avoid rate limits)
+  // Fetch power streams for recent rides (limited to avoid rate limits).
+  // Cached by the exact set of ride ids: a ride's power stream never changes
+  // after upload, so until a new qualifying ride appears this is pure cache
+  // - previously it was 5 sequential Strava fetches (plus polite delays)
+  // on every single load, several seconds of the old startup time.
   setLoading('Loading power data...', 'Fetching ride power streams');
   const powerRides = allActivities.filter(a=>(a.type==='Ride'||a.type==='VirtualRide')&&a.average_watts>0&&a.moving_time>1800).slice(0,5);
   window.powerStreams = {};
-  for (const ride of powerRides) {
-    try {
-      const stream = await fetch('https://www.strava.com/api/v3/activities/'+ride.id+'/streams?keys=watts&key_by_type=true', {headers}).then(r=>r.json());
-      if (stream && stream.watts && stream.watts.data) {
-        window.powerStreams[ride.id] = stream.watts.data;
-      }
-      // Small delay to avoid rate limiting
-      await new Promise(function(r){setTimeout(r,200);});
-    } catch(e) {}
+  const streamsCacheKey = 'power_streams:' + powerRides.map(r => r.id).sort().join(',');
+  const cachedStreams = powerRides.length ? await getCached(athlete.id, streamsCacheKey, 7*24*60*60*1000) : null;
+  if (cachedStreams) {
+    window.powerStreams = cachedStreams;
+  } else {
+    for (const ride of powerRides) {
+      try {
+        const stream = await fetch('https://www.strava.com/api/v3/activities/'+ride.id+'/streams?keys=watts&key_by_type=true', {headers}).then(r=>r.json());
+        if (stream && stream.watts && stream.watts.data) {
+          window.powerStreams[ride.id] = stream.watts.data;
+        }
+        // Small delay to avoid rate limiting
+        await new Promise(function(r){setTimeout(r,200);});
+      } catch(e) {}
+    }
+    if (powerRides.length) setCached(athlete.id, streamsCacheKey, window.powerStreams);
   }
 
   // Load power PRs from Supabase
@@ -1612,9 +1658,15 @@ async function loadAll(token) {
     await loadPowerPRsFromSupabase(parseInt(athleteId));
   }
 
-  // Correct any stale achievement counts on recent rides
-  setLoading('Checking achievement counts...', 'This may take a moment');
-  await correctRecentAchievementCounts(token, athlete.id);
+  // Correct any stale achievement counts on recent rides - in the
+  // background, after render. This is up to 15 sequential Strava detail
+  // fetches whenever a new achievement-bearing ride appears, and it used to
+  // block the first paint for several seconds; the corrections only tweak
+  // badge counts, so it's fine for them to land a moment after the page is
+  // already usable (the affected cards re-render on completion).
+  correctRecentAchievementCounts(token, athlete.id).then(function(changed) {
+    if (changed) { try { renderDashboard(); renderActivities(); } catch(e) {} }
+  }).catch(function(){});
 
   // Render everything
   hideLoading();
@@ -1645,7 +1697,7 @@ async function correctRecentAchievementCounts(token, athleteId) {
   const achRides = allActivities.filter(a => a.achievement_count > 0).slice(0, 15);
   const cacheKey = 'achievement_count_check:' + achRides.map(r => r.id).sort().join(',');
   const cached = await getCached(athleteId, cacheKey, 24*60*60*1000);
-  if (cached) return; // already checked this exact set of rides recently
+  if (cached) return false; // already checked this exact set of rides recently
 
   const corrections = [];
   for (const ride of achRides) {
@@ -1661,6 +1713,7 @@ async function correctRecentAchievementCounts(token, athleteId) {
   if (corrections.length) {
     persistAchievementCorrections(corrections);
   }
+  return corrections.length > 0;
 }
 
 async function persistAchievementCorrections(corrections) {
