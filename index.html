@@ -327,7 +327,7 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 </style>
 </head>
 <body>
-<script>if (window.isEldoradoNativeApp) document.body.classList.add('native-app');</script>
+<script>if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.classList.add('native-app');</script>
 
 <nav class="nav">
   <div class="logo" onclick="showSection('dashboard')">Palmarès<span>training intelligence</span></div>
@@ -2299,9 +2299,13 @@ function activityLocalDateKey(activity) {
 // connected; see WebView.swift's WKScriptMessageHandler for the other side.
 function notifyNativeAuthState(name) {
   try {
-    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.eldoradoNative) {
-      window.webkit.messageHandlers.eldoradoNative.postMessage({ type: 'auth', name: name || null });
-    }
+    const handlers = window.webkit && window.webkit.messageHandlers;
+    if (!handlers) return;
+    // palmaresNative is the current channel; eldoradoNative is kept as a
+    // fallback so a newly-pushed page still works against an app build that
+    // predates the rename.
+    const channel = handlers.palmaresNative || handlers.eldoradoNative;
+    if (channel) channel.postMessage({ type: 'auth', name: name || null });
   } catch (e) {}
 }
 
