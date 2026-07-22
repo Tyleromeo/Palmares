@@ -5,9 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Palmarès</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; }
@@ -298,9 +295,6 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 .map-popup { color:#0d1117; font-size:12px; line-height:1.45; min-width:220px; }
 .map-popup-title { font-weight:700; margin-bottom:4px; }
 .map-popup a { color:#FC4C02; text-decoration:none; }
-.leaflet-container { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-.leaflet-tooltip.route-wp-tooltip { background: #e0691a; color: #0d1117; border: none; box-shadow: none; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
-.leaflet-tooltip.route-wp-tooltip::before { display: none; }
 .saved-route-card { background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:10px 12px; margin-bottom:8px; }
 .saved-route-name { font-size:13px; font-weight:600; color:#e6edf3; margin-bottom:3px; }
 .saved-route-meta { font-size:11px; color:#7d8590; line-height:1.45; }
@@ -1088,20 +1082,7 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
           <option value="metric">Km / Meters</option>
         </select>
       </div>
-      <div class="setting-row">
-        <div><div class="setting-label">Mapbox public token</div><div class="setting-sub">Optional for local testing. For the live site, use a URL-restricted public token.</div></div>
-        <input class="setting-input" id="set-mapbox-token" type="password" placeholder="pk..." onchange="saveSettings(); resetPalmaresMapTiles();" style="width:260px;text-align:left" />
-      </div>
-      <div class="setting-row">
-        <div><div class="setting-label">Map style</div><div class="setting-sub">Uses Mapbox tiles inside Leaflet.</div></div>
-        <select class="form-select" id="set-map-style" onchange="saveSettings(); resetPalmaresMapTiles();" style="width:160px">
-          <option value="outdoors-v12" selected>Outdoors</option>
-          <option value="streets-v12">Streets</option>
-          <option value="satellite-streets-v12">Satellite</option>
-          <option value="dark-v11">Dark</option>
-          <option value="light-v11">Light</option>
-        </select>
-      </div>
+      
     </div>
     <button class="gold-btn" onclick="saveSettings(); showToast('✅','Settings saved','Your preferences have been updated.')">Save settings</button>
   </div>
@@ -1465,7 +1446,7 @@ async function loadPowerPRsFromSupabase(athlete_id) {
 }
 
 // ==================== SETTINGS ====================
-const DEFAULTS = { ftp:249, weight:75, runPace:'7:30', css:'1:45', restingHR:58, maxHR:192, ageGroup:'35_44', city:'Smithtown, NY', units:'imperial', mapboxToken:'', mapStyle:'outdoors-v12', age:null, measuredVO2Max:null };
+const DEFAULTS = { ftp:249, weight:75, runPace:'7:30', css:'1:45', restingHR:58, maxHR:192, ageGroup:'35_44', city:'Smithtown, NY', units:'imperial', age:null, measuredVO2Max:null };
 
 function getSettings() {
   try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('ed_settings')||'{}')); }
@@ -1488,8 +1469,6 @@ function saveSettings() {
     ageGroup: getVal('set-age-group', DEFAULTS.ageGroup) || DEFAULTS.ageGroup,
     city: getVal('set-city', DEFAULTS.city) || DEFAULTS.city,
     units: getVal('set-units', DEFAULTS.units) || DEFAULTS.units,
-    mapboxToken: getVal('set-mapbox-token', DEFAULTS.mapboxToken) || DEFAULTS.mapboxToken,
-    mapStyle: getVal('set-map-style', DEFAULTS.mapStyle) || DEFAULTS.mapStyle,
     age: parseInt(getVal('set-age', '')) || null,
     measuredVO2Max: parseFloat(getVal('set-measured-vo2', '')) || null
   });
@@ -1512,8 +1491,6 @@ function loadSettingsUI() {
   setVal('set-age-group', s.ageGroup);
   setVal('set-city', s.city);
   setVal('set-units', s.units);
-  setVal('set-mapbox-token', s.mapboxToken || '');
-  setVal('set-map-style', s.mapStyle || DEFAULTS.mapStyle);
   if (s.age) setVal('set-age', s.age);
   if (s.measuredVO2Max) setVal('set-measured-vo2', s.measuredVO2Max);
   renderEventSourceSettings();
@@ -3332,7 +3309,7 @@ async function renderLastActivityHighlight() {
   }
 }
 
-// Small standalone Leaflet map for the highlight card's route preview - a
+// Small standalone Apple Maps view for the highlight card's route preview - a
 // separate map instance from the main Map page's palmaresMap, so it doesn't
 // interfere with that page's state (layers, bounds-fit-once flag, etc).
 // The polyline comes straight off the activity object (backfilled from the
@@ -3350,32 +3327,49 @@ function bearingBetween(p1, p2) {
 }
 
 let lastActivityMap = null;
-function renderLastActivityRouteMap(activity) {
+async function renderLastActivityRouteMap(activity) {
   const container = document.getElementById('last-activity-map');
-  if (!container || typeof L === 'undefined') return;
+  if (!container) return;
 
   const poly = activity.map && (activity.map.summary_polyline || activity.map.polyline);
   const points = poly ? decodePolyline(poly) : [];
   if (!points.length) { container.style.display = 'none'; return; }
 
   container.style.display = '';
-  if (lastActivityMap) { lastActivityMap.remove(); lastActivityMap = null; }
-  lastActivityMap = L.map('last-activity-map', { scrollWheelZoom: false });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors', maxZoom: 18
-  }).addTo(lastActivityMap);
+  try {
+    await ensureMapKit();
+  } catch (e) {
+    // Apple unreachable or token rejected: hide rather than leave an empty
+    // box sitting under the stats.
+    console.log('Route map unavailable:', e.message);
+    container.style.display = 'none';
+    return;
+  }
+
+  if (lastActivityMap) { try { lastActivityMap.destroy(); } catch(e) {} lastActivityMap = null; }
+  lastActivityMap = new mapkit.Map(container, palmaresMapOptions({
+    showsZoomControl: false,
+    isScrollEnabled: false,
+    isZoomEnabled: false
+  }));
 
   const isRun = activity.type === 'Run' || activity.type === 'TrailRun';
   const lineColor = isRun ? '#58a6ff' : '#FC4C02';
-  const line = L.polyline(points, { color: lineColor, weight: 4 }).addTo(lastActivityMap);
+  const coords = mkCoords(points);
+  const line = new mapkit.PolylineOverlay(coords, { style: mkStyle(lineColor, 4) });
+  lastActivityMap.addOverlay(line);
 
-  // Start (green dot) and finish (checkered flag) markers.
-  L.circleMarker(points[0], { radius: 7, color: '#fff', weight: 2, fillColor: '#3fb950', fillOpacity: 1 })
-    .addTo(lastActivityMap).bindTooltip('Start');
-  L.marker(points[points.length - 1], {
-    icon: L.divIcon({ className: '', html: '<div style="font-size:20px;line-height:1;transform:translate(-6px,-18px)">🏁</div>', iconSize: [0, 0] }),
-    interactive: false
-  }).addTo(lastActivityMap).bindTooltip('Finish');
+  // Start (green dot) and finish (checkered flag). MapKit anchors a custom
+  // annotation by its bottom-centre, so anchorOffset re-centres the dot on
+  // the actual coordinate.
+  const annotations = [
+    mkDomAnnotation(coords[0],
+      '<div style="width:14px;height:14px;border-radius:50%;background:#3fb950;border:2px solid #fff;box-shadow:0 0 4px rgba(0,0,0,.7)"></div>',
+      { title: 'Start', anchorOffset: new DOMPoint(0, 9) }),
+    mkDomAnnotation(coords[coords.length - 1],
+      '<div style="font-size:20px;line-height:1">🏁</div>',
+      { title: 'Finish', anchorOffset: new DOMPoint(0, 4) })
+  ];
 
   // Direction arrows spaced along the route, each rotated to the bearing of
   // travel at that point, so it's visible at a glance which way the route
@@ -3386,18 +3380,14 @@ function renderLastActivityRouteMap(activity) {
     const p1 = points[Math.max(0, idx - 1)];
     const p2 = points[Math.min(points.length - 1, idx + 1)];
     const bearing = bearingBetween(p1, p2);
-    L.marker(points[idx], {
-      icon: L.divIcon({
-        className: '',
-        html: `<div style="font-size:18px;font-weight:bold;color:${lineColor};transform:translate(-9px,-9px) rotate(${bearing}deg);text-shadow:0 0 3px #0d1117,0 0 3px #0d1117,0 0 3px #0d1117">↑</div>`,
-        iconSize: [0, 0]
-      }),
-      interactive: false
-    }).addTo(lastActivityMap);
+    annotations.push(mkDomAnnotation(coords[idx],
+      '<div style="font-size:18px;font-weight:bold;color:' + lineColor + ';transform:rotate(' + bearing + 'deg);' +
+      'text-shadow:0 0 3px #0d1117,0 0 3px #0d1117,0 0 3px #0d1117">↑</div>',
+      { anchorOffset: new DOMPoint(0, 9) }));
   }
+  lastActivityMap.addAnnotations(annotations);
 
-  lastActivityMap.fitBounds(line.getBounds(), { padding: [16, 16] });
-  setTimeout(function(){ if (lastActivityMap) lastActivityMap.invalidateSize(); }, 50);
+  mkSetRegion(lastActivityMap, mkRegionForPoints(points), container);
 }
 
 // Live-checks a single activity against the power-curve and distance-record
@@ -7478,50 +7468,223 @@ let palmaresMapLayers = { achievements: null, heat: null, route: null };
 let palmaresMapState = { koms:true, top10s:true, bike:true, run:true, wind:true, heat:false, windDay:'today', segmentDistanceIndex:0 };
 let palmaresMapBoundsFit = false; // only auto-fit map bounds once; subsequent renders preserve the user's zoom/pan
 
-// Put your URL-restricted Mapbox public token here for production, or paste it in Settings for local testing.
-// Public Mapbox tokens begin with "pk." and are safe to ship when URL-restricted in your Mapbox account.
-const MAPBOX_PUBLIC_TOKEN = ''; // Do not commit Mapbox tokens to GitHub. Paste your public pk token in Settings, or inject it from hosting env at build time.
-let palmaresBaseTileLayer = null;
+// =========== APPLE MAPKIT JS ==========================================
+// Apple Maps in the browser - no Swift, works in the site and inside the
+// iOS app's web view alike. The signing key can't live in the page, so the
+// Edge Function mints a short-lived, origin-locked JWT (get_maps_token)
+// which mapkit.init() requests through authorizationCallback.
+//
+// mapkit.js is loaded lazily on first map use rather than in <head>, so
+// pages that never open a map don't pay for it.
 
-function getPalmaresMapboxToken() {
-  const s = getSettings ? getSettings() : {};
-  return (s.mapboxToken || MAPBOX_PUBLIC_TOKEN || '').trim();
+let _mapkitLoad = null;   // script-load promise
+let _mapkitReady = null;  // init+authorize promise
+
+function loadMapKitScript() {
+  if (_mapkitLoad) return _mapkitLoad;
+  _mapkitLoad = new Promise(function(resolve, reject) {
+    if (typeof mapkit !== 'undefined') return resolve();
+    const s = document.createElement('script');
+    s.src = 'https://cdn.apple-mapkit.com/mk/5.x.x/mapkit.js';
+    s.crossOrigin = 'anonymous';
+    s.onload = function(){ resolve(); };
+    s.onerror = function(){ reject(new Error('Could not load mapkit.js')); };
+    document.head.appendChild(s);
+  });
+  return _mapkitLoad;
 }
 
-function getPalmaresMapStyle() {
-  const s = getSettings ? getSettings() : {};
-  return (s.mapStyle || DEFAULTS.mapStyle || 'outdoors-v12');
+// Resolves once MapKit is loaded AND Apple has accepted our token, so
+// callers can safely construct a mapkit.Map immediately after awaiting.
+function ensureMapKit() {
+  if (_mapkitReady) return _mapkitReady;
+  _mapkitReady = loadMapKitScript().then(function() {
+    return new Promise(function(resolve, reject) {
+      let settled = false;
+      const done = function(ok, err) {
+        if (settled) return; settled = true;
+        ok ? resolve() : reject(err || new Error('MapKit authorization failed'));
+      };
+      mapkit.addEventListener('configuration-change', function(ev) {
+        if (ev.status === 'Initialized') done(true);
+      });
+      mapkit.addEventListener('error', function(ev) {
+        done(false, new Error('MapKit error: ' + (ev && ev.status ? ev.status : 'unknown')));
+      });
+      try {
+        mapkit.init({
+          language: 'en',
+          authorizationCallback: function(setToken) {
+            callEdge('get_maps_token', {}).then(function(r) {
+              if (r && r.token) setToken(r.token);
+              else done(false, new Error('No MapKit token from server'));
+            }).catch(function(e) { done(false, e); });
+          }
+        });
+      } catch (e) { done(false, e); }
+      setTimeout(function(){ done(false, new Error('MapKit init timed out')); }, 15000);
+    });
+  });
+  return _mapkitReady;
 }
 
-function addPalmaresBaseTiles() {
-  if (!palmaresMap || typeof L === 'undefined') return;
-  if (palmaresBaseTileLayer) {
-    try { palmaresMap.removeLayer(palmaresBaseTileLayer); } catch(e) {}
+// Shared map look: Apple's dark muted basemap. Muted deliberately - it
+// lowers basemap contrast so our coloured segment/heatmap overlays read
+// clearly on top, which is the whole point of the switch.
+function palmaresMapOptions(extra) {
+  const o = {
+    colorScheme: mapkit.Map.ColorSchemes.Dark,
+    mapType: mapkit.Map.MapTypes.MutedStandard,
+    showsMapTypeControl: false,
+    showsUserLocationControl: false,
+    showsPointsOfInterest: false,
+    showsCompass: mapkit.FeatureVisibility.Hidden,
+    showsScale: mapkit.FeatureVisibility.Hidden
+  };
+  for (const k in (extra || {})) o[k] = extra[k];
+  return o;
+}
+
+const mkCoord = (p) => new mapkit.Coordinate(p[0], p[1]);
+const mkCoords = (pts) => pts.map(mkCoord);
+
+function mkStyle(color, width, opacity) {
+  return new mapkit.Style({
+    strokeColor: color,
+    lineWidth: width,
+    strokeOpacity: opacity == null ? 1 : opacity,
+    lineJoin: 'round',
+    lineCap: 'round'
+  });
+}
+
+// Frame a set of [lat,lng] points. Deliberately computed from the points
+// rather than using map.showItems(): showItems measures the viewport, and
+// silently no-ops (leaving the map at 0,0 in the Atlantic) whenever the
+// container is still zero-width - which happens routinely here because
+// maps live inside collapsed cards and inactive tabs.
+function mkRegionForPoints(points, padFactor) {
+  if (!points || !points.length) return null;
+  let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+  points.forEach(function(p) {
+    if (p[0] < minLat) minLat = p[0];
+    if (p[0] > maxLat) maxLat = p[0];
+    if (p[1] < minLng) minLng = p[1];
+    if (p[1] > maxLng) maxLng = p[1];
+  });
+  const pad = padFactor == null ? 1.25 : padFactor;
+  const latSpan = Math.max((maxLat - minLat) * pad, 0.004);
+  const lngSpan = Math.max((maxLng - minLng) * pad, 0.004);
+  return new mapkit.CoordinateRegion(
+    new mapkit.Coordinate((minLat + maxLat) / 2, (minLng + maxLng) / 2),
+    new mapkit.CoordinateSpan(latSpan, lngSpan)
+  );
+}
+
+// Apply a region, then re-apply once the container actually has width.
+// Setting map.region while the element is still 0-wide (which happens every
+// time a map lives in a tab or collapsed card that was just revealed) makes
+// MapKit clamp the span to something enormous - the map ends up showing
+// half the country centred on the right spot. Re-applying after layout is
+// the reliable fix; a single set is not enough.
+function mkSetRegion(map, region, el) {
+  if (!map || !region) return;
+  try { map.region = region; } catch (e) { return; }
+  let tries = 0;
+  const reapply = function() {
+    if (!map || tries++ > 12) return;
+    const w = el ? el.clientWidth : 1;
+    if (w > 0) { try { map.region = region; } catch (e) {} return; }
+    setTimeout(reapply, 100);
+  };
+  setTimeout(reapply, 80);
+}
+
+// A plain DOM annotation - MapKit has no divIcon equivalent, so custom
+// markers are built from an element factory.
+function mkDomAnnotation(coord, html, opts) {
+  return new mapkit.Annotation(coord, function() {
+    const d = document.createElement('div');
+    d.innerHTML = html;
+    d.style.pointerEvents = 'none';
+    return d;
+  }, opts || {});
+}
+
+// A minimal stand-in for L.layerGroup(): MapKit has no layer concept, so we
+// track what we added and remove it on clear. Keeping the clearLayers() /
+// removeLayer() shape means the surrounding render logic didn't have to be
+// rewritten along with the primitives.
+function mkLayerGroup(map) {
+  return {
+    _map: map, overlays: [], annotations: [],
+    addOverlay: function(o) { this.overlays.push(o); this._map.addOverlay(o); return o; },
+    addAnnotation: function(a) { this.annotations.push(a); this._map.addAnnotation(a); return a; },
+    removeLayer: function(item) {
+      if (!item) return;
+      let i = this.overlays.indexOf(item);
+      if (i >= 0) { this.overlays.splice(i, 1); try { this._map.removeOverlay(item); } catch(e) {} return; }
+      i = this.annotations.indexOf(item);
+      if (i >= 0) { this.annotations.splice(i, 1); try { this._map.removeAnnotation(item); } catch(e) {} }
+    },
+    clearLayers: function() {
+      if (this.overlays.length) { try { this._map.removeOverlays(this.overlays); } catch(e) {} }
+      if (this.annotations.length) { try { this._map.removeAnnotations(this.annotations); } catch(e) {} }
+      this.overlays = []; this.annotations = [];
+    }
+  };
+}
+
+function mkAddPolyline(group, points, opts) {
+  opts = opts || {};
+  const style = mkStyle(opts.color || '#FC4C02', opts.weight || 4, opts.opacity);
+  if (opts.dash) style.lineDash = opts.dash;
+  const ov = new mapkit.PolylineOverlay(mkCoords(points), { style: style });
+  if (opts.popupHtml) {
+    ov.data = { popupHtml: opts.popupHtml };
+    ov.addEventListener('select', function() { showMapPopup(ov.data.popupHtml); });
   }
-
-  const token = getPalmaresMapboxToken();
-  const style = getPalmaresMapStyle();
-
-  if (token && token.indexOf('pk.') === 0) {
-    palmaresBaseTileLayer = L.tileLayer('https://api.mapbox.com/styles/v1/mapbox/' + style + '/tiles/512/{z}/{x}/{y}@2x?access_token=' + encodeURIComponent(token), {
-      maxZoom: 19,
-      tileSize: 512,
-      zoomOffset: -1,
-      attribution: '&copy; Mapbox &copy; OpenStreetMap'
-    }).addTo(palmaresMap);
-    setMapStatus('Mapbox ' + style.replace('-v12','').replace('-v11','') + ' map style is active.');
-  } else {
-    // Safe fallback so the page never goes blank while you are out of API tokens or before a Mapbox token is added.
-    palmaresBaseTileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(palmaresMap);
-    setMapStatus('Using OpenStreetMap fallback. Add your Mapbox public token in Settings to enable Mapbox tiles.');
-  }
+  return group.addOverlay(ov);
 }
 
-function resetPalmaresMapTiles() {
-  if (palmaresMap) addPalmaresBaseTiles();
+// Leaflet's circleMarker has no MapKit equivalent; a DOM annotation gives
+// the same dot and lets us keep the exact colours.
+function mkAddCircle(group, latlng, opts) {
+  opts = opts || {};
+  const d = (opts.radius || 6) * 2;
+  const html = '<div style="width:' + d + 'px;height:' + d + 'px;border-radius:50%;background:' +
+    (opts.fill || '#58a6ff') + ';border:2px solid ' + (opts.stroke || '#0d1117') +
+    ';opacity:' + (opts.fillOpacity == null ? 1 : opts.fillOpacity) + '"></div>';
+  const a = mkDomAnnotation(mkCoord(latlng), html, {
+    title: opts.title || '',
+    anchorOffset: new DOMPoint(0, d / 2 + 2)
+  });
+  if (opts.popupHtml) {
+    a.data = { popupHtml: opts.popupHtml };
+    a.addEventListener('select', function() { showMapPopup(a.data.popupHtml); });
+  }
+  return group.addAnnotation(a);
+}
+
+// MapKit has no bindPopup, so segment details render into a dismissible
+// panel pinned inside the map container.
+function showMapPopup(html) {
+  const host = document.getElementById('palmares-map');
+  if (!host) return;
+  hideMapPopup();
+  const el = document.createElement('div');
+  el.id = 'mk-popup';
+  el.style.cssText = 'position:absolute;left:10px;bottom:10px;right:10px;max-width:340px;z-index:20;' +
+    'background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 12px;' +
+    'font-size:12px;color:#e6edf3;box-shadow:0 8px 24px rgba(0,0,0,.5)';
+  el.innerHTML = '<button onclick="hideMapPopup()" style="float:right;background:transparent;border:none;' +
+    'color:#7d8590;cursor:pointer;font-size:15px;line-height:1;padding:0 0 0 8px">&times;</button>' + html;
+  host.style.position = 'relative';
+  host.appendChild(el);
+}
+function hideMapPopup() {
+  const p = document.getElementById('mk-popup');
+  if (p) p.remove();
 }
 
 // Home base (Smithtown, NY) - the map's default view, and the reference
@@ -7542,46 +7705,45 @@ function isNearPalmaresHome(latlng) {
   return milesBetweenLatLng(latlng, PALMARES_HOME_LATLNG) <= PALMARES_HOME_RADIUS_MILES;
 }
 
-function initPalmaresMap() {
+async function initPalmaresMap() {
   const el = document.getElementById('palmares-map');
-  if (!el || typeof L === 'undefined') return;
-  if (palmaresMap) { setTimeout(function(){ palmaresMap.invalidateSize(); }, 50); return; }
-  palmaresMap = L.map('palmares-map', { scrollWheelZoom: false }).setView(PALMARES_HOME_LATLNG, 11);
-  addPalmaresBaseTiles();
+  if (!el) return;
+  if (palmaresMap) return;
+  try {
+    await ensureMapKit();
+  } catch (e) {
+    setMapStatus('Apple Maps unavailable: ' + e.message);
+    return;
+  }
+  if (palmaresMap) return; // a concurrent call may have won the race
+
+  palmaresMap = new mapkit.Map(el, palmaresMapOptions({ showsZoomControl: true }));
+  mkSetRegion(palmaresMap, new mapkit.CoordinateRegion(
+    new mapkit.Coordinate(PALMARES_HOME_LATLNG[0], PALMARES_HOME_LATLNG[1]),
+    new mapkit.CoordinateSpan(0.35, 0.45)
+  ), el);
   addPalmaresLocateControl();
   setPalmaresMapDistanceFilter(palmaresMapState.segmentDistanceIndex || 0);
-  palmaresMapLayers.achievements = L.layerGroup().addTo(palmaresMap);
-  palmaresMapLayers.heat = L.layerGroup().addTo(palmaresMap);
-  // Route layer sits above achievements so the planned route line is
-  // always visible on top of KOM overlays.
-  palmaresMapLayers.route = L.layerGroup().addTo(palmaresMap);
-  palmaresMap.on('click', onMapClickForRouteBuilder);
-  setTimeout(function(){ palmaresMap.invalidateSize(); }, 150);
+  palmaresMapLayers.achievements = mkLayerGroup(palmaresMap);
+  palmaresMapLayers.heat = mkLayerGroup(palmaresMap);
+  // Route layer is created last so its overlays sit above the KOM lines.
+  palmaresMapLayers.route = mkLayerGroup(palmaresMap);
+  palmaresMap.addEventListener('single-tap', onMapClickForRouteBuilder);
 }
 
 function addPalmaresLocateControl() {
-  const LocateControl = L.Control.extend({
-    options: { position: 'topleft' },
-    onAdd: function() {
-      const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-      const btn = L.DomUtil.create('a', '', div);
-      btn.href = '#';
-      btn.title = 'Show my current location';
-      btn.innerHTML = '📍';
-      btn.style.width = '30px';
-      btn.style.height = '30px';
-      btn.style.lineHeight = '30px';
-      btn.style.textAlign = 'center';
-      btn.style.fontSize = '16px';
-      L.DomEvent.on(btn, 'click', function(e) {
-        L.DomEvent.preventDefault(e);
-        L.DomEvent.stopPropagation(e);
-        locatePalmaresUser();
-      });
-      return div;
-    }
-  });
-  palmaresMap.addControl(new LocateControl());
+  const host = document.getElementById('palmares-map');
+  if (!host || document.getElementById('mk-locate-btn')) return;
+  host.style.position = 'relative';
+  const btn = document.createElement('button');
+  btn.id = 'mk-locate-btn';
+  btn.title = 'Show my current location';
+  btn.textContent = '\u{1F4CD}';
+  btn.style.cssText = 'position:absolute;left:10px;top:10px;z-index:15;width:32px;height:32px;' +
+    'background:#161b22;border:1px solid #30363d;border-radius:8px;color:#e6edf3;' +
+    'cursor:pointer;font-size:15px;line-height:1;padding:0';
+  btn.onclick = function(e) { e.preventDefault(); e.stopPropagation(); locatePalmaresUser(); };
+  host.appendChild(btn);
 }
 
 let palmaresLocateMarker = null;
@@ -7593,10 +7755,13 @@ function locatePalmaresUser() {
   setMapStatus('Locating you...');
   navigator.geolocation.getCurrentPosition(function(pos) {
     const latlng = [pos.coords.latitude, pos.coords.longitude];
-    if (palmaresLocateMarker) palmaresMap.removeLayer(palmaresLocateMarker);
-    palmaresLocateMarker = L.circleMarker(latlng, { radius: 8, color: '#58a6ff', fillColor: '#58a6ff', fillOpacity: 0.9, weight: 2 }).addTo(palmaresMap);
-    palmaresLocateMarker.bindPopup('You are here').openPopup();
-    palmaresMap.setView(latlng, 13);
+    if (!palmaresMap) { setMapStatus(''); return; }
+    if (palmaresLocateMarker) { try { palmaresMap.removeAnnotation(palmaresLocateMarker); } catch(e) {} }
+    palmaresLocateMarker = mkDomAnnotation(mkCoord(latlng),
+      '<div style="width:16px;height:16px;border-radius:50%;background:#58a6ff;border:2px solid #fff;box-shadow:0 0 6px rgba(88,166,255,.8)"></div>',
+      { title: 'You are here', anchorOffset: new DOMPoint(0, 10) });
+    palmaresMap.addAnnotation(palmaresLocateMarker);
+    mkSetRegion(palmaresMap, new mapkit.CoordinateRegion(mkCoord(latlng), new mapkit.CoordinateSpan(0.08, 0.10)), document.getElementById('palmares-map'));
     setMapStatus('');
   }, function(err) {
     setMapStatus('');
@@ -7699,7 +7864,7 @@ let routeBuilderActive = false;
 let routeMode = 'bike';       // bike = OSRM bike, foot = OSRM foot, manual = direct trail/manual GPX points
 let routeWaypoints = [];      // [{lat, lng}] the user's clicked points
 let routeLegs = [];           // aligned with waypoints[i..i+1]: {points:[[lat,lng]...], distanceM, ascentM, mode}
-let routeMarkers = [];        // Leaflet marker refs for waypoints
+let routeMarkers = [];        // MapKit annotation refs for waypoints
 let routeLine = null;         // combined polyline
 let routeCalculating = false; // debounce for concurrent leg calls
 let routeSegmentHighlights = [];
@@ -7754,7 +7919,10 @@ function setRouteMode(mode) {
 
 function onMapClickForRouteBuilder(e) {
   if (!routeBuilderActive) return;
-  const wp = { lat: e.latlng.lat, lng: e.latlng.lng };
+  // MapKit reports a page point; convert it to a coordinate ourselves.
+  const c = palmaresMap.convertPointOnPageToCoordinate(e.pointOnPage);
+  if (!c) return;
+  const wp = { lat: c.latitude, lng: c.longitude };
   routeWaypoints.push(wp);
   addWaypointMarker(wp, routeWaypoints.length);
   if (routeWaypoints.length >= 2) {
@@ -7768,10 +7936,13 @@ function onMapClickForRouteBuilder(e) {
 function addWaypointMarker(wp, index) {
   const isStart = index === 1;
   const color = isStart ? '#3fb950' : '#e0691a';
-  const marker = L.circleMarker([wp.lat, wp.lng], {
-    radius: 7, color: '#0d1117', fillColor: color, weight: 2, opacity: 1, fillOpacity: 1
-  }).addTo(palmaresMapLayers.route);
-  marker.bindTooltip(String(index), { permanent: true, direction: 'top', offset: [0, -6], className: 'route-wp-tooltip' });
+  const marker = mkDomAnnotation(mkCoord([wp.lat, wp.lng]),
+    '<div style="display:flex;flex-direction:column;align-items:center">' +
+      '<div style="font-size:10px;font-weight:700;color:#e6edf3;text-shadow:0 0 3px #0d1117,0 0 3px #0d1117">' + index + '</div>' +
+      '<div style="width:14px;height:14px;border-radius:50%;background:' + color + ';border:2px solid #0d1117"></div>' +
+    '</div>',
+    { anchorOffset: new DOMPoint(0, 9) });
+  palmaresMapLayers.route.addAnnotation(marker);
   routeMarkers.push(marker);
 }
 
@@ -7807,7 +7978,7 @@ async function routeLeg(legIndex) {
       const data = await resp.json();
       if (!data.routes || !data.routes.length) throw new Error('No route found');
       const coords = data.routes[0].geometry.coordinates; // [lng, lat] pairs
-      points = coords.map(function(c){ return [c[1], c[0]]; }); // Leaflet uses [lat, lng]
+      points = coords.map(function(c){ return [c[1], c[0]]; }); // we use [lat, lng]
       distanceM = data.routes[0].distance;
     }
 
@@ -7890,10 +8061,7 @@ function renderRoutePolyline() {
     leg.points.forEach(function(p){ allPoints.push(p); });
   });
   if (allPoints.length >= 2) {
-    routeLine = L.polyline(allPoints, { color: '#e0691a', weight: 4, opacity: 0.9 });
-    routeLine.addTo(palmaresMapLayers.route);
-    // Ensure waypoint markers stay above the line
-    routeMarkers.forEach(function(m){ if (m.bringToFront) m.bringToFront(); });
+    routeLine = mkAddPolyline(palmaresMapLayers.route, allPoints, { color: '#e0691a', weight: 4, opacity: 0.9 });
   }
   findRouteSegmentsOnRoute();
 }
@@ -8073,8 +8241,10 @@ async function findRouteSegmentsOnRoute() {
     });
     routeSegmentsOnRoute.forEach(function(m) {
       const color = m.entry.kind === 'kom' ? '#C9A227' : '#58a6ff';
-      const line = L.polyline(m.points, { color: color, weight: 6, opacity: 0.95, dashArray: m.entry.kind === 'kom' ? null : '6,4' }).addTo(palmaresMapLayers.route);
-      line.bindPopup(popupForMapEntry(m.entry, m.detail, null) + '<div style="margin-top:6px;font-size:11px;color:#7d8590">On planned route · about ' + m.distanceFromRouteM + 'm from route line</div>');
+      const lineOpts = { color: color, weight: 6, opacity: 0.95,
+        popupHtml: popupForMapEntry(m.entry, m.detail, null) + '<div style="margin-top:6px;font-size:11px;color:#7d8590">On planned route · about ' + m.distanceFromRouteM + 'm from route line</div>' };
+      if (m.entry.kind !== 'kom') lineOpts.dash = [6, 4];
+      const line = mkAddPolyline(palmaresMapLayers.route, m.points, lineOpts);
       routeSegmentHighlights.push(line);
     });
   } catch(e) {
@@ -8219,7 +8389,10 @@ async function loadSavedRoute(id) {
   renderRoutePolyline();
   updateRouteStats();
   setRouteStatus('Loaded saved route: ' + (r.name || 'Saved route'));
-  if (routeLine && palmaresMap) { try { palmaresMap.fitBounds(routeLine.getBounds(), { padding:[24,24], maxZoom:14 }); } catch(e) {} }
+  if (routeLine && palmaresMap) {
+    const rp = getRouteTrackPoints();
+    mkSetRegion(palmaresMap, mkRegionForPoints(rp), document.getElementById('palmares-map'));
+  }
 }
 
 async function deleteSavedRoute(id) {
@@ -8470,13 +8643,13 @@ function renderHeatLayer() {
     // rides on the same road stack toward opaque - that's the "darker
     // where I go more" behavior. Black for bike stacks well against light
     // OSM tiles; red for runs is intuitive and distinct.
-    L.polyline(pts, {
-      color: sport === 'run' ? '#dc2626' : '#000000',
+    // Brighter than the old black/red pair: Apple's dark basemap needs a
+    // light trace to stack visibly, where OSM's light tiles needed a dark one.
+    mkAddPolyline(palmaresMapLayers.heat, pts, {
+      color: sport === 'run' ? '#ff6b6b' : '#4dd4ff',
       weight: 2,
-      opacity: 0.08,
-      lineJoin: 'round',
-      interactive: false // don't intercept clicks - achievement lines above should stay clickable
-    }).addTo(palmaresMapLayers.heat);
+      opacity: 0.10
+    });
   });
 
   return { activityCount, pointCount, missing };
@@ -8633,8 +8806,9 @@ async function renderTailwindSegments(dayIdx) {
 }
 
 async function renderPalmaresMap() {
-  initPalmaresMap();
+  await initPalmaresMap();
   if (!palmaresMap || !palmaresMapLayers.achievements) return;
+  hideMapPopup();
 
   // Wait for weather data before drawing so wind colors are actually
   // applied on the first render. The prior fire-and-forget approach set
@@ -8681,12 +8855,11 @@ async function renderPalmaresMap() {
       if (approx) {
         const wind = null; // no segment geometry, no bearing, no wind advantage
         const color = entry.kind === 'kom' ? '#C9A227' : '#58a6ff';
-        const marker = L.circleMarker(approx, {
+        mkAddCircle(palmaresMapLayers.achievements, approx, {
           radius: entry.kind === 'kom' ? 7 : 5,
-          color: color, fillColor: color,
-          weight: 2, opacity: 0.9, fillOpacity: 0.6
-        }).addTo(palmaresMapLayers.achievements);
-        marker.bindPopup(popupForMapEntry(entry, detail, wind) + '<div style="margin-top:6px;font-size:11px;color:#7d8590">Approximate location — enrich this segment for exact geometry.</div>');
+          fill: color, stroke: '#0d1117', fillOpacity: 0.85,
+          popupHtml: popupForMapEntry(entry, detail, wind) + '<div style="margin-top:6px;font-size:11px;color:#7d8590">Approximate location — enrich this segment for exact geometry.</div>'
+        });
         bounds.push(approx);
         drawn++;
         return;
@@ -8698,10 +8871,10 @@ async function renderPalmaresMap() {
     const color = mapColorForEntry(entry, points);
     const weight = entry.kind === 'kom' ? 5 : 4;
     const opacity = entry.kind === 'kom' ? 0.95 : 0.78;
-    const lineOptions = { color: color, weight: weight, opacity: opacity, lineJoin: 'round' };
-    if (entry.kind === 'top10') lineOptions.dashArray = '8 6';
-    const line = L.polyline(points, lineOptions).addTo(palmaresMapLayers.achievements);
-    line.bindPopup(popupForMapEntry(entry, detail, wind));
+    const lineOptions = { color: color, weight: weight, opacity: opacity,
+      popupHtml: popupForMapEntry(entry, detail, wind) };
+    if (entry.kind === 'top10') lineOptions.dash = [8, 6];
+    mkAddPolyline(palmaresMapLayers.achievements, points, lineOptions);
     points.forEach(function(p){ bounds.push(p); });
     drawn++;
   });
@@ -8720,7 +8893,8 @@ async function renderPalmaresMap() {
   if (!palmaresMapBoundsFit) {
     const nearHomeBounds = bounds.filter(isNearPalmaresHome);
     if (nearHomeBounds.length) {
-      try { palmaresMap.fitBounds(nearHomeBounds, { padding: [24, 24], maxZoom: 13 }); palmaresMapBoundsFit = true; } catch(e) {}
+      const r = mkRegionForPoints(nearHomeBounds);
+      if (r) { mkSetRegion(palmaresMap, r, document.getElementById('palmares-map')); palmaresMapBoundsFit = true; }
     } else if (heatStats.pointCount) {
       const heatBounds = [];
       allActivities.forEach(function(a) {
@@ -8729,7 +8903,8 @@ async function renderPalmaresMap() {
         if (pts.length) { heatBounds.push(pts[0]); heatBounds.push(pts[pts.length-1]); }
       });
       const nearHomeHeatBounds = heatBounds.filter(isNearPalmaresHome);
-      if (nearHomeHeatBounds.length) { palmaresMap.fitBounds(nearHomeHeatBounds, { padding: [24, 24], maxZoom: 12 }); palmaresMapBoundsFit = true; }
+      const r2 = mkRegionForPoints(nearHomeHeatBounds);
+      if (r2) { mkSetRegion(palmaresMap, r2, document.getElementById('palmares-map')); palmaresMapBoundsFit = true; }
     }
   }
 
@@ -8757,7 +8932,6 @@ async function renderPalmaresMap() {
     status += ' Road heatmap: darker roads mean more rides/runs on them; light traces are places you visited once.';
   }
   setMapStatus(status);
-  setTimeout(function(){ if (palmaresMap) palmaresMap.invalidateSize(); }, 50);
 }
 
 // INIT
