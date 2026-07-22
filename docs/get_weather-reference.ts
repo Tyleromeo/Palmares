@@ -133,7 +133,13 @@ function reshape(wk: any) {
         Math.round((d.precipitationChance ?? 0) * 100)),
     },
     hourly: {
-      time: hours.map((h) => (h.forecastStart ?? "").slice(0, 16)),
+      // Keep the full UTC timestamp, Z included. Open-Meteo returns
+      // timezone-naive local strings, but WeatherKit's forecastStart is
+      // UTC - trimming the Z off it would make the browser read 19:00Z as
+      // 7pm local instead of 3pm EDT, and the dashboard's "next few hours"
+      // strip would show the wrong hours. With the Z intact, `new Date()`
+      // parses it as UTC and renders in the viewer's own timezone.
+      time: hours.map((h) => h.forecastStart ?? ""),
       temperature_2m: hours.map((h) => cToF(h.temperature)),
       apparent_temperature: hours.map((h) => cToF(h.temperatureApparent ?? h.temperature)),
       weathercode: hours.map((h) => wmo(h.conditionCode)),

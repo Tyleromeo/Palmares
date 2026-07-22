@@ -201,13 +201,6 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
   .w-big { font-size: 26px; }
   .w-big.sm { font-size: 20px; }
   .w-stats { gap: 12px; }
-  .g4.swipe-strip, .g3.swipe-strip {
-    display: flex; overflow-x: auto; scroll-snap-type: x mandatory;
-    -webkit-overflow-scrolling: touch; gap: 10px; padding-bottom: 4px;
-    scrollbar-width: none;
-  }
-  .g4.swipe-strip::-webkit-scrollbar, .g3.swipe-strip::-webkit-scrollbar { display: none; }
-  .g4.swipe-strip > *, .g3.swipe-strip > * { flex: 0 0 62%; scroll-snap-align: start; }
 }
 
 /* COLLAPSIBLE CARDS - click the title to expand/collapse. Collapse state is
@@ -435,9 +428,9 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
   <div class="logo" onclick="showSection('dashboard')">Palmarès<span>Your training. Your records.</span></div>
   <div class="nav-links" id="nav-links" style="display:none">
     <button class="nav-btn active" data-section="dashboard" onclick="showSection('dashboard')">Today</button>
-    <button class="nav-btn" data-section="performance" onclick="showSection('performance')">Train</button>
-    <button class="nav-btn" data-section="segments" onclick="showSection('segments')">Palmarès</button>
     <button class="nav-btn" data-section="map" onclick="showSection('map')">Scout</button>
+    <button class="nav-btn" data-section="segments" onclick="showSection('segments')">Palmarès</button>
+    <button class="nav-btn" data-section="performance" onclick="showSection('performance')">Train</button>
     <button class="nav-btn" data-section="activities" onclick="showSection('activities')">Log</button>
   </div>
   <div class="nav-bottom">
@@ -882,13 +875,14 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 
 <!-- SEGMENTS -->
 <div id="section-segments" class="section">
-  <div class="section-header"><h2>Palmarès</h2><p>Your complete KOM and Top 10 history, built from a full scan of all your activities — your training, your records.</p></div>
+  <div class="section-header"><h2>Palmarès</h2><p>Your complete Strava KOM and Top 10 history.</p></div>
 
   <div class="card" id="collapse-koms">
     <div class="card-title collapse-head" onclick="toggleCollapse('koms')">
       <div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>All-time KOMs &amp; Top 10s</div>
     </div>
     <div class="collapse-body">
+      <div class="g3" id="kom-scan-totals" style="margin-bottom:12px"></div>
       <!-- Primary view switch: KOMs vs Top 10s, with live counts for the
            current sport filter so the toggle doubles as the scoreboard. -->
       <div style="margin-bottom:10px">
@@ -928,7 +922,6 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
       </div>
       <div id="kom-scan-status" style="font-size:13px;color:#7d8590;padding:8px 0"></div>
       <div id="kom-scan-controls" style="margin-bottom:12px"></div>
-      <div class="g3" id="kom-scan-totals" style="margin-bottom:12px"></div>
       <div id="full-kom-list"></div>
     </div>
   </div>
@@ -4786,7 +4779,8 @@ const WIDGET_ORDER = {
               'today-wx-card', 'today-opportunity-card', 'card-dashboard-events']
 };
 const WIDGET_FULLWIDTH = {
-  dashboard: ['last-activity-card', 'today-focus-card', 'today-wx-card', 'today-opportunity-card'],
+  dashboard: ['last-activity-card', 'today-focus-card', 'collapse-streaks',
+              'today-wx-card', 'today-opportunity-card'],
   performance: '*',
   segments: '*'
 };
@@ -5247,11 +5241,11 @@ function closeDetail(sectionName) {
 }
 
 // Metric strips become swipeable carousels on phones.
-function markSwipeStrips() {
-  document.querySelectorAll('.g4, .g3').forEach(function(el) {
-    if (el.children.length >= 3) el.classList.add('swipe-strip');
-  });
-}
+// Metric strips used to become horizontal carousels on phones. They don't
+// any more: every card is a full-width tile now, so a 2-column grid fits
+// without scrolling, and a sideways scroll inside a vertically scrolling
+// page hid values (form, this week) behind a gesture nobody discovers.
+function markSwipeStrips() { /* intentionally a no-op - see comment above */ }
 
 // ==================== COLLAPSIBLE CARDS ====================
 // Long pages (Performance especially) stack many tall cards, so each one can
