@@ -60,6 +60,8 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 .connect-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 2.5rem 2rem; }
 .connect-card h2 { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
 .connect-card p { font-size: 14px; color: #7d8590; line-height: 1.6; margin-bottom: 2rem; }
+.strava-connect-btn { background: none; border: none; padding: 0; cursor: pointer; line-height: 0; display: inline-block; }
+.strava-connect-btn img { display: block; max-width: 100%; height: auto; }
 .strava-btn { background: #FC4C02; color: #fff; border: none; border-radius: 8px; padding: 13px 28px; font-size: 14px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; }
 .strava-btn:hover { background: #e04400; }
 .manual-section { margin-top: 1.5rem; background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 1.25rem; text-align: left; }
@@ -408,9 +410,12 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
     <div class="connect-card">
       <h2>Palmarès</h2>
       <p>Your personal training intelligence dashboard. Connects to Strava for real-time fitness data, power analysis, gear tracking, and personalized coaching.</p>
-      <button class="strava-btn" onclick="connectStrava()">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169"/></svg>
-        Connect with Strava
+      <!-- Official "Connect with Strava" button, used unmodified as Strava's
+           brand guidelines (1.1) require. Do not restyle or recolor it:
+           the previous hand-rolled button redrew their logo glyph, which
+           the guidelines forbid. -->
+      <button class="strava-connect-btn" onclick="connectStrava()" aria-label="Connect with Strava">
+        <img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjM3IiBoZWlnaHQ9IjQ4IiB2aWV3Qm94PSIwIDAgMjM3IDQ4IiBmaWxsPSJub25lIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPgo8cmVjdCB3aWR0aD0iMjM2Ljg2NyIgaGVpZ2h0PSI0OCIgcng9IjYiIGZpbGw9IiNGQzUyMDAiLz4KPHBhdGggZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0xODAuNzQ5IDMxLjgxOTVMMTgwLjc0OCAzMS44MTg4SDE4NS4zNTdMMTg4LjE4OCAyNi4xMjY4TDE5MS4wMTkgMzEuODE4OEgxOTYuNjE4TDE4OC4xODcgMTUuNTQwM0wxODAuMTg0IDMwLjk5NDVMMTc3LjExMSAyNi41MDc4QzE3OS4wMDggMjUuNTkyOCAxODAuMTkxIDI0LjAwODEgMTgwLjE5MSAyMS43MzE4VjIxLjY4N0MxODAuMTkxIDIwLjA4MDMgMTc5LjcgMTguOTE5NyAxNzguNzYzIDE3Ljk4MjJDMTc3LjY2OSAxNi44ODg3IDE3NS45MDYgMTYuMTk2OCAxNzMuMTM5IDE2LjE5NjhIMTY1LjUwNlYzMS44MTk1SDE3MC43MjhWMjcuMzU1OEgxNzEuODQ0TDE3NC43OSAzMS44MTk1SDE4MC43NDlaTTIxMi45NTQgMTUuNTQwM0wyMDQuNTI0IDMxLjgxODhIMjEwLjEyNEwyMTIuOTU1IDI2LjEyNjhMMjE1Ljc4NiAzMS44MTg4SDIyMS4zODVMMjEyLjk1NCAxNS41NDAzWk0yMDAuNTc2IDMyLjQ1OTNMMjA5LjAwNiAxNi4xODA4SDIwMy40MDZMMjAwLjU3NSAyMS44NzI5TDE5Ny43NDQgMTYuMTgwOEgxOTIuMTQ0TDIwMC41NzYgMzIuNDU5M1pNMTcyLjk4MiAyMy42Mjg3QzE3NC4yMzIgMjMuNjI4NyAxNzQuOTkxIDIzLjA3MDggMTc0Ljk5MSAyMi4xMTEyVjIyLjA2NjNDMTc0Ljk5MSAyMS4wNjIxIDE3NC4yMSAyMC41NzExIDE3My4wMDUgMjAuNTcxMUgxNzAuNzI4VjIzLjYyODdIMTcyLjk4MlpNMTU0LjMzNyAyMC42MTU4SDE0OS43NFYxNi4xOTY4SDE2NC4xNTdWMjAuNjE1OEgxNTkuNTZWMzEuODE5NUgxNTQuMzM3VjIwLjYxNThaTTEzNy4wMTUgMjYuMTUwN0wxMzQuMjI1IDI5LjQ3NjFDMTM2LjIxMSAzMS4yMTcyIDEzOS4wNjggMzIuMTA5NyAxNDIuMjM3IDMyLjEwOTdDMTQ2LjQzMyAzMi4xMDk3IDE0OS4xMzMgMzAuMTAxIDE0OS4xMzMgMjYuODJWMjYuNzc1NkMxNDkuMTMzIDIzLjYyODcgMTQ2LjQ1NSAyMi40NjggMTQyLjQ2IDIxLjczMThDMTQwLjgwOCAyMS40MTkgMTQwLjM4NCAyMS4xNTE1IDE0MC4zODQgMjAuNzI3M1YyMC42ODI3QzE0MC4zODQgMjAuMzAzMyAxNDAuNzQyIDIwLjAzNTUgMTQxLjUyMyAyMC4wMzU1QzE0Mi45NzMgMjAuMDM1NSAxNDQuNzM3IDIwLjUwNDIgMTQ2LjIwOSAyMS41NzU0TDE0OC43NTQgMTguMDQ5M0MxNDYuOTQ2IDE2LjYyMDkgMTQ0LjcxNCAxNS45MDY1IDE0MS43MDEgMTUuOTA2NUMxMzcuMzk0IDE1LjkwNjUgMTM1LjA3MyAxOC4yMDU1IDEzNS4wNzMgMjEuMTczN1YyMS4yMTg1QzEzNS4wNzMgMjQuNTIxNCAxMzguMTUzIDI1LjUyNiAxNDEuNjU2IDI2LjIzOThDMTQzLjMzIDI2LjU3NDcgMTQzLjgyMSAyNi44MiAxNDMuODIxIDI3LjI2NjVWMjcuMzExM0MxNDMuODIxIDI3LjczNTIgMTQzLjQyIDI3Ljk4MDUgMTQyLjQ4MiAyNy45ODA1QzE0MC42NTIgMjcuOTgwNSAxMzguNzExIDI3LjQ0NTIgMTM3LjAxNSAyNi4xNTA3WiIgZmlsbD0id2hpdGUiLz4KPHBhdGggZD0iTTExNy45MiAzMS42ODEyVjIxLjk2MjJIMTE5LjkxOVYyNS43NTMzSDEyNC4xMzdWMjEuOTYyMkgxMjYuMTM2VjMxLjY4MTJIMTI0LjEzN1YyNy41MTc5SDExOS45MTlWMzEuNjgxMkgxMTcuOTJaIiBmaWxsPSJ3aGl0ZSIvPgo8cGF0aCBkPSJNMTEwLjk1OSAzMS42ODEyVjIzLjcxM0gxMDcuODQ0VjIxLjk2MjJIMTE2LjA4OFYyMy43MTNIMTEyLjk1OFYzMS42ODEySDExMC45NTlaIiBmaWxsPSJ3aGl0ZSIvPgo8cGF0aCBkPSJNMTA0LjAyIDMxLjY4MTJWMjEuOTYyMkgxMDYuMDE4VjMxLjY4MTJIMTA0LjAyWiIgZmlsbD0id2hpdGUiLz4KPHBhdGggZD0iTTkyLjEwMTMgMzEuNjgxMkw4OS41MzcxIDIxLjk2MjJIOTEuNjQ2NEw5Mi43NDkyIDI3LjIwMDhDOTIuODg3MSAyNy45MDM5IDkzLjAxMTIgMjguNDY5MSA5My4xMzUyIDI5LjMzNzZIOTMuMTkwNEM5My4zMjgyIDI4LjYwNyA5My40MTA5IDI4LjE1MiA5My42MzE1IDI3LjE4N0w5NC44NzIzIDIxLjk2MjJIOTYuOTY3N0w5OC4yMDg0IDI3LjE4N0M5OC40MjkgMjguMTUyIDk4LjUxMTcgMjguNjA3IDk4LjY0OTYgMjkuMzM3Nkg5OC43MDQ3Qzk4LjgyODggMjguNDY5MSA5OC45NTI5IDI3LjkwMzkgOTkuMDkwNyAyNy4yMDA4TDEwMC4yMDcgMjEuOTYyMkgxMDIuMzAzTDk5LjczODcgMzEuNjgxMkg5Ny42NTdMOTYuNDMwMSAyNi40OTc3Qzk2LjI2NDYgMjUuNzY3MSA5Ni4xNTQzIDI1LjI4NDYgOTUuOTQ3NiAyNC4yNzgySDk1Ljg5MjRDOTUuNjg1NiAyNS4yODQ2IDk1LjU3NTMgMjUuNzY3MSA5NS40MDk5IDI2LjQ5NzdMOTQuMTgzIDMxLjY4MTJIOTIuMTAxM1oiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik03OS45OTY1IDMxLjY4MTJWMjMuNzEzSDc2Ljg4MDlWMjEuOTYyMkg4NS4xMjQ4VjIzLjcxM0g4MS45OTU0VjMxLjY4MTJINzkuOTk2NVoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik03MS41MjQgMzEuODg4QzY4Ljc4MDYgMzEuODg4IDY2Ljk3NDYgMjkuODc1MyA2Ni45NzQ2IDI2LjgxNDhDNjYuOTc0NiAyMy43NjgxIDY4Ljc4MDYgMjEuNzU1NCA3MS41MjQgMjEuNzU1NEM3My42ODgzIDIxLjc1NTQgNzUuMzE1MSAyMy4wMjM3IDc1LjU3NyAyNC44NDM0TDczLjU3ODEgMjUuMzEyMUM3My4zNTc1IDI0LjE5NTUgNzIuNTg1NSAyMy41MzM4IDcxLjQ5NjQgMjMuNTMzOEM2OS45Nzk5IDIzLjUzMzggNjkuMDI4NyAyNC43ODgzIDY5LjAyODcgMjYuODE0OEM2OS4wMjg3IDI4Ljg0MTMgNjkuOTc5OSAzMC4xMDk2IDcxLjQ5NjQgMzAuMTA5NkM3Mi41ODU1IDMwLjEwOTYgNzMuMzU3NSAyOS40NDc5IDczLjU3ODEgMjguMzQ1TDc1LjU3NyAyOC44MTM4Qzc1LjMxNTEgMzAuNjMzNSA3My42ODgzIDMxLjg4OCA3MS41MjQgMzEuODg4WiIgZmlsbD0id2hpdGUiLz4KPHBhdGggZD0iTTU4LjQ1OSAzMS42ODEyVjIxLjk2MjJINjUuMjAwM1YyMy42NTc4SDYwLjQ1NzlWMjUuODYzNkg2NC44NTU2VjI3LjUwNDFINjAuNDU3OVYyOS45ODU2SDY1LjIwMDNWMzEuNjgxMkg1OC40NTlaIiBmaWxsPSJ3aGl0ZSIvPgo8cGF0aCBkPSJNNDcuNzY1NiAzMS42ODEyVjIxLjk2MjJINDkuOTU3Nkw1Mi45MjE2IDI2LjkxMTNDNTMuMzc2NSAyNy42NTU3IDUzLjY3OTggMjguMjg5OSA1NC4wMTA2IDI4Ljk5M0g1NC4wNzk2TDU0LjAzODIgMjYuNTExNVYyMS45NjIySDU1Ljk0MDdWMzEuNjgxMkg1My43NDg3TDUwLjc3MSAyNi43MzIxQzUwLjMyOTggMjUuOTg3NiA1MC4wMjY1IDI1LjM2NzMgNDkuNjgxOSAyNC42NTA0SDQ5LjYyNjdMNDkuNjY4MSAyNy4xMzE5VjMxLjY4MTJINDcuNzY1NloiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik0zNy4wNzQyIDMxLjY4MTJWMjEuOTYyMkgzOS4yNjYyTDQyLjIzMDEgMjYuOTExM0M0Mi42ODUxIDI3LjY1NTcgNDIuOTg4NCAyOC4yODk5IDQzLjMxOTIgMjguOTkzSDQzLjM4ODJMNDMuMzQ2OCAyNi41MTE1VjIxLjk2MjJINDUuMjQ5M1YzMS42ODEySDQzLjA1NzNMNDAuMDc5NSAyNi43MzIxQzM5LjYzODQgMjUuOTg3NiAzOS4zMzUxIDI1LjM2NzMgMzguOTkwNSAyNC42NTA0SDM4LjkzNTNMMzguOTc2NyAyNy4xMzE5VjMxLjY4MTJIMzcuMDc0MloiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik0zMC4yOTAzIDMxLjg4OEMyNy40NjQyIDMxLjg4OCAyNS42NTgyIDI5LjgyMDEgMjUuNjU4MiAyNi44MTQ4QzI1LjY1ODIgMjMuODIzMyAyNy40NjQyIDIxLjc1NTQgMzAuMjkwMyAyMS43NTU0QzMzLjExNjQgMjEuNzU1NCAzNC45MjIzIDIzLjgyMzMgMzQuOTIyMyAyNi44MTQ4QzM0LjkyMjMgMjkuODIwMSAzMy4xMTY0IDMxLjg4OCAzMC4yOTAzIDMxLjg4OFpNMzAuMjkwMyAzMC4xMDk2QzMxLjg0ODEgMzAuMTA5NiAzMi44NjgyIDI4LjkzNzggMzIuODY4MiAyNi44MTQ4QzMyLjg2ODIgMjQuNjkxOCAzMS44NDgxIDIzLjUzMzggMzAuMjkwMyAyMy41MzM4QzI4LjczMjUgMjMuNTMzOCAyNy43MTIzIDI0LjY5MTggMjcuNzEyMyAyNi44MTQ4QzI3LjcxMjMgMjguOTM3OCAyOC43MzI1IDMwLjEwOTYgMzAuMjkwMyAzMC4xMDk2WiIgZmlsbD0id2hpdGUiLz4KPHBhdGggZD0iTTE5Ljk4NjggMzEuODg4QzE3LjI0MzUgMzEuODg4IDE1LjQzNzUgMjkuODc1MyAxNS40Mzc1IDI2LjgxNDhDMTUuNDM3NSAyMy43NjgxIDE3LjI0MzUgMjEuNzU1NCAxOS45ODY4IDIxLjc1NTRDMjIuMTUxMiAyMS43NTU0IDIzLjc3OCAyMy4wMjM3IDI0LjAzOTkgMjQuODQzNEwyMi4wNDA5IDI1LjMxMjFDMjEuODIwNCAyNC4xOTU1IDIxLjA0ODQgMjMuNTMzOCAxOS45NTkzIDIzLjUzMzhDMTguNDQyOCAyMy41MzM4IDE3LjQ5MTYgMjQuNzg4MyAxNy40OTE2IDI2LjgxNDhDMTcuNDkxNiAyOC44NDEzIDE4LjQ0MjggMzAuMTA5NiAxOS45NTkzIDMwLjEwOTZDMjEuMDQ4NCAzMC4xMDk2IDIxLjgyMDQgMjkuNDQ3OSAyMi4wNDA5IDI4LjM0NUwyNC4wMzk5IDI4LjgxMzhDMjMuNzc4IDMwLjYzMzUgMjIuMTUxMiAzMS44ODggMTkuOTg2OCAzMS44ODhaIiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4K" alt="Connect with Strava" width="237" height="48" />
       </button>
     </div>
     <div style="display:none"><input type="text" id="manual-token" /><button onclick="loadWithManualToken()"></button></div>
@@ -3263,7 +3268,7 @@ function renderTodayCards() {
       const rankBadge = s.rank === 1 ? '<span class="badge b-gold" style="margin-right:6px">#1</span>'
         : s.rank != null ? '<span class="badge b-blue" style="margin-right:6px">#' + s.rank + '</span>' : '';
       oppEl.innerHTML = '<div class="row" style="border-bottom:none;padding-bottom:0">' +
-        '<div><div class="row-name">' + rankBadge + '<a href="' + stravaSegmentHref(s.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">' + escapeHTML(s.segment_name || 'Segment') + '</a></div>' +
+        '<div><div class="row-name">' + rankBadge + '<a href="' + stravaSegmentHref(s.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">' + escapeHTML(s.segment_name || 'Segment') + '</a></div>' +
         '<div class="row-meta">' + (s.distanceMi ? s.distanceMi.toFixed(2) + ' mi · ' : '') + 'today\'s wind favors this one</div></div>' +
         '<div class="row-right" style="color:' + color + '">' + label + '</div></div>';
     }).catch(function(){ oppEl.textContent = 'Could not compute today\'s opportunities.'; });
@@ -3342,7 +3347,7 @@ async function renderLastActivityHighlight() {
 
   body.innerHTML = `
     <div style="margin-bottom:10px">
-      <div style="font-size:17px;font-weight:700"><a href="${stravaActivityHref(a.id)}" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">${escapeHTML(a.name || 'Untitled activity')}</a> ${typeTag}</div>
+      <div style="font-size:17px;font-weight:700"><a href="${stravaActivityHref(a.id)}" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">${escapeHTML(a.name || 'Untitled activity')}</a> ${typeTag}</div>
       <div class="row-meta">${date}${location ? ' &middot; ' + escapeHTML(location) : ''} &middot; <a class="view-on-strava" href="${stravaActivityHref(a.id)}" target="_blank" rel="noopener noreferrer">View on Strava</a></div>
     </div>
     ${statsHtml}
@@ -4732,7 +4737,7 @@ function twirlRow(rank, entry, formatValue, valueColor) {
   const dateStr = new Date(entry.start_date || entry.date).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
   return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #21262d">' +
     '<span class="badge b-blue" style="flex-shrink:0">#' + rank + '</span>' +
-    '<div style="flex:1;min-width:0"><a href="' + stravaActivityHref(entry.activity_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" onclick="event.stopPropagation()">' + escapeHTML(entry.activity_name || 'Activity') + '</a><div class="row-meta">' + dateStr + '</div></div>' +
+    '<div style="flex:1;min-width:0"><a href="' + stravaActivityHref(entry.activity_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" onclick="event.stopPropagation()" title="View on Strava" aria-label="View on Strava">' + escapeHTML(entry.activity_name || 'Activity') + '</a><div class="row-meta">' + dateStr + '</div></div>' +
     '<div style="flex-shrink:0;font-weight:600;color:' + valueColor + '">' + formatValue(entry) + '</div>' +
   '</div>';
 }
@@ -5159,7 +5164,7 @@ function renderCalDayDetail() {
       return '<div style="border:1px solid #21262d;border-left:3px solid ' + col + ';border-radius:6px;padding:10px;margin-bottom:8px">' +
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">' +
           '<div>' +
-            '<a href="' + stravaActivityHref(a.id) + '" target="_blank" rel="noopener noreferrer" style="font-size:13px;font-weight:500;color:#e6edf3;text-decoration:none">' + escapeHTML(a.name || 'Untitled') + '</a>' +
+            '<a href="' + stravaActivityHref(a.id) + '" target="_blank" rel="noopener noreferrer" style="font-size:13px;font-weight:500;color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">' + escapeHTML(a.name || 'Untitled') + '</a>' +
             '<div style="font-size:11px;color:#7d8590;margin-top:2px">' + escapeHTML(activityTypeLabel(a.type)) + (timeLabel ? ' &middot; ' + timeLabel : '') +
               ' &middot; <a class="view-on-strava" href="' + stravaActivityHref(a.id) + '" target="_blank" rel="noopener noreferrer">View on Strava</a></div>' +
           '</div>' +
@@ -6715,7 +6720,7 @@ function renderCollaborators(filter) {
       const mi = ((a.distance||0)/1609.34).toFixed(1);
       const athletes = parseInt(a.athlete_count||0,10);
       return `<div class="row">
-        <div><div class="row-name"><a href="${stravaActivityHref(a.id)}" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">${escapeHTML(a.name || 'Untitled activity')}</a>${tag}</div><div class="row-meta">${date} &middot; ${type} &middot; ${athletes} athletes</div></div>
+        <div><div class="row-name"><a href="${stravaActivityHref(a.id)}" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">${escapeHTML(a.name || 'Untitled activity')}</a>${tag}</div><div class="row-meta">${date} &middot; ${type} &middot; ${athletes} athletes</div></div>
         <div class="row-right">${mi} mi<small>${Math.round((a.total_elevation_gain||0)*3.281).toLocaleString()} ft</small></div>
       </div>`;
     }).join('');
@@ -6900,9 +6905,9 @@ function renderActivities() {
   const totalsEl = document.getElementById('activity-totals');
   if (totalsEl) {
     totalsEl.innerHTML = `
-      <div class="metric"><div class="metric-label">Biggest ride</div><div class="metric-val">${biggestRide ? '<a href="'+stravaActivityHref(biggestRide.id)+'" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none">'+(biggestRide.distance/1609.34).toFixed(1)+' mi</a>' : '--'}</div><div class="metric-sub">${biggestRide ? new Date(biggestRide.start_date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : 'all time'}</div></div>
+      <div class="metric"><div class="metric-label">Biggest ride</div><div class="metric-val">${biggestRide ? '<a href="'+stravaActivityHref(biggestRide.id)+'" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none" title="View on Strava" aria-label="View on Strava">'+(biggestRide.distance/1609.34).toFixed(1)+' mi</a>' : '--'}</div><div class="metric-sub">${biggestRide ? new Date(biggestRide.start_date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : 'all time'}</div></div>
       <div class="metric"><div class="metric-label">Biggest climb</div><div class="metric-val">${stats && stats.biggest_climb_elevation_gain ? Math.round(stats.biggest_climb_elevation_gain*3.281).toLocaleString() + ' ft' : '--'}</div><div class="metric-sub">single ride</div></div>
-      <div class="metric"><div class="metric-label">Longest run</div><div class="metric-val">${longestRun ? '<a href="'+stravaActivityHref(longestRun.id)+'" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none">'+(longestRun.distance/1609.34).toFixed(1)+' mi</a>' : '--'}</div><div class="metric-sub">${longestRun ? new Date(longestRun.start_date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : 'all time'}</div></div>
+      <div class="metric"><div class="metric-label">Longest run</div><div class="metric-val">${longestRun ? '<a href="'+stravaActivityHref(longestRun.id)+'" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none" title="View on Strava" aria-label="View on Strava">'+(longestRun.distance/1609.34).toFixed(1)+' mi</a>' : '--'}</div><div class="metric-sub">${longestRun ? new Date(longestRun.start_date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : 'all time'}</div></div>
       <div class="metric"><div class="metric-label">All-time ride miles</div><div class="metric-val">${rideAllTimeMi}</div><div class="metric-sub">${rideTotal?rideTotal.count.toLocaleString()+' total rides':''}</div></div>
       <div class="metric"><div class="metric-label">All-time ride elevation</div><div class="metric-val">${rideAllTimeElev}k</div><div class="metric-sub">feet climbed all time</div></div>
       <div class="metric"><div class="metric-label">YTD ride miles</div><div class="metric-val">${rideYtdMi}</div><div class="metric-sub">${rideYtdElev}k ft this year</div></div>
@@ -6950,7 +6955,7 @@ function renderActivityList() {
     const achTag = r.achievement_count > 0 ? ' <span class="badge b-gold">+' + r.achievement_count + '</span>' : '';
     const gear = r.gear_id ? gearData.find(g => g.id === r.gear_id) : null;
     const gearLabel = gear ? ' <span style="font-size:10px;color:#7d8590">' + escapeHTML(gear.name || '') + '</span>' : '';
-    return '<div class="row"><div><div class="row-name"><a href="' + stravaActivityHref(r.id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">' + escapeHTML(r.name || 'Untitled activity') + '</a>' + typeTag + achTag + gearLabel + '</div><div class="row-meta">' + date + ' &middot; ' + t + ' &middot; ' + watts + hr + elev + '</div></div><div class="row-right">' + mi + ' mi<small>' + (r.suffer_score ? 'Suffer: ' + r.suffer_score : '') + '</small></div></div>';
+    return '<div class="row"><div><div class="row-name"><a href="' + stravaActivityHref(r.id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">' + escapeHTML(r.name || 'Untitled activity') + '</a>' + typeTag + achTag + gearLabel + '</div><div class="row-meta">' + date + ' &middot; ' + t + ' &middot; ' + watts + hr + elev + '</div></div><div class="row-right">' + mi + ' mi<small>' + (r.suffer_score ? 'Suffer: ' + r.suffer_score : '') + '</small></div></div>';
   }).join('');
 }
 
@@ -7105,7 +7110,7 @@ function renderTownExpansion(entries, view) {
     return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px">' +
       '<div style="flex-shrink:0">' + badge + '</div>' +
       '<div style="flex:1;min-width:0;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-        '<a href="' + stravaSegmentHref(e.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">' + escapeHTML(e.segment_name || 'Segment') + '</a>' +
+        '<a href="' + stravaSegmentHref(e.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">' + escapeHTML(e.segment_name || 'Segment') + '</a>' +
       '</div>' +
       '<div style="flex-shrink:0;color:#7d8590;font-size:11px">' + date + ' &middot; ' + t + '</div>' +
     '</div>';
@@ -7579,7 +7584,7 @@ async function renderFullKomList() {
       rankBadge = '<span class="badge b-blue">#' + e.rank + '</span>';
     }
 
-    return '<div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid #21262d"><div style="flex-shrink:0;padding-top:1px">' + rankBadge + '</div><div><div class="row-name"><a href="' + stravaSegmentHref(e.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">' + escapeHTML(e.segment_name || 'Segment') + '</a>' + sportBadge + '</div><div class="row-meta">' + date + ' &middot; ' + t + '</div>' + detailLine + '</div></div>';
+    return '<div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid #21262d"><div style="flex-shrink:0;padding-top:1px">' + rankBadge + '</div><div><div class="row-name"><a href="' + stravaSegmentHref(e.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">' + escapeHTML(e.segment_name || 'Segment') + '</a>' + sportBadge + '</div><div class="row-meta">' + date + ' &middot; ' + t + '</div>' + detailLine + '</div></div>';
   }
 
   function sortByMode(list) {
@@ -8970,7 +8975,7 @@ async function renderTailwindSegments(dayIdx) {
           : '<span style="font-size:10px;color:#7d8590;margin-right:6px">Outside Top 10</span>';
       return '<div class="row">' +
         '<div>' +
-          '<div class="row-name">' + rankBadge + '<a href="' + stravaSegmentHref(s.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none">' + escapeHTML(s.segment_name || 'Segment') + '</a></div>' +
+          '<div class="row-name">' + rankBadge + '<a href="' + stravaSegmentHref(s.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">' + escapeHTML(s.segment_name || 'Segment') + '</a></div>' +
           (s.distanceMi ? '<div class="row-meta">' + s.distanceMi.toFixed(2) + ' mi</div>' : '') +
         '</div>' +
         '<div class="row-right" style="color:' + color + '">' + label + '</div>' +
