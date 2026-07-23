@@ -405,6 +405,8 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 .map-shell { position: relative; }
 #palmares-map { height: 72vh; min-height: 520px; border-radius: 12px; overflow: hidden; background: #0d1117; border: 1px solid #30363d; }
 .map-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
+.map-subbar { margin-bottom:8px; }
+.map-group-label { font-size:11px; color:#7d8590; text-transform:uppercase; letter-spacing:0.5px; margin-right:2px; }
 .segment-distance-filter { background:#0d1117; border:1px solid #30363d; border-radius:10px; padding:10px 12px; margin:-2px 0 12px; }
 .segment-distance-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 .segment-distance-title { font-size:11px; color:#7d8590; text-transform:uppercase; letter-spacing:0.5px; font-weight:600; }
@@ -1029,17 +1031,28 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
       <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21 1 6"/><line x1="8" y1="3" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="21"/></svg>Segment hunter map</div>
       <span id="map-counts" style="font-size:12px;color:#7d8590"></span>
     </div>
-    <div class="map-toolbar">
-      <button class="map-toggle active" id="map-toggle-koms" onclick="togglePalmaresMapLayer('koms')">KOMs / CRs</button>
-      <button class="map-toggle active" id="map-toggle-top10s" onclick="togglePalmaresMapLayer('top10s')">Top 10s</button>
-      <button class="map-toggle active" id="map-toggle-bike" onclick="togglePalmaresMapLayer('bike')">Bike</button>
-      <button class="map-toggle active" id="map-toggle-run" onclick="togglePalmaresMapLayer('run')">Run</button>
-      <button class="map-toggle active" id="map-toggle-wind-today" onclick="setPalmaresMapWind('today')">Wind Today</button>
-      <button class="map-toggle" id="map-toggle-wind-tomorrow" onclick="setPalmaresMapWind('tomorrow')">Wind Tomorrow</button>
-      <button class="map-toggle" id="map-toggle-heat" onclick="togglePalmaresMapLayer('heat')">Heatmap</button>
-      <button class="map-toggle" id="map-toggle-route" onclick="toggleRouteBuilder()" style="border-color:#e0691a">Route builder</button>
+    <div class="map-toolbar" id="map-mode-bar">
+      <button class="map-toggle active" id="map-mode-segments" onclick="setMapMode('segments')">Segments</button>
+      <button class="map-toggle" id="map-mode-heat" onclick="setMapMode('heat')">Heatmap</button>
+      <button class="map-toggle" id="map-mode-route" onclick="setMapMode('route')" style="border-color:#e0691a">Route builder</button>
     </div>
-    <div class="segment-distance-filter">
+    <div class="map-toolbar map-subbar" id="map-group-type">
+      <span class="map-group-label">Type</span>
+      <button class="map-toggle active" id="map-ach-kom" onclick="setMapAchievement('kom')">KOMs / CRs</button>
+      <button class="map-toggle" id="map-ach-top10" onclick="setMapAchievement('top10')">Top 10s</button>
+    </div>
+    <div class="map-toolbar map-subbar" id="map-group-sport">
+      <span class="map-group-label">Sport</span>
+      <button class="map-toggle active" id="map-sport-bike" onclick="setMapSport('bike')">Bike</button>
+      <button class="map-toggle" id="map-sport-run" onclick="setMapSport('run')">Run</button>
+    </div>
+    <div class="map-toolbar map-subbar" id="map-group-wind">
+      <span class="map-group-label">Wind</span>
+      <button class="map-toggle" id="map-wind-off" onclick="setMapWind('off')">Off</button>
+      <button class="map-toggle active" id="map-wind-today" onclick="setMapWind('today')">Today</button>
+      <button class="map-toggle" id="map-wind-tomorrow" onclick="setMapWind('tomorrow')">Tomorrow</button>
+    </div>
+    <div class="segment-distance-filter" id="map-group-distance">
       <div class="segment-distance-row">
         <div class="segment-distance-title">Segment length</div>
         <input id="map-segment-distance" class="segment-distance-range" type="range" min="0" max="9" step="1" value="0" oninput="setPalmaresMapDistanceFilter(this.value)" />
@@ -8417,7 +8430,10 @@ async function renderFullKomList() {
 // ==================== MAP ====================
 let palmaresMap = null;
 let palmaresMapLayers = { achievements: null, heat: null, route: null };
-let palmaresMapState = { koms:true, top10s:true, bike:true, run:true, wind:true, heat:false, windDay:'today', segmentDistanceIndex:0 };
+// One view at a time (mode), and each of the three segment filters is a single
+// choice - you can't stack KOMs+Top10s or Bike+Run any more. wind is
+// 'off'|'today'|'tomorrow'. Heatmap and Route builder are their own modes.
+let palmaresMapState = { mode:'segments', achievement:'kom', sport:'bike', wind:'today', segmentDistanceIndex:0 };
 let palmaresMapBoundsFit = false; // only auto-fit map bounds once; subsequent renders preserve the user's zoom/pan
 
 // =========== APPLE MAPKIT JS ==========================================
@@ -8726,28 +8742,43 @@ function setMapStatus(msg) {
   if (el) el.textContent = msg;
 }
 
-function togglePalmaresMapLayer(key) {
-  palmaresMapState[key] = !palmaresMapState[key];
-  const btn = document.getElementById('map-toggle-' + key);
-  if (btn) btn.classList.toggle('active', !!palmaresMapState[key]);
+// Mode picks the view: segments (KOM/Top-10 lines), heat (heatmap), or route
+// (route builder). Only one is ever shown. Achievement/sport/wind are each a
+// single choice within the segments (and, for sport, heatmap) view.
+function setMapMode(mode) {
+  palmaresMapState.mode = mode;
+  routeBuilderActive = (mode === 'route');
+  const panel = document.getElementById('route-builder-panel');
+  if (panel) panel.style.display = (mode === 'route') ? 'block' : 'none';
+  if (palmaresMap) palmaresMap.getContainer().style.cursor = (mode === 'route') ? 'crosshair' : '';
+  syncMapToolbar();
+  if (mode === 'route') { updateRouteStats(); renderSavedRoutes(); }
   renderPalmaresMap();
 }
+function setMapAchievement(a) { palmaresMapState.achievement = a; syncMapToolbar(); renderPalmaresMap(); }
+function setMapSport(s) { palmaresMapState.sport = s; syncMapToolbar(); renderPalmaresMap(); }
+function setMapWind(w) { palmaresMapState.wind = w; syncMapToolbar(); renderPalmaresMap(); }
 
-function setPalmaresMapWind(day) {
-  // Clicking the active day again turns wind coloring off. Clicking the
-  // inactive day switches to it and enables wind coloring. This gives us
-  // "off / today / tomorrow" states via just two buttons.
-  if (palmaresMapState.wind && palmaresMapState.windDay === day) {
-    palmaresMapState.wind = false;
-  } else {
-    palmaresMapState.wind = true;
-    palmaresMapState.windDay = day;
-  }
-  ['today', 'tomorrow'].forEach(function(d) {
-    const btn = document.getElementById('map-toggle-wind-' + d);
-    if (btn) btn.classList.toggle('active', palmaresMapState.wind && palmaresMapState.windDay === d);
-  });
-  renderPalmaresMap();
+// Reflect state onto the toolbar: active button per group, and show only the
+// control groups that apply to the current mode.
+function syncMapToolbar() {
+  const st = palmaresMapState;
+  const setActive = function(id, on) { const b = document.getElementById(id); if (b) b.classList.toggle('active', !!on); };
+  setActive('map-mode-segments', st.mode === 'segments');
+  setActive('map-mode-heat', st.mode === 'heat');
+  setActive('map-mode-route', st.mode === 'route');
+  setActive('map-ach-kom', st.achievement === 'kom');
+  setActive('map-ach-top10', st.achievement === 'top10');
+  setActive('map-sport-bike', st.sport === 'bike');
+  setActive('map-sport-run', st.sport === 'run');
+  setActive('map-wind-off', st.wind === 'off');
+  setActive('map-wind-today', st.wind === 'today');
+  setActive('map-wind-tomorrow', st.wind === 'tomorrow');
+  const show = function(id, on) { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  show('map-group-type', st.mode === 'segments');
+  show('map-group-sport', st.mode === 'segments' || st.mode === 'heat');
+  show('map-group-wind', st.mode === 'segments');
+  show('map-group-distance', st.mode === 'segments');
 }
 
 const MAP_SEGMENT_DISTANCE_BINS = [
@@ -8823,18 +8854,9 @@ let routeSegmentHighlights = [];
 let routeSegmentsOnRoute = [];
 let savedRoutesCache = [];
 
+// Route building is now a map mode; keep this as a thin alias for any caller.
 function toggleRouteBuilder() {
-  routeBuilderActive = !routeBuilderActive;
-  const btn = document.getElementById('map-toggle-route');
-  const panel = document.getElementById('route-builder-panel');
-  if (btn) btn.classList.toggle('active', routeBuilderActive);
-  if (panel) panel.style.display = routeBuilderActive ? 'block' : 'none';
-  if (palmaresMap) {
-    // Change cursor to signal click-to-drop mode
-    palmaresMap.getContainer().style.cursor = routeBuilderActive ? 'crosshair' : '';
-  }
-  updateRouteStats();
-  renderSavedRoutes();
+  setMapMode(palmaresMapState.mode === 'route' ? 'segments' : 'route');
 }
 
 
@@ -9461,7 +9483,7 @@ function getMapWind(day) {
 }
 
 function windForLine(points) {
-  const wind = getMapWind(palmaresMapState.windDay);
+  const wind = getMapWind(palmaresMapState.wind === 'tomorrow' ? 'tomorrow' : 'today');
   if (!wind || !points || points.length < 2) return null;
   const start = points[0], end = points[points.length - 1];
   const segmentBearing = bearingBetween(start, end);
@@ -9477,7 +9499,7 @@ function windForLine(points) {
 }
 
 function mapColorForEntry(entry, points) {
-  if (palmaresMapState.wind) {
+  if (palmaresMapState.wind !== 'off') {
     const wind = windForLine(points);
     if (wind) return wind.color;
   }
@@ -9538,8 +9560,8 @@ function approximatePointForEntry(entry) {
 
 function isMapEntryVisible(entry) {
   const sport = sportGroupForType(entry.activity_type);
-  const sportOK = (sport === 'ride' && palmaresMapState.bike) || (sport === 'run' && palmaresMapState.run);
-  const kindOK = (entry.kind === 'kom' && palmaresMapState.koms) || (entry.kind === 'top10' && palmaresMapState.top10s);
+  const sportOK = (sport === 'ride' && palmaresMapState.sport === 'bike') || (sport === 'run' && palmaresMapState.sport === 'run');
+  const kindOK = (entry.kind === 'kom' && palmaresMapState.achievement === 'kom') || (entry.kind === 'top10' && palmaresMapState.achievement === 'top10');
   return sportOK && kindOK;
 }
 
@@ -9559,7 +9581,7 @@ function popupForMapEntry(entry, detail, wind) {
   const date = entry.date ? new Date(entry.date).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '';
   const dist = detail && detail.distance ? (detail.distance/1609.34).toFixed(2) + ' mi' : '';
   const elev = detail && detail.elevation_gain ? Math.round(detail.elevation_gain*3.281) + ' ft gain' : '';
-  const windLine = wind ? '<div><strong>' + (palmaresMapState.windDay === 'today' ? 'Today' : 'Tomorrow') + ':</strong> ' + wind.label + ' <span style="color:#57606a">(' + Math.round(wind.windSpeed) + ' mph wind)</span></div>' : '<div><strong>Wind:</strong> needs segment direction + forecast</div>';
+  const windLine = wind ? '<div><strong>' + (palmaresMapState.wind === 'tomorrow' ? 'Tomorrow' : 'Today') + ':</strong> ' + wind.label + ' <span style="color:#57606a">(' + Math.round(wind.windSpeed) + ' mph wind)</span></div>' : '<div><strong>Wind:</strong> needs segment direction + forecast</div>';
   return '<div class="map-popup">' +
     '<div class="map-popup-title">' + escapeHTML(entry.segment_name || 'Segment') + '</div>' +
     '<div><strong>' + rank + '</strong> &middot; ' + sport + '</div>' +
@@ -9575,7 +9597,7 @@ function popupForMapEntry(entry, detail, wind) {
 function renderHeatLayer() {
   if (!palmaresMap || !palmaresMapLayers.heat) return { activityCount: 0, pointCount: 0, missing: 0 };
   palmaresMapLayers.heat.clearLayers();
-  if (!palmaresMapState.heat) return { activityCount: 0, pointCount: 0, missing: 0 };
+  if (palmaresMapState.mode !== 'heat') return { activityCount: 0, pointCount: 0, missing: 0 };
 
   // Road-style heatmap: draw each activity polyline as a semi-transparent
   // line. Where multiple activities overlap the same road, the alpha
@@ -9584,12 +9606,12 @@ function renderHeatLayer() {
   // Strava's own heatmap does and is what road cyclists actually want
   // (which roads have I ridden, and how often).
   let activityCount = 0, missing = 0, pointCount = 0;
-  const anySport = !!(palmaresMapState.bike || palmaresMapState.run);
+  const anySport = true; // sport is always a single active choice now
   if (!anySport) return { activityCount: 0, pointCount: 0, missing: 0 };
 
   allActivities.forEach(function(a) {
     const sport = sportGroupForType(a.type);
-    if (!((sport === 'ride' && palmaresMapState.bike) || (sport === 'run' && palmaresMapState.run))) return;
+    if (!((sport === 'ride' && palmaresMapState.sport === 'bike') || (sport === 'run' && palmaresMapState.sport === 'run'))) return;
     const poly = a.map && (a.map.summary_polyline || a.map.polyline);
     const pts = decodePolyline(poly);
     if (!pts.length) { missing++; return; }
@@ -9783,57 +9805,63 @@ async function renderPalmaresMap() {
     }
   }
 
+  syncMapToolbar();
   palmaresMapLayers.achievements.clearLayers();
 
   const result = await getMapAchievementEntries();
-  const visibleSportKindEntries = result.entries.filter(isMapEntryVisible);
   let hiddenByDistance = 0;
-  const entries = visibleSportKindEntries.filter(function(entry) {
-    const detail = result.enrichedCache[entry.segment_id];
-    const points = pointsForMapEntry(entry, detail);
-    const distanceMi = distanceMilesForMapEntry(entry, detail, points);
-    if (!isMapDistanceVisible(distanceMi)) { hiddenByDistance++; return false; }
-    entry._mapPoints = points;
-    entry._mapDistanceMi = distanceMi;
-    return true;
-  });
+  let entries = [];
   const bounds = [];
   let drawn = 0, missingGeometry = 0;
 
-  entries.forEach(function(entry) {
-    const detail = result.enrichedCache[entry.segment_id];
-    const points = entry._mapPoints || pointsForMapEntry(entry, detail);
-    if (points.length < 2) {
-      // Segment isn't enriched yet, but we can still show an approximate
-      // marker at the activity's midpoint so users see their KOM exists
-      // on the map even during a partial scan.
-      const approx = approximatePointForEntry(entry);
-      if (approx) {
-        const wind = null; // no segment geometry, no bearing, no wind advantage
-        const color = entry.kind === 'kom' ? '#C9A227' : '#58a6ff';
-        mkAddCircle(palmaresMapLayers.achievements, approx, {
-          radius: entry.kind === 'kom' ? 7 : 5,
-          fill: color, stroke: '#0d1117', fillOpacity: 0.85,
-          popupHtml: popupForMapEntry(entry, detail, wind) + '<div style="margin-top:6px;font-size:11px;color:#7d8590">Approximate location — enrich this segment for exact geometry.</div>'
-        });
-        bounds.push(approx);
-        drawn++;
+  // Segments mode draws the KOM/Top-10 lines. Heatmap and Route modes are
+  // their own separate views and leave the achievements layer empty.
+  if (palmaresMapState.mode === 'segments') {
+    entries = result.entries.filter(isMapEntryVisible).filter(function(entry) {
+      const detail = result.enrichedCache[entry.segment_id];
+      const points = pointsForMapEntry(entry, detail);
+      const distanceMi = distanceMilesForMapEntry(entry, detail, points);
+      if (!isMapDistanceVisible(distanceMi)) { hiddenByDistance++; return false; }
+      entry._mapPoints = points;
+      entry._mapDistanceMi = distanceMi;
+      return true;
+    });
+
+    entries.forEach(function(entry) {
+      const detail = result.enrichedCache[entry.segment_id];
+      const points = entry._mapPoints || pointsForMapEntry(entry, detail);
+      if (points.length < 2) {
+        // Segment isn't enriched yet, but we can still show an approximate
+        // marker at the activity's midpoint so users see their KOM exists
+        // on the map even during a partial scan.
+        const approx = approximatePointForEntry(entry);
+        if (approx) {
+          const wind = null; // no segment geometry, no bearing, no wind advantage
+          const color = entry.kind === 'kom' ? '#C9A227' : '#58a6ff';
+          mkAddCircle(palmaresMapLayers.achievements, approx, {
+            radius: entry.kind === 'kom' ? 7 : 5,
+            fill: color, stroke: '#0d1117', fillOpacity: 0.85,
+            popupHtml: popupForMapEntry(entry, detail, wind) + '<div style="margin-top:6px;font-size:11px;color:#7d8590">Approximate location — enrich this segment for exact geometry.</div>'
+          });
+          bounds.push(approx);
+          drawn++;
+          return;
+        }
+        missingGeometry++;
         return;
       }
-      missingGeometry++;
-      return;
-    }
-    const wind = windForLine(points);
-    const color = mapColorForEntry(entry, points);
-    const weight = entry.kind === 'kom' ? 5 : 4;
-    const opacity = entry.kind === 'kom' ? 0.95 : 0.78;
-    const lineOptions = { color: color, weight: weight, opacity: opacity,
-      popupHtml: popupForMapEntry(entry, detail, wind) };
-    if (entry.kind === 'top10') lineOptions.dash = [8, 6];
-    mkAddPolyline(palmaresMapLayers.achievements, points, lineOptions);
-    points.forEach(function(p){ bounds.push(p); });
-    drawn++;
-  });
+      const wind = windForLine(points);
+      const color = mapColorForEntry(entry, points);
+      const weight = entry.kind === 'kom' ? 5 : 4;
+      const opacity = entry.kind === 'kom' ? 0.95 : 0.78;
+      const lineOptions = { color: color, weight: weight, opacity: opacity,
+        popupHtml: popupForMapEntry(entry, detail, wind) };
+      if (entry.kind === 'top10') lineOptions.dash = [8, 6];
+      mkAddPolyline(palmaresMapLayers.achievements, points, lineOptions);
+      points.forEach(function(p){ bounds.push(p); });
+      drawn++;
+    });
+  }
 
   const heatStats = renderHeatLayer();
   // Only auto-fit on the very first render. Otherwise toggling a layer off
@@ -9864,28 +9892,40 @@ async function renderPalmaresMap() {
     }
   }
 
+  const sportWord = palmaresMapState.sport === 'run' ? 'run' : 'ride';
   const countsEl = document.getElementById('map-counts');
   if (countsEl) {
     const rangeLabel = currentMapSegmentDistanceLabel();
-    countsEl.textContent = drawn + ' mapped segments' + (rangeLabel !== 'All lengths' ? ' · ' + rangeLabel : '') + (palmaresMapState.heat ? ' · ' + heatStats.activityCount + ' heatmap activities' : '');
+    if (palmaresMapState.mode === 'heat') {
+      countsEl.textContent = heatStats.activityCount + ' heatmap ' + (palmaresMapState.sport === 'run' ? 'runs' : 'rides');
+    } else if (palmaresMapState.mode === 'route') {
+      countsEl.textContent = routeWaypoints.length ? (routeWaypoints.length + ' waypoint' + (routeWaypoints.length === 1 ? '' : 's')) : 'Tap the map to drop waypoints';
+    } else {
+      countsEl.textContent = drawn + ' mapped segments' + (rangeLabel !== 'All lengths' ? ' · ' + rangeLabel : '');
+    }
   }
 
   let status = '';
   const hasWindData = !!window._wxData;
   if (!athleteData) status = 'Connect Strava first, then this map will draw from your loaded activity and segment data.';
+  else if (palmaresMapState.mode === 'route') {
+    status = 'Route builder: tap the map to drop waypoints and legs snap to roads. Pick Bike, Run/Walk, or Trail/Manual above, then download the GPX when done.';
+  } else if (palmaresMapState.mode === 'heat') {
+    status = heatStats.activityCount
+      ? ('Road heatmap of ' + heatStats.activityCount + ' ' + (palmaresMapState.sport === 'run' ? 'runs' : 'rides') + ': darker roads mean more times on them; light traces are places you went once.')
+      : 'No ' + (palmaresMapState.sport === 'run' ? 'runs' : 'rides') + ' with map data yet for the heatmap.';
+  }
   else if (!result.entries.length) status = 'No KOM or Top 10 scan data found yet. Go to Segments and run the full scan to populate this map.';
-  else if (drawn === 0) status = 'Your KOM/Top 10 list exists, but no segment geometry or activity polylines are available yet. Enrich segments in the Segments tab so exact geometry can be shown.';
+  else if (drawn === 0) status = 'No ' + (palmaresMapState.achievement === 'kom' ? 'KOM/CR' : 'Top 10') + ' ' + sportWord + ' segments with geometry for this filter. Enrich segments in the Segments tab, or try the other type/sport.';
   else {
     let mode;
-    if (palmaresMapState.wind && hasWindData) mode = (palmaresMapState.windDay === 'today' ? "today's" : "tomorrow's") + ' wind advantage';
-    else if (palmaresMapState.wind && !hasWindData) mode = 'achievement type (wind forecast unavailable — visit the Weather tab and reload)';
+    if (palmaresMapState.wind !== 'off' && hasWindData) mode = (palmaresMapState.wind === 'tomorrow' ? "tomorrow's" : "today's") + ' wind advantage';
+    else if (palmaresMapState.wind !== 'off' && !hasWindData) mode = 'achievement type (wind forecast unavailable — visit the Weather tab and reload)';
     else mode = 'achievement type';
-    status = 'Showing ' + drawn + ' KOM/Top 10 segment' + (drawn === 1 ? '' : 's') + ' colored by ' + mode + '.';
+    const kindWord = palmaresMapState.achievement === 'kom' ? 'KOM/CR' : 'Top 10';
+    status = 'Showing ' + drawn + ' ' + kindWord + ' ' + sportWord + ' segment' + (drawn === 1 ? '' : 's') + ' colored by ' + mode + '.';
     if (hiddenByDistance) status += ' ' + hiddenByDistance + ' segment' + (hiddenByDistance === 1 ? ' is' : 's are') + ' hidden by the length filter (' + currentMapSegmentDistanceLabel() + ').';
     if (missingGeometry) status += ' ' + missingGeometry + ' segment' + (missingGeometry === 1 ? ' is' : 's are') + ' missing geometry entirely - enrich in the Segments tab to add exact full-length lines.';
-  }
-  if (palmaresMapState.heat) {
-    status += ' Road heatmap: darker roads mean more rides/runs on them; light traces are places you visited once.';
   }
   setMapStatus(status);
 }
