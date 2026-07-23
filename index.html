@@ -218,6 +218,11 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 .swipe-dots { display: flex; justify-content: center; gap: 8px; margin-top: 12px; }
 .swipe-dots .dot { width: 8px; height: 8px; border-radius: 50%; background: #30363d; cursor: pointer; padding: 0; border: none; transition: background 0.15s, transform 0.15s; }
 .swipe-dots .dot.active { background: #C9A227; transform: scale(1.25); }
+/* Scout's map card lives in the deck too. A full-height map (68vh) inside a
+   72vh panel is a gesture trap: MapKit eats drags, so you can't swipe or
+   scroll off it. Shrink it so the toolbar above it stays put and there's room
+   to breathe; the arrows and dots are the reliable way off the map panel. */
+.swipe-deck #palmares-map { height: 50vh; height: 50dvh; min-height: 320px; }
 /* Sync lives on the tile grid, not inside a drilled-in card - the back bar
    already occupies that corner and a second control there reads as clutter.
    Pull-to-refresh still works in the detail view. */
@@ -459,7 +464,7 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 <script>if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.classList.add('native-app');</script>
 
 <nav class="nav">
-  <div class="logo" onclick="showSection('dashboard')">Palmarès<span>Your training. Your records.</span></div>
+  <div class="logo" onclick="showSection('dashboard')">Palmarès<span>Your training. Your Records.</span></div>
   <div class="nav-links" id="nav-links" style="display:none">
     <button class="nav-btn active" data-section="dashboard" onclick="showSection('dashboard')">Today</button>
     <button class="nav-btn" data-section="map" onclick="showSection('map')">Scout</button>
@@ -790,10 +795,10 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 
   <div class="swipe-deck-wrap">
     <div class="swipe-nav">
-      <button type="button" id="log-prev" onclick="logDeckGo(-1)" aria-label="Previous card">‹</button>
-      <button type="button" id="log-next" onclick="logDeckGo(1)" aria-label="Next card">›</button>
+      <button type="button" id="log-deck-prev" onclick="deckGo('log-deck',-1)" aria-label="Previous card">‹</button>
+      <button type="button" id="log-deck-next" onclick="deckGo('log-deck',1)" aria-label="Next card">›</button>
     </div>
-    <div class="swipe-deck" id="log-deck" onscroll="logDeckOnScroll()">
+    <div class="swipe-deck" id="log-deck" onscroll="deckOnScroll('log-deck')">
 
   <div class="card" id="collapse-calendar" data-deck-title="Training calendar">
     <div class="card-title">
@@ -914,7 +919,7 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
   </div>
 
     </div><!-- /.swipe-deck -->
-    <div class="swipe-dots" id="log-dots"></div>
+    <div class="swipe-dots" id="log-deck-dots"></div>
   </div><!-- /.swipe-deck-wrap -->
 
 </div>
@@ -992,9 +997,16 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 </div>
 <!-- MAP -->
 <div id="section-map" class="section">
-  <div class="section-header"><h2>Scout</h2><p>Where to ride — tailwind segments, segment hunting, route building, road reports, and the full forecast.</p></div>
+  <div class="section-header"><h2>Scout</h2><p>Where to ride — swipe between tailwind segments, the segment-hunter map, events, road reports, and the forecast.</p></div>
 
-  <div class="card" id="collapse-tailwind">
+  <div class="swipe-deck-wrap">
+    <div class="swipe-nav">
+      <button type="button" id="scout-deck-prev" onclick="deckGo('scout-deck',-1)" aria-label="Previous card">‹</button>
+      <button type="button" id="scout-deck-next" onclick="deckGo('scout-deck',1)" aria-label="Next card">›</button>
+    </div>
+    <div class="swipe-deck" id="scout-deck" onscroll="deckOnScroll('scout-deck')">
+
+  <div class="card" id="collapse-tailwind" data-deck-title="Tailwind segments">
     <div class="card-title collapse-head" onclick="toggleCollapse('tailwind')">
       <div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg>Tailwind segments</div>
     </div>
@@ -1020,7 +1032,7 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" data-deck-title="Segment hunter map">
     <div class="card-title">
       <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21 1 6"/><line x1="8" y1="3" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="21"/></svg>Segment hunter map</div>
       <span id="map-counts" style="font-size:12px;color:#7d8590"></span>
@@ -1092,7 +1104,7 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
     <div class="map-status" id="map-status">Open this after your Strava data loads. Finish the Segments scan/enrichment for the most complete KOM and Top 10 map.</div>
   </div>
 
-  <div class="card" id="card-dashboard-events" style="margin-bottom:1.5rem">
+  <div class="card" id="card-dashboard-events" style="margin-bottom:1.5rem" data-deck-title="Upcoming events">
     <div class="card-title">
       <div class="card-title-left">
         <svg class="card-icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
@@ -1103,7 +1115,7 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
     <div id="events-list"><div style="font-size:12px;color:#7d8590;padding:8px 0">Loading club events...</div></div>
   </div>
 
-  <div class="card" id="collapse-road-reports">
+  <div class="card" id="collapse-road-reports" data-deck-title="Road work reports">
     <div class="card-title collapse-head" onclick="toggleCollapse('road-reports')">
       <div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Road work reports</div>
     </div>
@@ -1147,7 +1159,7 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
        widget AND got hidden by .has-widgets - the 7-day forecast was
        unreachable on a phone, including from the dashboard's
        "Full forecast" link. -->
-  <div class="card" id="wx-forecast-card" style="margin-top:2rem">
+  <div class="card" id="wx-forecast-card" style="margin-top:2rem" data-deck-title="Weather forecast">
     <div class="card-title">
       <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg>Weather forecast</div>
       <span style="font-size:12px;color:#7d8590">7-day</span>
@@ -1184,6 +1196,10 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
       </div>
     </div>
   </div>
+
+    </div><!-- /.swipe-deck -->
+    <div class="swipe-dots" id="scout-deck-dots"></div>
+  </div><!-- /.swipe-deck-wrap -->
 
 </div>
 
@@ -1818,7 +1834,8 @@ function showSection(name) {
   if (name === 'map') { setTimeout(function(){ try { initPalmaresMap(); renderPalmaresMap(); renderTailwindSegments(currentWxDayIdx); applyCollapseState(); } catch(e) { console.error('renderMap:', e); } }, 80); }
   if (name === 'settings') { try { loadSettingsUI(); } catch(e) { console.error('loadSettingsUI:', e); } }
   if (name === 'activities' && allActivities.length) { try { renderActivities(); renderHeatmap(); renderCollaborators(collabFilter||'all'); renderGear(); renderStreaks(); applyCollapseState(); } catch(e) { console.error('renderActivities:', e); } }
-  if (name === 'activities') { setTimeout(initLogDeck, 60); }
+  if (name === 'activities') { setTimeout(function(){ initDeck('log-deck'); }, 60); }
+  if (name === 'map') { setTimeout(function(){ initDeck('scout-deck'); }, 120); }
   if (name === 'segments' && allActivities.length) { try { renderKomScanUI(); applyCollapseState(); } catch(e) { console.error('renderKomScanUI:', e); } }
   if (name === 'performance' && allActivities.length) {
     setTimeout(function() {
@@ -4775,9 +4792,9 @@ async function renderDistanceScanUI() {
 // from the cards already in the DOM (icon + title lifted straight from
 // .card-title), so a new card becomes a new widget with no extra wiring.
 
-// 'activities' (the Log page) is intentionally NOT here: it uses the swipe
-// deck (five full-size cards you swipe between) instead of glance tiles.
-const WIDGET_SECTIONS = ['dashboard', 'performance', 'segments', 'map'];
+// 'activities' (Log) and 'map' (Scout) are intentionally NOT here: they use
+// swipe decks (full-size cards you swipe between) instead of glance tiles.
+const WIDGET_SECTIONS = ['dashboard', 'performance', 'segments'];
 let detailOpen = {}; // sectionName -> cardId currently drilled into
 
 // A card hidden by an inline display:none isn't ready to be seen (the
@@ -5325,66 +5342,67 @@ function closeDetail(sectionName) {
 // page hid values (form, this week) behind a gesture nobody discovers.
 function markSwipeStrips() { /* intentionally a no-op - see comment above */ }
 
-// ==================== LOG SWIPE DECK ====================
-// The Log page is five full-size cards you swipe between horizontally. Native
-// touch swipe comes free from CSS scroll-snap; this drives the dots, the
-// title/count label, and the arrow buttons, and lets a tap jump to any card.
-// Panels are read by on-screen position (offsetLeft), not DOM order, so the
-// CSS `order` that puts gear before crew is respected everywhere.
-function logDeckPanels() {
-  const deck = document.getElementById('log-deck');
+// ==================== SWIPE DECKS ====================
+// Generic horizontal card deck: full-size cards you swipe between (Log, Scout).
+// Native touch swipe comes free from CSS scroll-snap; this drives the dots and
+// arrow buttons and lets a tap jump to any card. Panels are read by on-screen
+// position (offsetLeft), not DOM order, so CSS `order` (e.g. gear before crew
+// on Log) is respected everywhere. Everything is keyed by the deck element's
+// id, so any number of decks coexist. Controls are <id>-prev / <id>-next /
+// <id>-dots.
+function deckPanels(deck) {
   if (!deck) return [];
   return Array.from(deck.querySelectorAll(':scope > .card'))
     .sort((a, b) => a.offsetLeft - b.offsetLeft);
 }
-function logDeckIndex() {
-  const deck = document.getElementById('log-deck');
-  const panels = logDeckPanels();
+function deckIndex(deck) {
+  const panels = deckPanels(deck);
   if (!deck || !panels.length) return 0;
   const w = deck.clientWidth || 1;
   return Math.max(0, Math.min(panels.length - 1, Math.round(deck.scrollLeft / w)));
 }
-function logDeckTo(i) {
-  const deck = document.getElementById('log-deck');
-  const panels = logDeckPanels();
+function deckTo(deckId, i) {
+  const deck = document.getElementById(deckId);
+  const panels = deckPanels(deck);
   if (!deck || !panels.length) return;
   const idx = Math.max(0, Math.min(panels.length - 1, i));
   deck.scrollTo({ left: idx * deck.clientWidth, behavior: 'smooth' });
 }
-function logDeckGo(dir) { logDeckTo(logDeckIndex() + dir); }
-function logDeckUpdate() {
-  const panels = logDeckPanels();
+function deckGo(deckId, dir) {
+  const deck = document.getElementById(deckId);
+  if (deck) deckTo(deckId, deckIndex(deck) + dir);
+}
+function deckUpdate(deckId) {
+  const deck = document.getElementById(deckId);
+  if (!deck) return;
+  const panels = deckPanels(deck);
   if (!panels.length) return;
-  const i = logDeckIndex();
-  const titleEl = document.getElementById('log-deck-title');
-  const countEl = document.getElementById('log-deck-count');
-  if (titleEl) titleEl.textContent = panels[i].getAttribute('data-deck-title') || '';
-  if (countEl) countEl.textContent = (i + 1) + ' / ' + panels.length;
-  const prev = document.getElementById('log-prev'), next = document.getElementById('log-next');
+  const i = deckIndex(deck);
+  const prev = document.getElementById(deckId + '-prev'), next = document.getElementById(deckId + '-next');
   if (prev) prev.disabled = i <= 0;
   if (next) next.disabled = i >= panels.length - 1;
-  const dots = document.getElementById('log-dots');
+  const dots = document.getElementById(deckId + '-dots');
   if (dots) {
     if (dots.children.length !== panels.length) {
       dots.innerHTML = panels.map(function (p, idx) {
         const label = p.getAttribute('data-deck-title') || ('Card ' + (idx + 1));
-        return '<button type="button" class="dot" aria-label="' + label + '" onclick="logDeckTo(' + idx + ')"></button>';
+        return '<button type="button" class="dot" aria-label="' + label + '" onclick="deckTo(\'' + deckId + '\',' + idx + ')"></button>';
       }).join('');
     }
     Array.from(dots.children).forEach(function (d, idx) { d.classList.toggle('active', idx === i); });
   }
 }
-let _logDeckScrollT;
-function logDeckOnScroll() {
-  clearTimeout(_logDeckScrollT);
-  _logDeckScrollT = setTimeout(logDeckUpdate, 60);
+const _deckScrollT = {};
+function deckOnScroll(deckId) {
+  clearTimeout(_deckScrollT[deckId]);
+  _deckScrollT[deckId] = setTimeout(function () { deckUpdate(deckId); }, 60);
 }
-function initLogDeck() {
-  if (!document.getElementById('log-deck')) return;
-  logDeckUpdate();
-  // Async renders (activity list, gear, crew) land after this; re-sync so the
-  // dots/label are right even if a panel's width settled late.
-  setTimeout(logDeckUpdate, 300);
+function initDeck(deckId) {
+  if (!document.getElementById(deckId)) return;
+  deckUpdate(deckId);
+  // Async renders (lists, gear, crew, the map) land after this; re-sync so the
+  // dots are right even if a panel's width settled late.
+  setTimeout(function () { deckUpdate(deckId); }, 300);
 }
 
 // ==================== COLLAPSIBLE CARDS ====================
