@@ -638,10 +638,16 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
 
 <!-- PERFORMANCE -->
 <div id="section-performance" class="section">
-  <div class="section-header"><h2>Train</h2><p>Fitness trend, power curve, PRs, goals, zones, and coaching — your performance depth.</p></div>
+  <div class="section-header"><h2>Train</h2><p>Swipe between True Age, year-over-year, power curve, aerobic efficiency, goals, zones, and coaching.</p></div>
 
+  <div class="swipe-deck-wrap">
+    <div class="swipe-nav">
+      <button type="button" id="performance-deck-prev" onclick="deckGo('performance-deck',-1)" aria-label="Previous card">‹</button>
+      <button type="button" id="performance-deck-next" onclick="deckGo('performance-deck',1)" aria-label="Next card">›</button>
+    </div>
+    <div class="swipe-deck" id="performance-deck" onscroll="deckOnScroll('performance-deck')">
 
-  <div class="card" id="true-age-card">
+  <div class="card" id="true-age-card" data-deck-title="True Age">
     <div class="card-title">
       <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>True Age</div>
       <span id="true-age-source" style="font-size:11px;color:#7d8590"></span>
@@ -650,15 +656,14 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
   </div>
 
 
-  <div class="card" id="collapse-yoy">
+  <div class="card" id="collapse-yoy" data-deck-title="Year-over-year">
     <div class="card-title collapse-head" onclick="toggleCollapse('yoy')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>Year-over-year comparison</div></div>
     <div class="collapse-body">
       <table class="yoy-table" id="yoy-table"><thead><tr><th>Metric</th><th>This year</th><th>Last year</th><th>Change</th></tr></thead><tbody id="yoy-body"></tbody></table>
     </div>
   </div>
 
-  <div class="g2">
-    <div class="card" id="collapse-power-curve" style="margin-bottom:0">
+    <div class="card" id="collapse-power-curve" style="margin-bottom:0" data-deck-title="Power curve">
       <div class="card-title collapse-head" onclick="toggleCollapse('power-curve')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Power curve — best efforts</div></div>
       <div class="collapse-body">
       <div id="power-sport-toggle" style="display:flex;gap:4px;margin-bottom:10px">
@@ -675,7 +680,7 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
       <div class="chart-wrap chart-wrap-md" style="height:180px;position:relative;margin-top:1rem"><canvas id="power-chart"></canvas></div>
       </div>
     </div>
-    <div class="card" id="collapse-aero" style="margin-bottom:0">
+    <div class="card" id="collapse-aero" style="margin-bottom:0" data-deck-title="Aerobic efficiency">
       <div class="card-title collapse-head" onclick="toggleCollapse('aero')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Aerobic efficiency (HR:Power)</div><span id="aero-range-label" style="font-size:11px;color:#7d8590"></span></div>
       <div class="collapse-body">
       <div id="aero-sport-toggle" style="display:flex;gap:4px;margin-bottom:10px">
@@ -697,9 +702,8 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
       <div id="aero-insight" style="margin-top:10px;font-size:12px;color:#7d8590;line-height:1.5"></div>
       </div>
     </div>
-  </div>
 
-  <div class="card" id="collapse-goals" style="margin-top:2rem">
+  <div class="card" id="collapse-goals" style="margin-top:2rem" data-deck-title="Goals">
     <div class="card-title collapse-head" onclick="toggleCollapse('goals')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>Goals</div></div>
     <div class="collapse-body">
     <p style="font-size:12px;color:#7d8590;margin-bottom:1rem">Set targets and track your progress automatically from Strava data.</p>
@@ -740,7 +744,7 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
     </div>
   </div>
 
-  <div class="card" id="collapse-zones" style="margin-top:2rem">
+  <div class="card" id="collapse-zones" style="margin-top:2rem" data-deck-title="Training zones">
     <div class="card-title collapse-head" onclick="toggleCollapse('zones')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>Training zones</div></div>
     <div class="collapse-body">
     <p style="font-size:12px;color:#7d8590;margin-bottom:1rem">Power zones for cycling and pace zones for running, calculated from your settings.</p>
@@ -787,12 +791,16 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" data-deck-title="Today's coaching">
       <div class="card-title">
         <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>Today's coaching</div>
       </div>
       <div id="coaching-area"></div>
     </div>
+
+    </div><!-- /.swipe-deck -->
+    <div class="swipe-dots" id="performance-deck-dots"></div>
+  </div><!-- /.swipe-deck-wrap -->
 
 </div>
 
@@ -925,9 +933,16 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
 
 <!-- SEGMENTS -->
 <div id="section-segments" class="section">
-  <div class="section-header"><h2>Palmarès</h2><p>Your KOM and Top 10 history, all-time power bests, and personal records.</p></div>
+  <div class="section-header"><h2>Palmarès</h2><p>Swipe between your KOM/Top-10 history, top towns, all-time power bests, and personal records.</p></div>
 
-  <div class="card" id="collapse-koms">
+  <div class="swipe-deck-wrap">
+    <div class="swipe-nav">
+      <button type="button" id="segments-deck-prev" onclick="deckGo('segments-deck',-1)" aria-label="Previous card">‹</button>
+      <button type="button" id="segments-deck-next" onclick="deckGo('segments-deck',1)" aria-label="Next card">›</button>
+    </div>
+    <div class="swipe-deck" id="segments-deck" onscroll="deckOnScroll('segments-deck')">
+
+  <div class="card" id="collapse-koms" data-deck-title="KOMs & Top 10s">
     <div class="card-title collapse-head" onclick="toggleCollapse('koms')">
       <div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>All-time KOMs &amp; Top 10s</div>
     </div>
@@ -979,7 +994,7 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
   <!-- Towns get their own card so the Palmares page has a second substantial
        widget instead of one tile on an otherwise empty screen. Populated by
        renderFullKomList, which already computes the ranking. -->
-  <div class="card" id="collapse-towns" style="margin-top:1.5rem">
+  <div class="card" id="collapse-towns" style="margin-top:1.5rem" data-deck-title="Top towns">
     <div class="card-title collapse-head" onclick="toggleCollapse('towns')">
       <div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>Top towns</div>
     </div>
@@ -992,7 +1007,7 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
        the KOM/Top-10 palmares rather than the (busy) training analysis page.
        Populated by renderPowerCurve / renderDistanceRecords, which target
        these ids wherever they live; showSection('segments') calls both. -->
-  <div class="card" id="collapse-power-bests" style="margin-top:1.5rem">
+  <div class="card" id="collapse-power-bests" style="margin-top:1.5rem" data-deck-title="Power bests">
     <div class="card-title collapse-head" onclick="toggleCollapse('power-bests')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M17 3H7v6a5 5 0 0 0 10 0V3z"/></svg>All-time power bests — top 5 per duration</div></div>
     <div class="collapse-body">
       <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Real best-sustained-power efforts computed from your actual power-meter data streams, not estimates. Built from the power curve scan on the Train page.</div>
@@ -1000,7 +1015,7 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
     </div>
   </div>
 
-  <div class="card" id="collapse-personal-bests" style="margin-top:1.5rem">
+  <div class="card" id="collapse-personal-bests" style="margin-top:1.5rem" data-deck-title="Personal Bests">
     <div class="card-title collapse-head" onclick="toggleCollapse('personal-bests')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M4 19h16M4 15l4-4 4 3 6-8"/></svg>Personal Bests</div></div>
     <div class="collapse-body">
       <div id="distance-sport-toggle" style="display:flex;gap:4px;margin-bottom:10px">
@@ -1014,10 +1029,9 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
     </div>
   </div>
 
-  
-
-
-  
+    </div><!-- /.swipe-deck -->
+    <div class="swipe-dots" id="segments-deck-dots"></div>
+  </div><!-- /.swipe-deck-wrap -->
 
 </div>
 <!-- MAP -->
@@ -1882,6 +1896,8 @@ function showSection(name) {
   if (name === 'activities' && allActivities.length) { try { renderActivities(); renderHeatmap(); renderCollaborators(collabFilter||'all'); renderGear(); renderStreaks(); applyCollapseState(); } catch(e) { console.error('renderActivities:', e); } }
   if (name === 'activities') { setTimeout(function(){ initDeck('log-deck'); }, 60); }
   if (name === 'map') { setTimeout(function(){ initDeck('scout-deck'); }, 120); }
+  if (name === 'performance') { setTimeout(function(){ initDeck('performance-deck'); }, 60); }
+  if (name === 'segments') { setTimeout(function(){ initDeck('segments-deck'); }, 60); }
   if (name === 'segments' && allActivities.length) { try { renderKomScanUI(); renderPowerCurve(); renderDistanceRecords(); applyCollapseState(); } catch(e) { console.error('renderKomScanUI:', e); } }
   if (name === 'performance' && allActivities.length) {
     setTimeout(function() {
@@ -4866,7 +4882,9 @@ async function renderDistanceScanUI() {
 
 // 'activities' (Log) and 'map' (Scout) are intentionally NOT here: they use
 // swipe decks (full-size cards you swipe between) instead of glance tiles.
-const WIDGET_SECTIONS = ['dashboard', 'performance', 'segments'];
+// Only the dashboard (Today) uses glance tiles now. Train (performance),
+// Palmares (segments), Log (activities) and Scout (map) are swipe decks.
+const WIDGET_SECTIONS = ['dashboard'];
 let detailOpen = {}; // sectionName -> cardId currently drilled into
 
 // A card hidden by an inline display:none isn't ready to be seen (the
