@@ -210,6 +210,8 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
    by on-screen position, so dots and the label follow this, not the DOM. */
 #collapse-gear { order: 4; }
 #collapse-crew { order: 5; }
+/* Scout: the segment-hunter map leads the deck; everything else keeps DOM order. */
+#scout-map-card { order: -1; }
 /* "Full size" means never collapsed inside the deck: carets off, bodies open
    regardless of any saved collapse state, and the title stops toggling. */
 .swipe-deck .collapse-caret { display: none; }
@@ -498,12 +500,12 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
 <script>if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.classList.add('native-app');</script>
 
 <nav class="nav">
-  <div class="logo" onclick="showSection('dashboard')">Palmarès<span>Your training. Your Records.</span></div>
+  <div class="logo" onclick="showSection('dashboard')">Palmarès<span>Your Training. Your Records.</span></div>
   <div class="nav-links" id="nav-links" style="display:none">
     <button class="nav-btn active" data-section="dashboard" onclick="showSection('dashboard')">Today</button>
     <button class="nav-btn" data-section="map" onclick="showSection('map')">Scout</button>
-    <button class="nav-btn" data-section="segments" onclick="showSection('segments')">Palmarès</button>
     <button class="nav-btn" data-section="performance" onclick="showSection('performance')">Train</button>
+    <button class="nav-btn" data-section="segments" onclick="showSection('segments')">Palmarès</button>
     <button class="nav-btn" data-section="activities" onclick="showSection('activities')">Log</button>
   </div>
   <div class="nav-bottom">
@@ -1076,7 +1078,7 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
     </div>
   </div>
 
-  <div class="card" data-deck-title="Segment hunter map">
+  <div class="card" id="scout-map-card" data-deck-title="Segment hunter map">
     <div class="card-title">
       <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21 1 6"/><line x1="8" y1="3" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="21"/></svg>Segment hunter map</div>
       <span id="map-counts" style="font-size:12px;color:#7d8590"></span>
@@ -4142,6 +4144,7 @@ function renderMilesByYear() {
   const card = document.createElement('div');
   card.id = 'collapse-miles-year';
   card.className = 'card';
+  card.setAttribute('data-deck-title', 'Miles by year');
   card.innerHTML = `
     <div class="card-title collapse-head" onclick="toggleCollapse('miles-year')"><div class="card-title-left">
       <span class="collapse-caret">▼</span>
@@ -4156,13 +4159,19 @@ function renderMilesByYear() {
       </div>
     </div>`;
 
-  const perfSection = document.getElementById('section-performance');
-  if (!perfSection) return;
-  perfSection.appendChild(card);
+  // Append into the Train swipe deck so it's the last swipeable panel, not a
+  // stray card sitting below the deck. Fall back to the section if the deck
+  // isn't present.
+  const deck = document.getElementById('performance-deck');
+  const host = deck || document.getElementById('section-performance');
+  if (!host) return;
+  host.appendChild(card);
   // This card is rebuilt from scratch on every render (unlike the static
   // collapsibles), so re-apply its saved collapse state each time - without
   // this it would pop back open on every Performance visit.
   if (getCollapsed()['miles-year']) card.classList.add('collapsed');
+  // Register the newly added panel so its dot appears in the deck.
+  if (deck) deckUpdate('performance-deck');
 
   setTimeout(() => {
     if (charts['milesyr']) charts['milesyr'].destroy();

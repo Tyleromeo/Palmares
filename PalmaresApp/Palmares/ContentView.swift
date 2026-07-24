@@ -17,9 +17,9 @@ private struct PalmaresTab {
 // are rooms of depth. Section names stay the site's historical internal ids.
 private let tabs: [PalmaresTab] = [
     PalmaresTab(title: "Today", icon: "sun.max.fill", section: "dashboard"),
+    PalmaresTab(title: "Scout", icon: "map.fill", section: "map"),
     PalmaresTab(title: "Train", icon: "chart.line.uptrend.xyaxis", section: "performance"),
     PalmaresTab(title: "Palmarès", icon: "flag.checkered", section: "segments"),
-    PalmaresTab(title: "Scout", icon: "map.fill", section: "map"),
     PalmaresTab(title: "Log", icon: "list.bullet.rectangle", section: "activities")
 ]
 
@@ -62,7 +62,7 @@ struct ContentView: View {
                     Text("Palmarès")
                         .font(.custom("Georgia-Bold", size: 20))
                         .foregroundColor(palmaresGold)
-                    Text("Your training. Your Records.")
+                    Text("Your Training. Your Records.")
                         .font(.system(size: 12))
                         .foregroundColor(.gray)
                 }
