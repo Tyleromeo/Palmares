@@ -699,28 +699,6 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
     </div>
   </div>
 
-  <div class="card" id="collapse-power-bests">
-    <div class="card-title collapse-head" onclick="toggleCollapse('power-bests')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M17 3H7v6a5 5 0 0 0 10 0V3z"/></svg>All-time power bests — top 5 per duration</div></div>
-    <div class="collapse-body">
-      <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Real best-sustained-power efforts computed from your actual power-meter data streams, not estimates. Scan below to build this out across your full history.</div>
-      <div id="power-top5-list"></div>
-    </div>
-  </div>
-
-  <div class="card" id="collapse-personal-bests">
-    <div class="card-title collapse-head" onclick="toggleCollapse('personal-bests')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M4 19h16M4 15l4-4 4 3 6-8"/></svg>Personal Bests</div></div>
-    <div class="collapse-body">
-      <div id="distance-sport-toggle" style="display:flex;gap:4px;margin-bottom:10px">
-        <button class="nav-btn active" data-sport="run" onclick="setDistanceSport('run')">Runs</button>
-        <button class="nav-btn" data-sport="ride" onclick="setDistanceSport('ride')">Rides</button>
-      </div>
-      <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Your top 10 fastest times at each standard distance, each linking to the activity. Runs: 400m-Marathon come from Strava directly, 50K/100K are computed from raw distance data. Rides: 5 mile-100 mile are all computed from raw distance data, since Strava doesn't track standard-distance bests for bikes at all.</div>
-      <div id="distance-scan-status" style="font-size:12px;color:#7d8590;padding:2px 0 10px"></div>
-      <div id="distance-scan-controls" style="margin-bottom:12px"></div>
-      <div id="distance-records-list"></div>
-    </div>
-  </div>
-
   <div class="card" id="collapse-goals" style="margin-top:2rem">
     <div class="card-title collapse-head" onclick="toggleCollapse('goals')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>Goals</div></div>
     <div class="collapse-body">
@@ -947,7 +925,7 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
 
 <!-- SEGMENTS -->
 <div id="section-segments" class="section">
-  <div class="section-header"><h2>Palmarès</h2><p>Your complete Strava KOM and Top 10 history.</p></div>
+  <div class="section-header"><h2>Palmarès</h2><p>Your KOM and Top 10 history, all-time power bests, and personal records.</p></div>
 
   <div class="card" id="collapse-koms">
     <div class="card-title collapse-head" onclick="toggleCollapse('koms')">
@@ -1007,6 +985,32 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
     </div>
     <div class="collapse-body">
       <div id="town-leaderboard"></div>
+    </div>
+  </div>
+
+  <!-- Moved here from Train: these are personal records, so they belong with
+       the KOM/Top-10 palmares rather than the (busy) training analysis page.
+       Populated by renderPowerCurve / renderDistanceRecords, which target
+       these ids wherever they live; showSection('segments') calls both. -->
+  <div class="card" id="collapse-power-bests" style="margin-top:1.5rem">
+    <div class="card-title collapse-head" onclick="toggleCollapse('power-bests')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M17 3H7v6a5 5 0 0 0 10 0V3z"/></svg>All-time power bests — top 5 per duration</div></div>
+    <div class="collapse-body">
+      <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Real best-sustained-power efforts computed from your actual power-meter data streams, not estimates. Built from the power curve scan on the Train page.</div>
+      <div id="power-top5-list"></div>
+    </div>
+  </div>
+
+  <div class="card" id="collapse-personal-bests" style="margin-top:1.5rem">
+    <div class="card-title collapse-head" onclick="toggleCollapse('personal-bests')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M4 19h16M4 15l4-4 4 3 6-8"/></svg>Personal Bests</div></div>
+    <div class="collapse-body">
+      <div id="distance-sport-toggle" style="display:flex;gap:4px;margin-bottom:10px">
+        <button class="nav-btn active" data-sport="run" onclick="setDistanceSport('run')">Runs</button>
+        <button class="nav-btn" data-sport="ride" onclick="setDistanceSport('ride')">Rides</button>
+      </div>
+      <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Your top 10 fastest times at each standard distance, each linking to the activity. Runs: 400m-Marathon come from Strava directly, 50K/100K are computed from raw distance data. Rides: 5 mile-100 mile are all computed from raw distance data, since Strava doesn't track standard-distance bests for bikes at all.</div>
+      <div id="distance-scan-status" style="font-size:12px;color:#7d8590;padding:2px 0 10px"></div>
+      <div id="distance-scan-controls" style="margin-bottom:12px"></div>
+      <div id="distance-records-list"></div>
     </div>
   </div>
 
@@ -1878,7 +1882,7 @@ function showSection(name) {
   if (name === 'activities' && allActivities.length) { try { renderActivities(); renderHeatmap(); renderCollaborators(collabFilter||'all'); renderGear(); renderStreaks(); applyCollapseState(); } catch(e) { console.error('renderActivities:', e); } }
   if (name === 'activities') { setTimeout(function(){ initDeck('log-deck'); }, 60); }
   if (name === 'map') { setTimeout(function(){ initDeck('scout-deck'); }, 120); }
-  if (name === 'segments' && allActivities.length) { try { renderKomScanUI(); applyCollapseState(); } catch(e) { console.error('renderKomScanUI:', e); } }
+  if (name === 'segments' && allActivities.length) { try { renderKomScanUI(); renderPowerCurve(); renderDistanceRecords(); applyCollapseState(); } catch(e) { console.error('renderKomScanUI:', e); } }
   if (name === 'performance' && allActivities.length) {
     setTimeout(function() {
       try {
