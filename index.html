@@ -204,6 +204,21 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
   .widget-grid, .detail-bar { display: none !important; }
 }
 
+/* BACK-SWIPE / BACK-BUTTON MOTION for drilled-in detail views.
+   While dragging, the section follows the finger with no transition so it
+   feels attached; on release it either springs back or plays detail-closing.
+   Transform-only, so it composites on the GPU and never reflows. */
+.section.detail-mode { transition: transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+.section.detail-mode.detail-dragging { transition: none; }
+.section.detail-closing { animation: detail-push-out 200ms cubic-bezier(0.4, 0, 1, 1) forwards; }
+@keyframes detail-push-out { to { transform: translate3d(100%, 0, 0); opacity: 0; } }
+.section.detail-returning { animation: detail-pop-in 280ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+@keyframes detail-pop-in { from { opacity: 0; transform: translate3d(-26px, 0, 0); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .section.detail-mode { transition: none; }
+  .section.detail-closing, .section.detail-returning { animation: none; }
+}
+
 /* LOG SWIPE DECK - the Log page is five full-size cards you swipe between
    horizontally (calendar, recent, totals, gear, crew) instead of a long
    vertical scroll. Native touch swipe via scroll-snap; dots + arrows drive it
@@ -2767,30 +2782,71 @@ window.syncNowFromNative = function() {
   });
 };
 
-// Swipe-to-go-back inside a drilled-in detail view (Today/Train/Palmares): a
-// rightward, mostly-horizontal swipe closes it, matching the iOS back
-// gesture, so the top-left Back button isn't the only way out. The deck
-// pages (Log/Scout) scroll horizontally themselves and never enter
-// detail-mode, so this never fights their swipe.
-(function() {
-  let sx = null, sy = null;
-  document.addEventListener('touchstart', function(e) {
-    if (!document.querySelector('.section.detail-mode')) { sx = null; return; }
+// Swipe-to-go-back inside a drilled-in detail view (Today). The view tracks
+// your finger as you drag right and pushes off-screen when you let go, so the
+// gesture is visible while it happens rather than being an invisible
+// pass/fail test. The deck pages (Log/Scout/Train/Palmares) scroll
+// horizontally themselves and never enter detail-mode, so this can't fight
+// their swipe.
+//
+// The previous version required dx > 80 with under 55px of vertical drift and
+// gave no feedback at all: a normal thumb arc drifts further than that, so it
+// mostly just didn't fire and there was no way to tell why. Now the decision
+// is made on the horizontal:vertical RATIO, which is what actually
+// distinguishes "swipe back" from "scroll the page".
+(function () {
+  let sx = null, sy = null, dragging = false, sec = null, lastDx = 0;
+  const OPEN_AT = 90;          // px of travel that commits to closing
+  const RATIO = 1.4;           // must be this much more horizontal than vertical
+
+  function reset() {
+    if (sec) { sec.classList.remove('detail-dragging'); sec.style.transform = ''; }
+    sx = sy = null; dragging = false; sec = null; lastDx = 0;
+  }
+
+  document.addEventListener('touchstart', function (e) {
+    sec = document.querySelector('.section.detail-mode');
+    if (!sec || e.touches.length !== 1) { sec = null; sx = null; return; }
     sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+    dragging = false; lastDx = 0;
   }, { passive: true });
-  document.addEventListener('touchend', function(e) {
-    if (sx == null) return;
-    const startX = sx, startY = sy; sx = null; sy = null;
-    const open = document.querySelector('.section.detail-mode');
-    if (!open) return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - startX, dy = t.clientY - startY;
-    // Rightward, mostly horizontal, begun in the left ~60% so it reads as
-    // "back" rather than an accidental content scroll near the right edge.
-    if (dx > 80 && Math.abs(dy) < 55 && startX < window.innerWidth * 0.6) {
-      closeDetail(open.id.replace('section-', ''));
+
+  document.addEventListener('touchmove', function (e) {
+    if (sx == null || !sec || e.touches.length !== 1) return;
+    const dx = e.touches[0].clientX - sx, dy = e.touches[0].clientY - sy;
+    if (!dragging) {
+      // Wait until the gesture's intent is clear. A mostly-vertical move is a
+      // scroll: bail out entirely so we never stutter the page.
+      if (Math.abs(dy) > Math.abs(dx)) { sx = null; return; }
+      if (dx > 12 && Math.abs(dx) > Math.abs(dy) * RATIO) {
+        dragging = true;
+        sec.classList.add('detail-dragging');
+      } else return;
+    }
+    // Only ever follow rightward travel, with resistance so it feels attached.
+    lastDx = Math.max(0, dx);
+    sec.style.transform = 'translate3d(' + (lastDx * 0.85) + 'px,0,0)';
+  }, { passive: true });
+
+  document.addEventListener('touchend', function () {
+    if (!dragging || !sec) { reset(); return; }
+    const name = sec.id.replace('section-', ''), target = sec, committed = lastDx >= OPEN_AT;
+    sx = sy = null; dragging = false; sec = null; lastDx = 0;
+    if (committed) {
+      // Hand off mid-flight: closeDetailAnimated picks up from the current
+      // transform, so keep the inline style and let it finish the push.
+      target.classList.remove('detail-dragging');
+      closeDetailAnimated(name);
+    } else {
+      // Not far enough - spring back, so it's clear the gesture was seen.
+      // Removing detail-dragging restores the transition, then clearing the
+      // transform animates it home.
+      target.classList.remove('detail-dragging');
+      target.style.transform = '';
     }
   }, { passive: true });
+
+  document.addEventListener('touchcancel', reset, { passive: true });
 })();
 
 // MAIN LOAD
@@ -5653,7 +5709,7 @@ function buildWidgets(sectionName) {
     grid.className = 'widget-grid';
     const bar = document.createElement('div');
     bar.className = 'detail-bar';
-    bar.innerHTML = '<button class="detail-back" onclick="closeDetail(\'' + sectionName + '\')">&larr; Back</button>' +
+    bar.innerHTML = '<button class="detail-back" onclick="closeDetailAnimated(\'' + sectionName + '\')">&larr; Back</button>' +
                     '<span class="detail-title"></span>';
     const header = sec.querySelector(':scope > .section-header');
     if (header && header.nextSibling) sec.insertBefore(bar, header.nextSibling);
@@ -5764,6 +5820,47 @@ function closeDetail(sectionName) {
   delete detailOpen[sectionName];
   buildWidgets(sectionName); // refresh glance values with whatever rendered
   window.scrollTo(0, 0);
+}
+
+// Going back should be visible: the detail view pushes off to the right, then
+// the tile grid returns from the left - the iOS back-stack feel. Used by both
+// the Back button and the swipe, so they behave identically.
+//
+// The detail has to finish animating BEFORE closeDetail runs, because
+// closeDetail flips the display rules and would otherwise cut the animation
+// off on its first frame.
+function closeDetailAnimated(sectionName) {
+  const sec = document.getElementById('section-' + sectionName);
+  if (!sec || !sec.classList.contains('detail-mode')) { closeDetail(sectionName); return; }
+  if (sec.dataset.closing === '1') return;   // ignore a second tap mid-flight
+  sec.dataset.closing = '1';
+
+  // Respect the OS setting - no motion, just close.
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce) { delete sec.dataset.closing; closeDetail(sectionName); return; }
+
+  // Deliberately does NOT clear an inline transform first: when this follows a
+  // swipe, the keyframe has no `from`, so it interpolates out of wherever the
+  // finger left the view and the push continues unbroken instead of snapping
+  // back to zero for a frame. The inline style is cleared in finish().
+  sec.classList.remove('detail-dragging');
+  sec.classList.add('detail-closing');
+
+  let done = false;
+  const finish = function () {
+    if (done) return; done = true;
+    sec.removeEventListener('animationend', finish);
+    sec.classList.remove('detail-closing');
+    sec.style.transform = '';
+    delete sec.dataset.closing;
+    closeDetail(sectionName);
+    // Now the grid is back: bring it in from the left so the return reads as
+    // a pop, not a blink.
+    sec.classList.add('detail-returning');
+    setTimeout(function () { sec.classList.remove('detail-returning'); }, 300);
+  };
+  sec.addEventListener('animationend', finish);
+  setTimeout(finish, 320); // fallback if animationend never fires
 }
 
 // Metric strips become swipeable carousels on phones.
