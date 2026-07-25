@@ -27,6 +27,20 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .container { max-width: 1040px; margin: 0 auto; padding: 1.5rem 2rem; margin-left: 200px; }
 .section { display: none; }
 .section.active { display: block; }
+/* PAGE TRANSITIONS - the incoming page slides in from the side you're heading
+   toward: tap a tab to the right and it enters from the right, and vice
+   versa. Direction comes from the nav order, set by showSection as
+   .slide-from-right / .slide-from-left. Only the arriving page animates (a
+   simultaneous outgoing animation needs both pages displayed at once, which
+   would double page height mid-transition and jump the scroll). Transform +
+   opacity only, so it's GPU-composited and doesn't reflow the swipe decks. */
+@keyframes page-in-right { from { opacity: 0; transform: translate3d(22px,0,0); } to { opacity: 1; transform: none; } }
+@keyframes page-in-left  { from { opacity: 0; transform: translate3d(-22px,0,0); } to { opacity: 1; transform: none; } }
+.section.active.slide-from-right { animation: page-in-right 260ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+.section.active.slide-from-left  { animation: page-in-left  260ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .section.active.slide-from-right, .section.active.slide-from-left { animation: none; }
+}
 
 /* Native iOS app: the in-page top bar is hidden entirely. WKWebView kept
    letting page content scroll over position:fixed elements no matter how
@@ -1873,6 +1887,11 @@ let currentToken = null;
 let charts = {};
 
 // NAV
+// Which section is showing, so page transitions know which way to slide.
+// Declared above showSection: it's read on the first call, and a `let` below
+// would be in the temporal dead zone and throw.
+let currentSection = 'dashboard';
+
 function showSection(name) {
   // Always leave map full-screen on any navigation - including re-tapping the
   // Scout tab, which becomes a reliable escape hatch. The full-screen map is a
@@ -1880,9 +1899,29 @@ function showSection(name) {
   // the new page with no way out. Entering the map never auto-fullscreens
   // (only the Route builder does, on its own tap), so clearing here is safe.
   document.body.classList.remove('map-fs');
-  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  // Direction for the page transition: heading to a tab further right slides
+  // in from the right, further left from the left. Settings isn't in the nav,
+  // so it (and any unknown target) just fades without a direction.
+  const navOrder = Array.prototype.map.call(
+    document.querySelectorAll('.nav-btn[data-section]'),
+    function (b) { return b.getAttribute('data-section'); });
+  const fromIdx = navOrder.indexOf(currentSection), toIdx = navOrder.indexOf(name);
+  const dir = (fromIdx >= 0 && toIdx >= 0 && fromIdx !== toIdx) ? (toIdx > fromIdx ? 'right' : 'left') : null;
+  currentSection = name;
+
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active', 'slide-from-right', 'slide-from-left'));
   const sec = document.getElementById('section-' + name);
-  if (sec) sec.classList.add('active');
+  if (sec) {
+    sec.classList.add('active');
+    if (dir) {
+      // Re-add on the next frame so the animation restarts even when the same
+      // class was just removed (browsers won't replay an identical animation
+      // applied in the same tick).
+      sec.classList.remove('slide-from-' + dir);
+      void sec.offsetWidth; // force reflow to reset the animation
+      sec.classList.add('slide-from-' + dir);
+    }
+  }
   // Match by data-section, not button text - tab labels (Today/Train/Log)
   // no longer contain their internal section names (dashboard/performance/
   // activities), so text matching would never highlight anything.
