@@ -1313,8 +1313,14 @@ body.ob-open { overflow: hidden; }
         <input class="setting-input" id="set-ftp" type="number" placeholder="220" onchange="saveSettings()" /> <span style="font-size:12px;color:#7d8590;margin-left:4px">w</span>
       </div>
       <div class="setting-row">
-        <div><div class="setting-label">Weight</div><div class="setting-sub">Used for w/kg calculations</div></div>
-        <input class="setting-input" id="set-weight" type="number" placeholder="75" onchange="saveSettings()" /> <span style="font-size:12px;color:#7d8590;margin-left:4px">kg</span>
+        <div><div class="setting-label">Weight</div><div class="setting-sub">Used for power-to-weight. Watts per kilo is always shown in w/kg, whichever unit you enter.</div></div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <input class="setting-input" id="set-weight" type="number" step="0.1" placeholder="75" onchange="saveSettings()" style="width:90px" />
+          <select class="form-select" id="set-weight-unit" onchange="onWeightUnitChange()" style="width:74px">
+            <option value="kg">kg</option>
+            <option value="lb">lb</option>
+          </select>
+        </div>
       </div>
       <div class="setting-row">
         <div><div class="setting-label">Threshold run pace</div><div class="setting-sub">Your 1-hour race pace (min/mile)</div></div>
@@ -1742,7 +1748,23 @@ async function loadPowerPRsFromSupabase(athlete_id) {
 // saveSettings falls back to DEFAULTS for empty fields they couldn't clear
 // them either. Real values come from importProfile() (Strava + Apple Health +
 // the athlete's own activities) at first launch.
-const DEFAULTS = { ftp:200, weight:70, runPace:'9:00', restingHR:60, maxHR:185, ageGroup:'35_44', city:'', units:'imperial', age:null, measuredVO2Max:null };
+const DEFAULTS = { ftp:200, weight:70, runPace:'9:00', restingHR:60, maxHR:185, ageGroup:'35_44', city:'', units:'imperial', weightUnit:'kg', age:null, measuredVO2Max:null };
+
+// Weight is ALWAYS stored in kilograms - every power-to-weight figure in the
+// app divides watts by settings.weight and would silently be 2.2x wrong if a
+// pounds value were ever written there. weightUnit only controls what the
+// user types and reads; conversion happens at the edges.
+const KG_PER_LB = 0.45359237;
+function weightToDisplay(kg, unit) {
+  const n = parseFloat(kg);
+  if (isNaN(n)) return '';
+  return Math.round((unit === 'lb' ? n / KG_PER_LB : n) * 10) / 10;
+}
+function weightToKg(value, unit) {
+  const n = parseFloat(value);
+  if (isNaN(n)) return null;
+  return Math.round((unit === 'lb' ? n * KG_PER_LB : n) * 100) / 100;
+}
 
 function getSettings() {
   try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('ed_settings')||'{}')); }
@@ -1757,7 +1779,10 @@ function saveSettings() {
   // time any input's onchange fired.
   const s = Object.assign({}, getSettings(), {
     ftp: parseInt(getVal('set-ftp', DEFAULTS.ftp)) || DEFAULTS.ftp,
-    weight: parseFloat(getVal('set-weight', DEFAULTS.weight)) || DEFAULTS.weight,
+    // The field holds whatever unit the user picked; normalise to kg here so
+    // everything downstream (w/kg) keeps working unchanged.
+    weightUnit: getVal('set-weight-unit', getSettings().weightUnit || DEFAULTS.weightUnit),
+    weight: weightToKg(getVal('set-weight', ''), getVal('set-weight-unit', getSettings().weightUnit || DEFAULTS.weightUnit)) || getSettings().weight || DEFAULTS.weight,
     runPace: getVal('set-run-pace', DEFAULTS.runPace) || DEFAULTS.runPace,
     restingHR: parseInt(getVal('set-resting-hr', DEFAULTS.restingHR)) || DEFAULTS.restingHR,
     maxHR: parseInt(getVal('set-max-hr', DEFAULTS.maxHR)) || DEFAULTS.maxHR,
@@ -1772,13 +1797,30 @@ function saveSettings() {
   window.USER_WEIGHT = s.weight;
 }
 
+// Switching the unit re-expresses the SAME body weight, it doesn't reinterpret
+// the number: 75 with kg selected becomes 165.3 when you switch to lb, not
+// "75 lb". The old unit comes from stored settings, read before saveSettings
+// overwrites it with the newly selected one.
+function onWeightUnitChange() {
+  const oldUnit = getSettings().weightUnit || 'kg';
+  const sel = document.getElementById('set-weight-unit');
+  const input = document.getElementById('set-weight');
+  const newUnit = sel ? sel.value : 'kg';
+  if (input && newUnit !== oldUnit) {
+    const kg = weightToKg(input.value, oldUnit);
+    if (kg !== null) input.value = weightToDisplay(kg, newUnit);
+  }
+  saveSettings();
+}
+
 function loadSettingsUI() {
   const s = getSettings();
   window.USER_FTP = s.ftp;
   window.USER_WEIGHT = s.weight;
   const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
   setVal('set-ftp', s.ftp);
-  setVal('set-weight', s.weight);
+  setVal('set-weight-unit', s.weightUnit || 'kg');
+  setVal('set-weight', weightToDisplay(s.weight, s.weightUnit || 'kg'));
   setVal('set-run-pace', s.runPace);
   setVal('set-resting-hr', s.restingHR);
   setVal('set-max-hr', s.maxHR);
@@ -1876,7 +1918,7 @@ function importProfile() {
 // is editable - imported values are a starting point, not a verdict.
 const PROFILE_SETUP_FIELDS = [
   { key:'age',       id:'ob-age',        label:'Age',                 type:'number', unit:'years',   sub:'Used for fitness age and HR zones' },
-  { key:'weight',    id:'ob-weight',     label:'Weight',              type:'number', unit:'kg',      sub:'Used for power-to-weight' },
+  { key:'weight',    id:'ob-weight',     label:'Weight',              type:'number', unit:'',        unitSelect:true, sub:'Used for power-to-weight' },
   { key:'ftp',       id:'ob-ftp',        label:'FTP',                 type:'number', unit:'w',       sub:'Functional threshold power - leave blank if you don\'t ride with power' },
   { key:'runPace',   id:'ob-run-pace',   label:'Threshold run pace',  type:'text',   unit:'min/mi',  sub:'Your roughly 1-hour race pace' },
   { key:'restingHR', id:'ob-resting-hr', label:'Resting heart rate',  type:'number', unit:'bpm',     sub:'Measured at rest, first thing in the morning' },
@@ -1888,16 +1930,27 @@ function showProfileSetup() {
   if (document.getElementById('profile-setup')) return;
   const imported = importProfile();
   const s = getSettings();
+  // Weight is imported in kg; offer it in whichever unit suits their region,
+  // defaulting from the Strava measurement preference we already imported.
+  const impUnits = imported.values.units || s.units || 'imperial';
+  const obWeightUnit = s.weightUnit || (impUnits === 'metric' ? 'kg' : 'lb');
   const rows = PROFILE_SETUP_FIELDS.map(function (f) {
-    const val = imported.values[f.key] !== undefined ? imported.values[f.key] : '';
+    let val = imported.values[f.key] !== undefined ? imported.values[f.key] : '';
+    if (f.key === 'weight' && val !== '') val = weightToDisplay(val, obWeightUnit);
     const src = imported.sources[f.key];
     const chip = src ? '<span class="ob-chip">from ' + escapeHTML(src) + '</span>' : '';
+    const unitCtl = f.unitSelect
+      ? '<select class="form-select" id="' + f.id + '-unit" style="width:74px">' +
+          '<option value="kg"' + (obWeightUnit === 'kg' ? ' selected' : '') + '>kg</option>' +
+          '<option value="lb"' + (obWeightUnit === 'lb' ? ' selected' : '') + '>lb</option>' +
+        '</select>'
+      : (f.unit ? '<span class="ob-unit">' + escapeHTML(f.unit) + '</span>' : '');
     return '<div class="ob-row">' +
       '<div class="ob-label">' + escapeHTML(f.label) + chip + '</div>' +
       '<div class="ob-sub">' + escapeHTML(f.sub) + '</div>' +
       '<div class="ob-input-wrap">' +
-        '<input class="setting-input" id="' + f.id + '" type="' + f.type + '" value="' + escapeHTML(String(val)) + '" placeholder="optional" />' +
-        (f.unit ? '<span class="ob-unit">' + escapeHTML(f.unit) + '</span>' : '') +
+        '<input class="setting-input" id="' + f.id + '" type="' + f.type + '"' + (f.type === 'number' ? ' step="0.1"' : '') + ' value="' + escapeHTML(String(val)) + '" placeholder="optional" />' +
+        unitCtl +
       '</div></div>';
   }).join('');
 
@@ -1947,7 +2000,11 @@ function saveProfileSetup() {
     next.ageGroup = age < 25 ? '0_24' : age < 35 ? '25_34' : age < 45 ? '35_44'
                   : age < 55 ? '45_54' : age < 65 ? '55_64' : '65_69';
   }
-  if (weight !== null) next.weight = weight;
+  // Convert to kg before storing - settings.weight is canonical kilograms.
+  const wUnitEl = document.getElementById('ob-weight-unit');
+  const wUnit = wUnitEl ? wUnitEl.value : 'kg';
+  next.weightUnit = wUnit;
+  if (weight !== null) next.weight = weightToKg(weight, wUnit);
   if (ftp !== null) next.ftp = ftp;
   if (rhr !== null) next.restingHR = rhr;
   if (mhr !== null) next.maxHR = mhr;
