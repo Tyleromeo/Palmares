@@ -506,6 +506,29 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
 .toast-body { font-size:12px; color:#7d8590; }
 .toast-icon { font-size:18px; margin-right:8px; float:left; }
 
+/* FIRST-RUN PROFILE SETUP - a full-screen sheet on first launch. Sits above
+   everything including the map's full-screen layer (z 10000) and the nav. */
+body.ob-open { overflow: hidden; }
+#profile-setup { position: fixed; inset: 0; z-index: 20000; background: rgba(1,4,9,.75); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.ob-sheet { background: #0d1117; border: 1px solid #30363d; border-radius: 16px; width: 100%; max-width: 520px; max-height: 92dvh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,.6); }
+.ob-head { padding: 22px 22px 14px; border-bottom: 1px solid #21262d; }
+.ob-logo { font-family: Georgia, serif; font-size: 15px; font-weight: 700; color: #C9A227; letter-spacing: 1.5px; margin-bottom: 10px; }
+.ob-head h2 { font-size: 22px; margin: 0 0 6px; color: #e6edf3; }
+.ob-head p { font-size: 13px; color: #7d8590; line-height: 1.5; margin: 0; }
+.ob-body { padding: 6px 22px 10px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.ob-row { padding: 13px 0; border-bottom: 1px solid #21262d; }
+.ob-row:last-child { border-bottom: none; }
+.ob-label { font-size: 14px; font-weight: 600; color: #e6edf3; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ob-chip { font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .4px; color: #C9A227; background: rgba(201,162,39,.12); border: 1px solid rgba(201,162,39,.35); border-radius: 999px; padding: 2px 7px; }
+.ob-sub { font-size: 12px; color: #7d8590; margin: 3px 0 8px; line-height: 1.45; }
+.ob-input-wrap { display: flex; align-items: center; gap: 7px; }
+.ob-input-wrap .setting-input, .ob-input-wrap .form-select { flex: 0 1 190px; }
+.ob-unit { font-size: 12px; color: #7d8590; }
+.ob-foot { padding: 14px 22px calc(env(safe-area-inset-bottom) + 16px); border-top: 1px solid #21262d; display: flex; align-items: center; gap: 12px; }
+.ob-foot .gold-btn { flex: 1; padding: 12px; font-size: 15px; }
+.ob-skip { background: transparent; border: none; color: #7d8590; font-size: 13px; cursor: pointer; padding: 12px 4px; }
+.ob-skip:hover { color: #e6edf3; }
+
 /* SWIM */
 .swim-badge { background:#1a2d3a; border:1px solid #388bfd; color:#58a6ff; }
 </style>
@@ -1356,6 +1379,10 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
       <div><div class="setting-label">Force full resync</div><div class="setting-sub">Re-fetches your complete activity history from Strava and refreshes the cache. Normal loads use the cache and only pull new activities, so use this only if older data looks wrong (e.g. you edited or deleted an old activity on Strava).</div></div>
       <button onclick="forceFullResync()" style="background:#1a2332;border:1px solid #58a6ff;border-radius:6px;padding:6px 14px;color:#58a6ff;cursor:pointer;font-size:13px">Resync now</button>
     </div>
+    <div class="setting-row">
+      <div><div class="setting-label">Re-import profile</div><div class="setting-sub">Rebuilds your age, weight, FTP, heart rates and town from your Strava profile, Apple Health, and your own activities. Shows them for review before anything is saved.</div></div>
+      <button onclick="showProfileSetup()" style="background:#1a2332;border:1px solid #C9A227;border-radius:6px;padding:6px 14px;color:#C9A227;cursor:pointer;font-size:13px">Re-import</button>
+    </div>
   </div>
   <div class="card">
     <div class="settings-title">Group events</div>
@@ -1709,7 +1736,13 @@ async function loadPowerPRsFromSupabase(athlete_id) {
 }
 
 // ==================== SETTINGS ====================
-const DEFAULTS = { ftp:249, weight:75, runPace:'7:30', restingHR:58, maxHR:192, ageGroup:'35_44', city:'Smithtown, NY', units:'imperial', age:null, measuredVO2Max:null };
+// Generic placeholders ONLY - never one person's real numbers. These used to
+// be the original author's (FTP 249, 75kg, Smithtown, HR 58/192), which meant
+// every new user silently inherited a stranger's profile, and because
+// saveSettings falls back to DEFAULTS for empty fields they couldn't clear
+// them either. Real values come from importProfile() (Strava + Apple Health +
+// the athlete's own activities) at first launch.
+const DEFAULTS = { ftp:200, weight:70, runPace:'9:00', restingHR:60, maxHR:185, ageGroup:'35_44', city:'', units:'imperial', age:null, measuredVO2Max:null };
 
 function getSettings() {
   try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('ed_settings')||'{}')); }
@@ -1756,6 +1789,204 @@ function loadSettingsUI() {
   if (s.measuredVO2Max) setVal('set-measured-vo2', s.measuredVO2Max);
   renderEventSourceSettings();
   renderSportSettings();
+}
+
+// ==================== FIRST-RUN PROFILE IMPORT ====================
+// A new user should never inherit someone else's numbers. On first launch we
+// build their profile from what they've already told Strava and Apple Health,
+// plus what their own activities prove, and show it for confirmation.
+//
+// Each field carries where it came from so the setup screen can say
+// "from Strava" / "from Apple Health" / "from your rides" rather than
+// presenting guesses as fact.
+const PROFILE_SETUP_KEY = 'ed_profile_setup_v1';
+
+function profileSetupDone() { return localStorage.getItem(PROFILE_SETUP_KEY) === '1'; }
+function markProfileSetupDone() { localStorage.setItem(PROFILE_SETUP_KEY, '1'); }
+
+// Anyone who already has saved settings configured their profile before this
+// feature existed - don't interrupt them with a setup sheet. Runs at parse
+// time, before any programmatic settings write (club toggles, road-report
+// filter) could create ed_settings and make a new user look like an old one.
+(function migrateExistingProfiles() {
+  if (localStorage.getItem(PROFILE_SETUP_KEY)) return;
+  if (localStorage.getItem('ed_settings')) markProfileSetupDone();
+})();
+
+// Highest heart rate the athlete has actually hit - a far better max-HR than
+// the 220-age formula. Ignores implausible spikes from a bad strap reading.
+function observedMaxHR() {
+  let max = 0;
+  (allActivities || []).forEach(function (a) {
+    const hr = a.max_heartrate;
+    if (typeof hr === 'number' && hr > max && hr < 226) max = hr;
+  });
+  return max >= 120 ? Math.round(max) : null;
+}
+
+function importProfile() {
+  const out = {};
+  const from = {};
+  const put = function (key, value, source) {
+    if (value === null || value === undefined || value === '') return;
+    if (out[key] !== undefined) return; // first source wins (ordered by trust)
+    out[key] = value; from[key] = source;
+  };
+
+  // --- Apple Health: the athlete's own body data, most authoritative ---
+  const hk = healthKitData || {};
+  put('age', hk.age, 'Apple Health');
+  put('restingHR', hk.restingHR, 'Apple Health');
+  put('measuredVO2Max', hk.vo2max ? Math.round(hk.vo2max * 10) / 10 : null, 'Apple Health');
+  // Health's weight is usually fresher than a Strava profile's, so it wins.
+  // Only present in the iOS app; the web falls through to Strava below.
+  put('weight', hk.weightKg, 'Apple Health');
+
+  // --- Strava profile: what they already filled in over there ---
+  const a = athleteData || {};
+  if (a.weight) put('weight', Math.round(a.weight * 10) / 10, 'Strava');
+  if (a.ftp) put('ftp', a.ftp, 'Strava');
+  const town = [a.city, a.state].filter(Boolean).join(', ');
+  if (town) put('city', town, 'Strava');
+  // Strava stores 'feet' or 'meters'; ours is imperial/metric.
+  if (a.measurement_preference) {
+    put('units', a.measurement_preference === 'meters' ? 'metric' : 'imperial', 'Strava');
+  }
+
+  // --- Their own activities: proven, not assumed ---
+  const mhr = observedMaxHR();
+  if (mhr) put('maxHR', mhr, 'your activities');
+
+  // --- Derived last, only to fill what's still blank ---
+  if (out.age && out.maxHR === undefined) {
+    // Tanaka: 208 - 0.7*age, more accurate than 220-age. Clearly an estimate.
+    put('maxHR', Math.round(208 - 0.7 * out.age), 'estimated from age');
+  }
+  if (out.age && out.ageGroup === undefined) {
+    // Values must match the #set-age-group <option>s exactly.
+    const g = out.age < 25 ? '0_24' : out.age < 35 ? '25_34' : out.age < 45 ? '35_44'
+            : out.age < 55 ? '45_54' : out.age < 65 ? '55_64' : '65_69';
+    put('ageGroup', g, out.age ? (from.age || 'your age') : 'your age');
+  }
+
+  return { values: out, sources: from };
+}
+
+// The setup sheet. Fields are pre-filled from importProfile() and every one
+// is editable - imported values are a starting point, not a verdict.
+const PROFILE_SETUP_FIELDS = [
+  { key:'age',       id:'ob-age',        label:'Age',                 type:'number', unit:'years',   sub:'Used for fitness age and HR zones' },
+  { key:'weight',    id:'ob-weight',     label:'Weight',              type:'number', unit:'kg',      sub:'Used for power-to-weight' },
+  { key:'ftp',       id:'ob-ftp',        label:'FTP',                 type:'number', unit:'w',       sub:'Functional threshold power - leave blank if you don\'t ride with power' },
+  { key:'runPace',   id:'ob-run-pace',   label:'Threshold run pace',  type:'text',   unit:'min/mi',  sub:'Your roughly 1-hour race pace' },
+  { key:'restingHR', id:'ob-resting-hr', label:'Resting heart rate',  type:'number', unit:'bpm',     sub:'Measured at rest, first thing in the morning' },
+  { key:'maxHR',     id:'ob-max-hr',     label:'Max heart rate',      type:'number', unit:'bpm',     sub:'Highest you have actually seen' },
+  { key:'city',      id:'ob-city',       label:'Town',                type:'text',   unit:'',        sub:'Used for your local forecast' }
+];
+
+function showProfileSetup() {
+  if (document.getElementById('profile-setup')) return;
+  const imported = importProfile();
+  const s = getSettings();
+  const rows = PROFILE_SETUP_FIELDS.map(function (f) {
+    const val = imported.values[f.key] !== undefined ? imported.values[f.key] : '';
+    const src = imported.sources[f.key];
+    const chip = src ? '<span class="ob-chip">from ' + escapeHTML(src) + '</span>' : '';
+    return '<div class="ob-row">' +
+      '<div class="ob-label">' + escapeHTML(f.label) + chip + '</div>' +
+      '<div class="ob-sub">' + escapeHTML(f.sub) + '</div>' +
+      '<div class="ob-input-wrap">' +
+        '<input class="setting-input" id="' + f.id + '" type="' + f.type + '" value="' + escapeHTML(String(val)) + '" placeholder="optional" />' +
+        (f.unit ? '<span class="ob-unit">' + escapeHTML(f.unit) + '</span>' : '') +
+      '</div></div>';
+  }).join('');
+
+  const unitsVal = imported.values.units || s.units || 'imperial';
+  const name = athleteData && athleteData.firstname ? athleteData.firstname : null;
+
+  const el = document.createElement('div');
+  el.id = 'profile-setup';
+  el.innerHTML =
+    '<div class="ob-sheet" role="dialog" aria-modal="true" aria-labelledby="ob-title">' +
+      '<div class="ob-head">' +
+        '<div class="ob-logo">Palmarès</div>' +
+        '<h2 id="ob-title">' + (name ? 'Welcome, ' + escapeHTML(name) : 'Welcome') + '</h2>' +
+        '<p>We filled in what we could from your Strava profile' +
+          (healthKitData ? ' and Apple Health' : '') +
+          '. Check it over — every number here is yours to change, and you can edit all of it later in Settings.</p>' +
+      '</div>' +
+      '<div class="ob-body">' + rows +
+        '<div class="ob-row"><div class="ob-label">Units</div>' +
+        '<div class="ob-sub">Miles and feet, or kilometres and metres</div>' +
+        '<div class="ob-input-wrap"><select class="form-select" id="ob-units">' +
+          '<option value="imperial"' + (unitsVal === 'imperial' ? ' selected' : '') + '>Imperial</option>' +
+          '<option value="metric"' + (unitsVal === 'metric' ? ' selected' : '') + '>Metric</option>' +
+        '</select></div></div>' +
+      '</div>' +
+      '<div class="ob-foot">' +
+        '<button class="gold-btn" onclick="saveProfileSetup()">Save and continue</button>' +
+        '<button class="ob-skip" onclick="skipProfileSetup()">Skip for now</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(el);
+  document.body.classList.add('ob-open');
+}
+
+function saveProfileSetup() {
+  const num = function (id) { const el = document.getElementById(id); const v = el ? parseFloat(el.value) : NaN; return isNaN(v) ? null : v; };
+  const str = function (id) { const el = document.getElementById(id); return el && el.value.trim() ? el.value.trim() : null; };
+  // Only write what was actually filled in - a blank field keeps the existing
+  // stored value rather than being forced to a placeholder.
+  const s = getSettings();
+  const next = Object.assign({}, s);
+  const age = num('ob-age'), weight = num('ob-weight'), ftp = num('ob-ftp');
+  const rhr = num('ob-resting-hr'), mhr = num('ob-max-hr');
+  const pace = str('ob-run-pace'), city = str('ob-city'), units = str('ob-units');
+  if (age !== null) {
+    next.age = age;
+    next.ageGroup = age < 25 ? '0_24' : age < 35 ? '25_34' : age < 45 ? '35_44'
+                  : age < 55 ? '45_54' : age < 65 ? '55_64' : '65_69';
+  }
+  if (weight !== null) next.weight = weight;
+  if (ftp !== null) next.ftp = ftp;
+  if (rhr !== null) next.restingHR = rhr;
+  if (mhr !== null) next.maxHR = mhr;
+  if (pace) next.runPace = pace;
+  if (city) next.city = city;
+  if (units) next.units = units;
+  const imported = importProfile();
+  if (imported.values.measuredVO2Max && !next.measuredVO2Max) next.measuredVO2Max = imported.values.measuredVO2Max;
+
+  localStorage.setItem('ed_settings', JSON.stringify(next));
+  window.USER_FTP = next.ftp;
+  window.USER_WEIGHT = next.weight;
+  markProfileSetupDone();
+  closeProfileSetup();
+  loadSettingsUI();
+  try { showToast('Profile saved — you can change any of it in Settings.'); } catch (e) {}
+  // Recompute anything that depends on the profile now that it's real.
+  try { if (allActivities.length) { renderZones(); renderVO2Max(); } } catch (e) {}
+}
+
+function skipProfileSetup() {
+  // Still counts as "seen" so it doesn't nag on every launch; Settings is
+  // always there. Nothing is written, so the generic placeholders stand.
+  markProfileSetupDone();
+  closeProfileSetup();
+}
+
+function closeProfileSetup() {
+  const el = document.getElementById('profile-setup');
+  if (el) el.remove();
+  document.body.classList.remove('ob-open');
+}
+
+// Called once activities and any Health data have landed, so max HR and the
+// Health fields are available rather than arriving after the sheet renders.
+function maybeShowProfileSetup() {
+  if (profileSetupDone()) return;
+  if (!athleteData) return;             // nothing to import from yet
+  showProfileSetup();
 }
 
 function renderSportSettings() {
@@ -2728,6 +2959,11 @@ async function loadAll(token) {
   renderActivities();
   renderGear();
   renderCollaborators('all');
+
+  // First launch: offer the imported profile for confirmation. Deferred to
+  // here so activities (for observed max HR) and any Apple Health data have
+  // landed - showing it earlier would present blank or guessed fields.
+  setTimeout(maybeShowProfileSetup, 900);
 }
 
 // Checks the most recent achievement-bearing rides against Strava's activity

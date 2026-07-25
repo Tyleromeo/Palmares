@@ -36,6 +36,9 @@ enum HealthMetricsReader {
         types.insert(HKObjectType.quantityType(forIdentifier: .heartRateVariabilitySDNN)!)
         types.insert(HKObjectType.categoryType(forIdentifier: .sleepAnalysis)!)
         types.insert(HKObjectType.characteristicType(forIdentifier: .dateOfBirth)!)
+        // Body weight feeds the first-run profile import (power-to-weight).
+        // Health's figure is typically fresher than the one on a Strava profile.
+        types.insert(HKObjectType.quantityType(forIdentifier: .bodyMass)!)
         return types
     }()
 
@@ -81,6 +84,12 @@ enum HealthMetricsReader {
         group.enter()
         latestQuantity(.vo2Max, unit: HKUnit(from: "ml/kg*min")) { v in
             set("vo2max", v); group.leave()
+        }
+
+        // Most recent body weight, in kg to match how the page stores it.
+        group.enter()
+        latestQuantity(.bodyMass, unit: .gramUnit(with: .kilo)) { v in
+            set("weightKg", v.map { round($0 * 10) / 10 }); group.leave()
         }
 
         // Resting HR: 30-day average (matches what the JS labels it as)
