@@ -782,11 +782,6 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
       </div>
     </div>
     <div class="card">
-      <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Swim zones <span id="swim-pace-display" style="font-size:12px;font-weight:400;color:#7d8590;margin-left:6px"></span></div></div>
-      <table class="zone-table" id="swim-zones-table"></table>
-      <div style="margin-top:1rem;font-size:12px;color:#7d8590">Based on your CSS (Critical Swim Speed). Update in <a href="#" onclick="showSection('settings')" style="color:#C9A227">Settings</a>.</div>
-    </div>
-    <div class="card">
       <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>VO2 max estimate</div></div>
       <div id="vo2max-display"></div>
       <div style="margin-top:1.5rem;display:flex;justify-content:space-between;align-items:center">
@@ -1303,10 +1298,6 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
         <input class="setting-input" id="set-run-pace" type="text" placeholder="7:30" onchange="saveSettings()" /> <span style="font-size:12px;color:#7d8590;margin-left:4px">min/mi</span>
       </div>
       <div class="setting-row">
-        <div><div class="setting-label">CSS (Critical Swim Speed)</div><div class="setting-sub">Your threshold swim pace (min/100m)</div></div>
-        <input class="setting-input" id="set-css" type="text" placeholder="1:45" onchange="saveSettings()" /> <span style="font-size:12px;color:#7d8590;margin-left:4px">min/100m</span>
-      </div>
-      <div class="setting-row">
         <div><div class="setting-label">Resting heart rate</div><div class="setting-sub">Measured first thing in the morning, at rest. Used for HR-based VO2 max estimate</div></div>
         <input class="setting-input" id="set-resting-hr" type="number" placeholder="58" onchange="saveSettings()" /> <span style="font-size:12px;color:#7d8590;margin-left:4px">bpm</span>
       </div>
@@ -1718,7 +1709,7 @@ async function loadPowerPRsFromSupabase(athlete_id) {
 }
 
 // ==================== SETTINGS ====================
-const DEFAULTS = { ftp:249, weight:75, runPace:'7:30', css:'1:45', restingHR:58, maxHR:192, ageGroup:'35_44', city:'Smithtown, NY', units:'imperial', age:null, measuredVO2Max:null };
+const DEFAULTS = { ftp:249, weight:75, runPace:'7:30', restingHR:58, maxHR:192, ageGroup:'35_44', city:'Smithtown, NY', units:'imperial', age:null, measuredVO2Max:null };
 
 function getSettings() {
   try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('ed_settings')||'{}')); }
@@ -1735,7 +1726,6 @@ function saveSettings() {
     ftp: parseInt(getVal('set-ftp', DEFAULTS.ftp)) || DEFAULTS.ftp,
     weight: parseFloat(getVal('set-weight', DEFAULTS.weight)) || DEFAULTS.weight,
     runPace: getVal('set-run-pace', DEFAULTS.runPace) || DEFAULTS.runPace,
-    css: getVal('set-css', DEFAULTS.css) || DEFAULTS.css,
     restingHR: parseInt(getVal('set-resting-hr', DEFAULTS.restingHR)) || DEFAULTS.restingHR,
     maxHR: parseInt(getVal('set-max-hr', DEFAULTS.maxHR)) || DEFAULTS.maxHR,
     ageGroup: getVal('set-age-group', DEFAULTS.ageGroup) || DEFAULTS.ageGroup,
@@ -1757,7 +1747,6 @@ function loadSettingsUI() {
   setVal('set-ftp', s.ftp);
   setVal('set-weight', s.weight);
   setVal('set-run-pace', s.runPace);
-  setVal('set-css', s.css);
   setVal('set-resting-hr', s.restingHR);
   setVal('set-max-hr', s.maxHR);
   setVal('set-age-group', s.ageGroup);
@@ -6211,9 +6200,6 @@ function renderZones() {
   if (ftpDisp) ftpDisp.textContent = 'FTP: '+ftp+'w / '+(ftp/weight).toFixed(1)+' w/kg';
   const ftpPace = document.getElementById('ftp-pace-display');
   if (ftpPace) ftpPace.textContent = 'Threshold: '+s.runPace+' min/mi';
-  const swimDisp = document.getElementById('swim-pace-display');
-  if (swimDisp) swimDisp.textContent = 'CSS: '+s.css+' /100m';
-
   const powerZones = [
     {name:'Z1 Recovery',min:0,max:0.55,color:'#3fb950',desc:'Active recovery'},
     {name:'Z2 Endurance',min:0.55,max:0.75,color:'#58a6ff',desc:'Base aerobic'},
@@ -6244,18 +6230,6 @@ function renderZones() {
       const range = i===0 ? '>'+secsToMmSs(faster) : secsToMmSs(faster)+'-'+secsToMmSs(slower);
       return '<tr><td><span class="zone-color" style="background:'+z.color+'"></span>'+z.name+'</td><td>'+range+'</td><td style="color:#7d8590;font-size:12px">'+z.desc+'</td></tr>';
     }).join('')+'</tbody>';
-
-  const cssSecs = paceToSecs(s.css);
-  const swimZones = [
-    {name:'Z1 Recovery',mult:1.30,color:'#3fb950',desc:'Easy technique'},
-    {name:'Z2 Aerobic',mult:1.15,color:'#58a6ff',desc:'Base endurance'},
-    {name:'Z3 Tempo',mult:1.05,color:'#C9A227',desc:'Aerobic threshold'},
-    {name:'Z4 Threshold',mult:1.00,color:'#FC4C02',desc:'Critical swim speed'},
-    {name:'Z5 Speed',mult:0.90,color:'#f85149',desc:'Race pace'},
-  ];
-  const szTable = document.getElementById('swim-zones-table');
-  if (szTable) szTable.innerHTML = '<thead><tr><th>Zone</th><th>Pace (/100m)</th><th>Purpose</th></tr></thead><tbody>'+
-    swimZones.map(z=>'<tr><td><span class="zone-color" style="background:'+z.color+'"></span>'+z.name+'</td><td>'+secsToMmSs(Math.round(cssSecs*z.mult))+'</td><td style="color:#7d8590;font-size:12px">'+z.desc+'</td></tr>').join('')+'</tbody>';
 
   renderZoneBreakdown();
   renderVO2Max();
