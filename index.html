@@ -1405,7 +1405,7 @@ body.ob-open { overflow: hidden; }
   <div class="card">
     <div class="settings-title">Data & sync</div>
     <div class="setting-row">
-      <div><div class="setting-label">Force full resync</div><div class="setting-sub">Re-fetches your complete activity history from Strava and refreshes the cache. Normal loads use the cache and only pull new activities, so use this only if older data looks wrong (e.g. you edited or deleted an old activity on Strava).</div></div>
+      <div><div class="setting-label">Force full resync</div><div class="setting-sub">Re-fetches your complete activity history from Strava, and removes anything you've since deleted there. Normal loads use the cache and only pull new activities, so use this if older data looks wrong — for example after deleting an activity on Strava, or merging several rides into one.</div></div>
       <button onclick="forceFullResync()" style="background:#1a2332;border:1px solid #58a6ff;border-radius:6px;padding:6px 14px;color:#58a6ff;cursor:pointer;font-size:13px">Resync now</button>
     </div>
     <div class="setting-row">
@@ -1708,8 +1708,13 @@ async function applySportTypeCache(athleteId) {
 // Writes activities to the Supabase cache without blocking the UI - failures
 // here should never interrupt the dashboard, since Strava remains the source
 // of truth and the cache is purely a rate-limit optimization.
-function syncActivitiesToSupabase(activities, athlete_id) {
-  (async () => {
+// pruneToSet: only pass true from the FULL resync path, where `activities` is
+// every activity Strava returned. It deletes cached rows Strava no longer has,
+// which is the only way an activity deleted on Strava ever leaves the cache.
+// Never pass it for an incremental top-up - that list is a handful of recent
+// rows and pruning against it would erase all history.
+function syncActivitiesToSupabase(activities, athlete_id, pruneToSet) {
+  return (async () => {
     try {
       const rows = activities.map(a => ({
         id: a.id, athlete_id: athlete_id, name: a.name, type: a.type,
@@ -1740,6 +1745,17 @@ function syncActivitiesToSupabase(activities, athlete_id) {
         });
       }
       console.log('Cache updated:', rows.length, 'activities written to Supabase');
+      // Prune only after every batch has landed, so rows from later batches
+      // are never mistaken for deleted ones.
+      if (pruneToSet && rows.length) {
+        try {
+          const res = await callEdge('prune_activities', {
+            athlete_id: athlete_id,
+            ids: rows.map(r => r.id)
+          });
+          if (res && res.deleted) console.log('Cache pruned:', res.deleted, 'activities no longer on Strava');
+        } catch(e) { console.log('Prune error:', e); }
+      }
     } catch(e) { console.log('Background cache write error:', e); }
   })();
 }
@@ -2949,15 +2965,25 @@ async function loadAll(token) {
           const batch = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=${perPage}&page=${page}`, {headers}).then(r=>r.json()).catch(()=>[]);
           if (!Array.isArray(batch) || batch.length === 0) { reachedCached = true; break; } // true end of history
           batch.forEach(a => {
-            if (mostRecentCached && new Date(a.start_date) <= mostRecentCached) {
-              reachedCached = true;
+            // Whether we've caught up with cached history (stop paginating)
+            // is a SEPARATE question from whether this activity is new to us.
+            // Keying "new" off the date silently dropped anything uploaded
+            // late but dated earlier - a ride split and re-uploaded as one
+            // merged file starts when the whole ride started, which is older
+            // than the last fragment already cached, so a 65-mile merged ride
+            // was discarded while its deleted 21-mile tail stayed on screen.
+            // Same for manual uploads and old-file imports. ID is the only
+            // reliable test.
+            const older = mostRecentCached && new Date(a.start_date) <= mostRecentCached;
+            if (older) reachedCached = true;
+            if (!cachedIds.has(a.id)) {
+              newOnes.push(a);
+            } else {
               // Refresh the cached copy of anything re-fetched: names get
               // edited and achievement counts settle in the hours after an
               // upload, and without this those fixes never landed until a
               // full resync.
-              if (cachedIds.has(a.id)) updated.push(a);
-            } else if (!cachedIds.has(a.id)) {
-              newOnes.push(a);
+              updated.push(a);
             }
           });
         }
@@ -2966,7 +2992,14 @@ async function loadAll(token) {
         const byId = new Map(updated.map(a => [a.id, a]));
         allActivities = allActivities.map(a => byId.get(a.id) || a);
       }
-      if (newOnes.length) allActivities = [...newOnes, ...allActivities];
+      if (newOnes.length) {
+        // Can't just prepend any more: a re-uploaded or backdated activity is
+        // new to us but belongs further down the timeline, and everything
+        // downstream (the "latest activity" card, streaks, the calendar)
+        // assumes this list is newest-first.
+        allActivities = [...newOnes, ...allActivities]
+          .sort((a, b) => new Date(b.start_date) - new Date(a.start_date));
+      }
       const toSync = [...newOnes, ...updated];
       if (toSync.length) {
         syncActivitiesToSupabase(toSync, athlete.id); // fire and forget cache update
@@ -2989,7 +3022,10 @@ async function loadAll(token) {
       allActivities = [...allActivities, ...batch];            // a partial page (e.g. 38 of 50) does NOT mean history has ended,
     }                                                            // it can happen mid-history, so we keep fetching until truly empty
     localStorage.removeItem('ed_force_full_sync'); // one-shot: next load goes back to the fast cache path
-    syncActivitiesToSupabase(allActivities, athlete.id); // fire and forget cache write
+    // Strava is the source of truth here, so prune anything cached that it no
+    // longer returns - otherwise activities deleted on Strava survive forever
+    // and reappear on the next cached load.
+    syncActivitiesToSupabase(allActivities, athlete.id, true);
     saveActivityGeometryCache(athlete.id, allActivities, false); // preserve polylines for the Map heatmap
     saveSportTypeCache(athlete.id, allActivities, false); // preserve gravel/MTB/trail distinctions
 
