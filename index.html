@@ -6697,18 +6697,32 @@ function getEffectiveSex() {
 // data; below this floor the number stops carrying information and just
 // means "off the top of the chart" - so callers surface it as a capped
 // "20 or better" rather than pretending to resolve an exact age.
-const FITNESS_AGE_FLOOR = 15;
+// VO2 max peaks around 20-25 and declines after, so "fitter than the youngest
+// reference" does NOT mean "younger than a teenager" - a 15-year-old's median
+// is 47, nowhere near an elite adult's 62. Reporting a very fit 45-year-old as
+// 15 implied the opposite and read as nonsense.
+//
+// So the floor is 20 for adults: at or above the peak of the curve, which is
+// as precise as this model can honestly be. For someone under 20 the floor is
+// their own age instead - clamping a fit 16-year-old at 20 would tell him he's
+// four years OLDER than he is, which is exactly backwards.
+const FITNESS_AGE_FLOOR = 20;
+function fitnessAgeFloorFor(actualAge) {
+  if (actualAge && actualAge < FITNESS_AGE_FLOOR) return Math.max(13, Math.round(actualAge));
+  return FITNESS_AGE_FLOOR;
+}
 
 // "At what age would this VO2 max be typical?" - found by walking the median
 // curve for the athlete's sex. Higher VO2 max reads younger.
-function calcFitnessAge(vo2max, sex) {
+function calcFitnessAge(vo2max, sex, actualAge) {
   const norms = (sex === 'F') ? VO2_NORMS_FEMALE : VO2_NORMS_MALE;
+  const floor = fitnessAgeFloorFor(actualAge);
   const first = norms[0], last = norms[norms.length - 1];
   if (vo2max >= first.vo2) {
-    // Fitter than the median 15-year-old. There is no data above this, so
-    // extrapolate gently and clamp - callers show it as "15 or better"
+    // Fitter than the youngest reference. No data exists above this, so
+    // extrapolate gently and clamp - callers surface it as "N or better"
     // rather than inventing a precise age.
-    return Math.max(FITNESS_AGE_FLOOR, Math.round(first.age - (vo2max - first.vo2) * 0.5));
+    return Math.max(floor, Math.round(first.age - (vo2max - first.vo2) * 0.5));
   }
   if (vo2max <= last.vo2) {
     return Math.min(90, Math.round(last.age + (last.vo2 - vo2max) * 1.5));
@@ -6786,7 +6800,7 @@ function calcTrueAge() {
   if (!vo2 || !age) return null;
 
   const sex = getEffectiveSex();
-  const baseFitnessAge = calcFitnessAge(vo2.value, sex.value);
+  const baseFitnessAge = calcFitnessAge(vo2.value, sex.value, age.value);
   if (baseFitnessAge == null) return null;
 
   const parts = [{ label: 'VO2 max', value: vo2.value + ' ml/kg/min', source: vo2.source, effect: null }];
@@ -6818,12 +6832,15 @@ function calcTrueAge() {
   }
 
   const raw = Math.round(baseFitnessAge + rhrAdj + hrvAdj);
-  const trueAge = Math.max(FITNESS_AGE_FLOOR, Math.min(90, raw));
+  // Same person-relative floor the base calculation used, so a teenager isn't
+  // clamped above his own age and an adult isn't reported as a child.
+  const floor = fitnessAgeFloorFor(age.value);
+  const trueAge = Math.max(floor, Math.min(90, raw));
   // Saturated = the inputs pushed past what the norms table can represent,
   // so the number is a floor, not a measurement. The card says so instead
   // of quietly showing a clamped value as if it were precise.
-  const saturated = raw < FITNESS_AGE_FLOOR;
-  return { trueAge, saturated, baseFitnessAge, chronologicalAge: age.value, ageSource: age.source, parts };
+  const saturated = raw < floor;
+  return { trueAge, saturated, floor, baseFitnessAge, chronologicalAge: age.value, ageSource: age.source, parts };
 }
 
 function renderTrueAge() {
@@ -6843,10 +6860,14 @@ function renderTrueAge() {
 
   const diff = result.chronologicalAge - result.trueAge;
   const diffColor = diff > 0 ? '#3fb950' : diff < 0 ? '#f85149' : '#7d8590';
-  const diffText = (result.saturated ? 'at least ' : '') + (
-    diff > 0 ? diff + ' years younger than your actual age'
-    : diff < 0 ? (-diff) + ' years older than your actual age'
-    : 'matches your actual age');
+  // A saturated teenager sits at his own age (the floor), where "at least
+  // matches your actual age" reads as a shrug. Say what it means instead.
+  const diffText = (result.saturated && diff <= 0)
+    ? 'at the top of the range for your age'
+    : (result.saturated ? 'at least ' : '') + (
+      diff > 0 ? diff + ' years younger than your actual age'
+      : diff < 0 ? (-diff) + ' years older than your actual age'
+      : 'matches your actual age');
 
   if (srcEl) srcEl.textContent = healthKitData && healthKitData.source === 'healthkit' ? 'Powered by Apple Health' : 'From Settings + estimates';
 
@@ -6874,7 +6895,7 @@ function renderTrueAge() {
       }).join('') +
     '</div>' +
     '<div style="margin-top:0.75rem;font-size:11px;color:#57606a">Based on published VO2 max age-norms with resting HR and HRV modifiers. General guidance, not a clinical measure.' +
-      (result.saturated ? ' Your numbers are past the top of the reference range, so this is capped at ' + FITNESS_AGE_FLOOR + ' — treat it as “' + FITNESS_AGE_FLOOR + ' or better” rather than an exact age.' : '') +
+      (result.saturated ? ' Your VO2 max is above the median for every age in the reference range, so this is capped at ' + result.floor + ' — treat it as “' + result.floor + ' or better” rather than an exact age. VO2 max peaks in the early twenties, so there is no meaningful figure below that.' : '') +
     '</div>';
 }
 
