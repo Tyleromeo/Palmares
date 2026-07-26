@@ -1361,6 +1361,14 @@ body.ob-open { overflow: hidden; }
         </select>
       </div>
       <div class="setting-row">
+        <div><div class="setting-label">Sex</div><div class="setting-sub">Used to pick the VO2 max reference curve for True Age. Female medians run 10-15% lower, so the wrong curve makes the age badly wrong. Imported from Strava when set there.</div></div>
+        <select class="form-select" id="set-sex" onchange="saveSettings(); renderTrueAge(); renderVO2Max();" style="width:140px">
+          <option value="">Not set</option>
+          <option value="M">Male</option>
+          <option value="F">Female</option>
+        </select>
+      </div>
+      <div class="setting-row">
         <div><div class="setting-label">Age</div><div class="setting-sub">Your current age - used to calculate fitness age from your VO2 max</div></div>
         <input class="setting-input" id="set-age" type="number" placeholder="45" onchange="saveSettings(); renderVO2Max();" /> <span style="font-size:12px;color:#7d8590;margin-left:4px">years</span>
       </div>
@@ -1763,7 +1771,7 @@ async function loadPowerPRsFromSupabase(athlete_id) {
 // saveSettings falls back to DEFAULTS for empty fields they couldn't clear
 // them either. Real values come from importProfile() (Strava + Apple Health +
 // the athlete's own activities) at first launch.
-const DEFAULTS = { ftp:200, weight:70, runPace:'9:00', restingHR:60, maxHR:185, ageGroup:'35_44', city:'', units:'imperial', weightUnit:'kg', age:null, measuredVO2Max:null };
+const DEFAULTS = { ftp:200, weight:70, runPace:'9:00', restingHR:60, maxHR:185, ageGroup:'35_44', city:'', units:'imperial', weightUnit:'kg', sex:'', age:null, measuredVO2Max:null };
 
 // Weight is ALWAYS stored in kilograms - every power-to-weight figure in the
 // app divides watts by settings.weight and would silently be 2.2x wrong if a
@@ -1804,6 +1812,7 @@ function saveSettings() {
     ageGroup: getVal('set-age-group', DEFAULTS.ageGroup) || DEFAULTS.ageGroup,
     city: getVal('set-city', DEFAULTS.city) || DEFAULTS.city,
     units: getVal('set-units', DEFAULTS.units) || DEFAULTS.units,
+    sex: getVal('set-sex', getSettings().sex || ''),
     age: parseInt(getVal('set-age', '')) || null,
     measuredVO2Max: parseFloat(getVal('set-measured-vo2', '')) || null
   });
@@ -1840,6 +1849,7 @@ function loadSettingsUI() {
   setVal('set-resting-hr', s.restingHR);
   setVal('set-max-hr', s.maxHR);
   setVal('set-age-group', s.ageGroup);
+  setVal('set-sex', s.sex || '');
   setVal('set-city', s.city);
   setVal('set-units', s.units);
   if (s.age) setVal('set-age', s.age);
@@ -1902,6 +1912,9 @@ function importProfile() {
   // --- Strava profile: what they already filled in over there ---
   const a = athleteData || {};
   if (a.weight) put('weight', Math.round(a.weight * 10) / 10, 'Strava');
+  // Sex drives the True Age reference curve - importing it is what stops a
+  // female athlete being scored against male norms.
+  if (a.sex === 'M' || a.sex === 'F') put('sex', a.sex, 'Strava');
   if (a.ftp) put('ftp', a.ftp, 'Strava');
   const town = [a.city, a.state].filter(Boolean).join(', ');
   if (town) put('city', town, 'Strava');
@@ -2028,6 +2041,7 @@ function saveProfileSetup() {
   if (units) next.units = units;
   const imported = importProfile();
   if (imported.values.measuredVO2Max && !next.measuredVO2Max) next.measuredVO2Max = imported.values.measuredVO2Max;
+  if (imported.values.sex && !next.sex) next.sex = imported.values.sex;
 
   localStorage.setItem('ed_settings', JSON.stringify(next));
   window.USER_FTP = next.ftp;
@@ -6635,14 +6649,43 @@ function renderZones() {
 // population data, applying the well-documented ~8-10% per decade aerobic
 // decline rate, so a given score is compared against people who actually
 // train at a similar level rather than the general public.
-const VO2_NORMS_BY_AGE_MALE = [
-  { age: 22, good: 58 },  // Competitive collegiate-level distance runner/cyclist baseline
-  { age: 32, good: 53 },
-  { age: 42, good: 48 },
-  { age: 52, good: 43 },
-  { age: 62, good: 38 },
-  { age: 72, good: 33 }
+// VO2 max reference values by age and sex: the POPULATION MEDIAN (~50th
+// percentile) for each age, from the standard ACSM / Cooper Institute norms.
+//
+// These replace a single male-only table whose reference was "competitive
+// collegiate distance runner" (58 at age 22, roughly the 95th percentile).
+// Two things were wrong with that. Everyone was measured against elite
+// athletes, so an average 44-year-old man read as 58; and women were scored
+// on male values, so a healthy 44-year-old woman's normal 32 ml/kg/min read
+// as 74. Fitness age only means anything against the median - it answers
+// "at what age would my VO2 max be typical?", so the curve has to be the
+// typical person's, not an athlete's.
+//
+// Extended down to 15 because the old table started at 22, putting teenagers
+// off the chart entirely: a fit 16-year-old was reported as 36.
+const VO2_NORMS_MALE = [
+  { age: 15, vo2: 47 }, { age: 20, vo2: 45 }, { age: 25, vo2: 43 },
+  { age: 35, vo2: 40 }, { age: 45, vo2: 36 }, { age: 55, vo2: 33 },
+  { age: 65, vo2: 29 }, { age: 75, vo2: 25 }
 ];
+const VO2_NORMS_FEMALE = [
+  { age: 15, vo2: 41 }, { age: 20, vo2: 38 }, { age: 25, vo2: 37 },
+  { age: 35, vo2: 34 }, { age: 45, vo2: 31 }, { age: 55, vo2: 28 },
+  { age: 65, vo2: 25 }, { age: 75, vo2: 22 }
+];
+
+// Strava knows the athlete's sex ('M'/'F') and we already fetch it; a Settings
+// value overrides. Unknown falls back to the male curve, which is the older
+// behaviour, and the card says which curve it used so the number is never
+// silently sex-mismatched again.
+function getEffectiveSex() {
+  const s = getSettings();
+  if (s.sex === 'M' || s.sex === 'F') return { value: s.sex, source: 'Settings' };
+  if (athleteData && (athleteData.sex === 'M' || athleteData.sex === 'F')) {
+    return { value: athleteData.sex, source: 'Strava' };
+  }
+  return { value: null, source: null };
+}
 
 // Estimates "fitness age": the age at which your VO2 max would be considered
 // roughly average-to-good, based on published norms. Works by finding where
@@ -6654,26 +6697,26 @@ const VO2_NORMS_BY_AGE_MALE = [
 // data; below this floor the number stops carrying information and just
 // means "off the top of the chart" - so callers surface it as a capped
 // "20 or better" rather than pretending to resolve an exact age.
-const FITNESS_AGE_FLOOR = 20;
+const FITNESS_AGE_FLOOR = 15;
 
-function calcFitnessAge(vo2max) {
-  const norms = VO2_NORMS_BY_AGE_MALE;
-  if (vo2max >= norms[0].good) {
-    // Fitter than even the youngest competitive-athlete reference point
-    // (58 at age 22) - genuinely elite territory. Extrapolate gently
-    // downward, but clamp at the floor: the table has no data up here, so
-    // a precise-looking 18 would be false precision.
-    return Math.max(FITNESS_AGE_FLOOR, Math.round(norms[0].age - (vo2max - norms[0].good) * 0.8));
+// "At what age would this VO2 max be typical?" - found by walking the median
+// curve for the athlete's sex. Higher VO2 max reads younger.
+function calcFitnessAge(vo2max, sex) {
+  const norms = (sex === 'F') ? VO2_NORMS_FEMALE : VO2_NORMS_MALE;
+  const first = norms[0], last = norms[norms.length - 1];
+  if (vo2max >= first.vo2) {
+    // Fitter than the median 15-year-old. There is no data above this, so
+    // extrapolate gently and clamp - callers show it as "15 or better"
+    // rather than inventing a precise age.
+    return Math.max(FITNESS_AGE_FLOOR, Math.round(first.age - (vo2max - first.vo2) * 0.5));
   }
-  if (vo2max <= norms[norms.length-1].good) {
-    // Below the oldest bracket's reference - extrapolate upward.
-    const last = norms[norms.length-1];
-    return Math.round(last.age + (last.good - vo2max) * 2);
+  if (vo2max <= last.vo2) {
+    return Math.min(90, Math.round(last.age + (last.vo2 - vo2max) * 1.5));
   }
   for (let i = 0; i < norms.length - 1; i++) {
-    const a = norms[i], b = norms[i+1];
-    if (vo2max <= a.good && vo2max >= b.good) {
-      const frac = (a.good - vo2max) / (a.good - b.good);
+    const a = norms[i], b = norms[i + 1];
+    if (vo2max <= a.vo2 && vo2max >= b.vo2) {
+      const frac = (a.vo2 - vo2max) / (a.vo2 - b.vo2);
       return Math.round(a.age + frac * (b.age - a.age));
     }
   }
@@ -6742,10 +6785,19 @@ function calcTrueAge() {
   const age = getEffectiveAge();
   if (!vo2 || !age) return null;
 
-  const baseFitnessAge = calcFitnessAge(vo2.value);
+  const sex = getEffectiveSex();
+  const baseFitnessAge = calcFitnessAge(vo2.value, sex.value);
   if (baseFitnessAge == null) return null;
 
   const parts = [{ label: 'VO2 max', value: vo2.value + ' ml/kg/min', source: vo2.source, effect: null }];
+  // Sex materially changes the reference curve (female medians run ~10-15%
+  // lower), so show which one was used instead of leaving it invisible.
+  parts.push({
+    label: 'Reference curve',
+    value: sex.value === 'F' ? 'Female median' : sex.value === 'M' ? 'Male median' : 'Male median (sex not set)',
+    source: sex.source || 'default — set it in Settings',
+    effect: null
+  });
 
   // Resting HR: ~66 bpm is a typical adult average; each bpm above/below
   // nudges the age slightly (athletic RHRs in the 40s-50s read younger).
