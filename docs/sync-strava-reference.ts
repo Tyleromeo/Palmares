@@ -1,3 +1,9 @@
+// REFERENCE COPY of the deployed Supabase Edge Function (sync-strava).
+// The authoritative source lives outside this repo at
+// supabase/functions/sync-strava/index.ts on the working machine and is what
+// `supabase functions deploy` uploads. This copy exists so both machines can
+// read the action contract without guessing. Do not deploy from here.
+
 // Supabase Edge Function backing the Eldorado dashboard's callEdge() calls.
 // Implements the action contract documented in the HTML near callEdge():
 //   exchange_token, refresh_token, get_cache, set_cache, list_activities,
