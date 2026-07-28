@@ -5504,13 +5504,22 @@ function sectionCards(sec) {
 // supporting stats, and where it helps, small inline bars. Keyed by card
 // id; any card without one still falls back to the generic scrape below.
 
-function wFmtDate(d) {
-  const now = new Date(), day = 86400000;
-  const cal = Math.round((new Date().setHours(0,0,0,0) - new Date(d).setHours(0,0,0,0)) / day);
-  if (cal === 0) return 'today';
-  if (cal === 1) return 'yesterday';
-  if (cal < 7) return cal + 'd ago';
-  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+function wActivityDateStamp(activity) {
+  // Use Strava's local calendar date, not the UTC start time, so an evening
+  // activity does not become "tomorrow" for users west of UTC.
+  const parts = activityLocalDateKey(activity).split('-').map(Number);
+  const activityDay = new Date(parts[0], parts[1] - 1, parts[2]);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const cal = Math.round((today - activityDay) / 86400000);
+  const date = activityDay.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: activityDay.getFullYear() === today.getFullYear() ? undefined : 'numeric'
+  });
+  if (cal === 0) return 'today &middot; ' + date;
+  if (cal === 1) return 'yesterday &middot; ' + date;
+  return date;
 }
 
 // Weekly mileage for the last N weeks, oldest first - the hero's trend bars.
@@ -5677,21 +5686,21 @@ const WIDGET_RENDERERS = {
     if (a.average_speed > 0) {
       if (isFoot) {
         const sec = 1609.34 / a.average_speed;
-        paceStat = '<div><div class="w-stat-v">' + Math.floor(sec / 60) + ':' + String(Math.round(sec % 60)).padStart(2, '0') +
+        paceStat = '<div style="min-width:0"><div class="w-stat-v">' + Math.floor(sec / 60) + ':' + String(Math.round(sec % 60)).padStart(2, '0') +
           '</div><div class="w-stat-l">Pace /mi</div></div>';
       } else {
-        paceStat = '<div><div class="w-stat-v">' + (a.average_speed * 2.23694).toFixed(1) +
+        paceStat = '<div style="min-width:0"><div class="w-stat-v">' + (a.average_speed * 2.23694).toFixed(1) +
           '</div><div class="w-stat-l">Avg mph</div></div>';
       }
     }
     return '<div class="w-head"><span class="w-big sm">' + mi + '</span><span class="w-cap">mi &middot; ' + (h ? h + 'h ' + mm + 'm' : mm + 'm') + '</span>' +
-        '<span class="w-cap" style="color:#C9A227">' + escapeHTML(activityTypeLabel(a.sport_type || a.type)) + '</span></div>' +
+        '<span class="w-cap" style="color:#C9A227">' + escapeHTML(activityTypeLabel(a.sport_type || a.type)) + '</span>' +
+        '<span class="w-cap" style="margin-left:auto;text-align:right;white-space:nowrap">' + wActivityDateStamp(a) + '</span></div>' +
       '<div class="w-sub w-truncate w-strong">' + escapeHTML(a.name || 'Untitled') + '</div>' +
-      '<div class="w-stats"><div><div class="w-stat-v">' + wFmtDate(a.start_date) + '</div><div class="w-stat-l">When</div></div>' +
-        paceStat +
-        (a.average_watts ? '<div><div class="w-stat-v">' + Math.round(a.average_watts) + 'w</div><div class="w-stat-l">Avg power</div></div>' : '') +
-        (a.average_heartrate ? '<div><div class="w-stat-v">' + Math.round(a.average_heartrate) + '</div><div class="w-stat-l">Avg bpm</div></div>' : '') +
-        '<div><div class="w-stat-v" style="color:#C9A227">' + (relativeEffort == null ? '&mdash;' : relativeEffort) +
+      '<div class="w-stats" style="gap:10px;flex-wrap:nowrap">' + paceStat +
+        (a.average_watts ? '<div style="min-width:0"><div class="w-stat-v">' + Math.round(a.average_watts) + 'w</div><div class="w-stat-l">Avg power</div></div>' : '') +
+        (a.average_heartrate ? '<div style="min-width:0"><div class="w-stat-v">' + Math.round(a.average_heartrate) + '</div><div class="w-stat-l">Avg bpm</div></div>' : '') +
+        '<div style="min-width:0"><div class="w-stat-v" style="color:#C9A227">' + (relativeEffort == null ? '&mdash;' : relativeEffort) +
           '</div><div class="w-stat-l">Relative effort</div></div>' +
       '</div>';
   },
