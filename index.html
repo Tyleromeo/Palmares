@@ -214,9 +214,13 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 @keyframes detail-push-out { to { transform: translate3d(100%, 0, 0); opacity: 0; } }
 .section.detail-returning { animation: detail-pop-in 280ms cubic-bezier(0.22, 0.61, 0.36, 1); }
 @keyframes detail-pop-in { from { opacity: 0; transform: translate3d(-26px, 0, 0); } to { opacity: 1; transform: none; } }
+/* Opening a widget pushes the detail in from the right, mirroring the pop
+   out on the way back - the symmetric iOS push/pop feel. */
+.section.detail-opening { animation: detail-push-in 260ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+@keyframes detail-push-in { from { opacity: 0; transform: translate3d(100%, 0, 0); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
   .section.detail-mode { transition: none; }
-  .section.detail-closing, .section.detail-returning { animation: none; }
+  .section.detail-closing, .section.detail-returning, .section.detail-opening { animation: none; }
 }
 
 /* LOG SWIPE DECK - the Log page is five full-size cards you swipe between
@@ -5897,6 +5901,17 @@ function openDetail(sectionName, cardId) {
   let node = card;
   while (node && node !== sec) { node.classList.add('detail-open'); node = node.parentElement; }
   sec.classList.add('detail-mode');
+  // Push the detail in from the right, mirroring the pop-out on the way back
+  // (skipped under reduce-motion). Clears itself so it can't linger and block
+  // the swipe transform.
+  const reduceOpen = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reduceOpen) {
+    sec.classList.remove('detail-closing', 'detail-returning');
+    sec.classList.add('detail-opening');
+    const clearOpen = function () { sec.classList.remove('detail-opening'); sec.removeEventListener('animationend', clearOpen); };
+    sec.addEventListener('animationend', clearOpen);
+    setTimeout(clearOpen, 320);
+  }
   const titleEl = card.querySelector('.card-title-left');
   const bar = sec.querySelector(':scope > .detail-bar .detail-title');
   if (bar) bar.textContent = titleEl ? titleEl.textContent.replace(/[▼▶]/g, '').trim() : '';
