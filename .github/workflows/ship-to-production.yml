@@ -1,0 +1,45 @@
+# Anything pushed to shared-development ships to the phone automatically.
+#
+# The app loads https://palmares-gilt.vercel.app/ios.html, which Vercel builds
+# from `main`. Work happens on `shared-development` (both Claude and Codex),
+# so without this a fix could sit on the branch looking "pushed" while the
+# phone still ran the old build - which is exactly what happened once.
+#
+# Merges rather than force-pushes, so anything landing on main directly is
+# never discarded. A genuine conflict fails the run instead of guessing, and
+# the branches simply stay unmerged until a human resolves it.
+name: Ship shared-development to production
+
+on:
+  push:
+    branches: [shared-development]
+
+# Never let two runs race each other onto main.
+concurrency:
+  group: ship-to-production
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge shared-development into main
+        run: |
+          set -euo pipefail
+          git config user.name "palmares-ship-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git fetch origin shared-development:refs/remotes/origin/shared-development
+          if git merge-base --is-ancestor origin/shared-development HEAD; then
+            echo "main already contains shared-development - nothing to ship."
+            exit 0
+          fi
+          git merge --no-edit origin/shared-development
+          git push origin HEAD:main

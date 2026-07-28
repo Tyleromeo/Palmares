@@ -8,8 +8,28 @@ down because it has already gone wrong once.
 ## Shared development branch
 
 Claude and Codex work from the same long-lived `shared-development` branch
-on both Macs. `main` is the protected production branch and receives tested
-changes through pull requests from `shared-development`.
+on both Macs. `main` is the production branch: Vercel builds it into the live
+site, and the iOS app loads `ios.html` from there.
+
+**Pushing `shared-development` ships to the phone.** The
+`.github/workflows/ship-to-production.yml` Action merges that branch into
+`main` on every push, so a fix reaches the user's phone within about a minute
+without anyone opening a pull request. This exists because a fix once sat on
+the branch looking "pushed" while the phone still ran the old build.
+
+Two consequences worth internalising:
+
+- Treat every push as production. Verify the change before pushing, and never
+  push work you would not ship.
+- Confirm a fix actually landed by checking the deployed page, not just the
+  branch:
+
+  ```sh
+  curl -s https://palmares-gilt.vercel.app/ios.html | grep -c "<a marker from your change>"
+  ```
+
+If the Action ever fails, it is because `main` and `shared-development` truly
+conflict. Resolve it by hand rather than force-pushing over either branch.
 
 Set up a checkout once:
 
