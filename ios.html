@@ -530,6 +530,31 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 .zone-bar-wrap { display:flex; align-items:center; gap:8px; }
 .zone-bar { flex:1; height:8px; background:#21262d; border-radius:4px; overflow:hidden; }
 .zone-bar-inner { height:100%; border-radius:4px; }
+/* Training Zones contains the widest tables and the longest control strip in
+   the Train deck. Letting either establish a wider min-content size gives
+   this one card its own horizontal scroll range, which competes with the
+   deck and produces diagonal/circular panning in WKWebView. */
+#collapse-zones { overflow-x:hidden; }
+#collapse-zones .collapse-body,
+#collapse-zones .g2,
+#collapse-zones .g2 > .card { min-width:0; max-width:100%; }
+#collapse-zones .zone-table { table-layout:fixed; max-width:100%; }
+#collapse-zones .zone-table th,
+#collapse-zones .zone-table td { overflow-wrap:break-word; }
+#power-zones-table th:nth-child(1) { width:38%; }
+#power-zones-table th:nth-child(2) { width:20%; }
+#power-zones-table th:nth-child(3) { width:18%; }
+#power-zones-table th:nth-child(4) { width:24%; }
+#run-zones-table th:nth-child(1) { width:30%; }
+#run-zones-table th:nth-child(2) { width:30%; }
+#run-zones-table th:nth-child(3) { width:40%; }
+.zone-trend-controls { margin-top:1.5rem; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+@media(max-width:720px){
+  #collapse-zones .zone-table { font-size:12px; }
+  .zone-trend-controls { flex-direction:column; align-items:stretch; }
+  #collapse-zones #vo2-filters { width:100%; display:grid !important; grid-template-columns:repeat(4,minmax(0,1fr)); gap:4px; }
+  #collapse-zones #vo2-filters .nav-btn { width:100%; min-width:0; padding:8px 4px; text-align:center; }
+}
 
 /* SEGMENTS+ */
 .seg-row { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid #21262d; }
@@ -937,7 +962,7 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
     <div class="card">
       <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>VO2 max estimate</div></div>
       <div id="vo2max-display"></div>
-      <div style="margin-top:1.5rem;display:flex;justify-content:space-between;align-items:center">
+      <div class="zone-trend-controls">
         <div style="font-size:13px;font-weight:600;color:#e6edf3">Trend over time</div>
         <div id="vo2-filters" style="display:flex;gap:4px">
           <button class="nav-btn" onclick="renderVO2Trend(7)">7d</button>
