@@ -3676,6 +3676,13 @@ function activityLocalDateKey(activity) {
   return (activity.start_date_local || activity.start_date).split('T')[0];
 }
 
+function activityRelativeEffort(activity) {
+  const raw = activity && activity.suffer_score;
+  return raw != null && raw !== '' && Number.isFinite(Number(raw))
+    ? Math.round(Number(raw))
+    : null;
+}
+
 // Generic JS -> native bridge. Silently a no-op outside the iOS app, so
 // callers never need to check the environment; see WebView.swift's
 // WKScriptMessageHandler for the other side.
@@ -4120,7 +4127,6 @@ async function renderLastActivityHighlight() {
   if (!card || !body) return;
   if (!allActivities.length) {
     card.style.display = 'none';
-    updateWidgetData({ lastActivity: null });
     return;
   }
 
@@ -4136,19 +4142,7 @@ async function renderLastActivityHighlight() {
   const date = new Date(a.start_date).toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric', year:'numeric'});
   const location = [a.location_city, a.location_state].filter(Boolean).join(', ');
   const typeTag = isRun ? '<span class="badge b-run">RUN</span>' : isRide ? '<span class="badge b-blue">RIDE</span>' : `<span class="badge" style="background:#21262d;color:#7d8590">${escapeHTML(a.type||'')}</span>`;
-  const relativeEffort = a.suffer_score != null && a.suffer_score !== '' &&
-    Number.isFinite(Number(a.suffer_score))
-    ? Math.round(Number(a.suffer_score))
-    : null;
-
-  updateWidgetData({
-    lastActivity: {
-      name: a.name || 'Untitled activity',
-      sport: a.type || '',
-      date: a.start_date,
-      relativeEffort: relativeEffort
-    }
-  });
+  const relativeEffort = activityRelativeEffort(a);
 
   const statTile = (label, val, sub) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-val">${val}</div><div class="metric-sub">${sub||''}</div></div>`;
 
@@ -5672,6 +5666,7 @@ const WIDGET_RENDERERS = {
   'last-activity-card': function() {
     if (!allActivities.length) return null;
     const a = allActivities[0];
+    const relativeEffort = activityRelativeEffort(a);
     const mi = (a.distance / 1609.34).toFixed(1);
     const h = Math.floor(a.moving_time / 3600), mm = Math.floor((a.moving_time % 3600) / 60);
     const sport = activitySportKey(a);
@@ -5696,6 +5691,8 @@ const WIDGET_RENDERERS = {
         paceStat +
         (a.average_watts ? '<div><div class="w-stat-v">' + Math.round(a.average_watts) + 'w</div><div class="w-stat-l">Avg power</div></div>' : '') +
         (a.average_heartrate ? '<div><div class="w-stat-v">' + Math.round(a.average_heartrate) + '</div><div class="w-stat-l">Avg bpm</div></div>' : '') +
+        '<div><div class="w-stat-v" style="color:#C9A227">' + (relativeEffort == null ? '&mdash;' : relativeEffort) +
+          '</div><div class="w-stat-l">Relative effort</div></div>' +
       '</div>';
   },
 

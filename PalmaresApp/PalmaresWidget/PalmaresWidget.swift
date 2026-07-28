@@ -3,7 +3,7 @@
 //  PalmaresWidget (widget extension target)
 //
 //  Home screen widget fed entirely by the web app: ios.html computes the
-//  snapshot (fitness, weather, latest activity, events, streaks), posts it
+//  snapshot (fitness, weather, tailwind, next club event, streaks), posts it
 //  over the palmaresNative bridge, and WidgetBridge.swift in the app target
 //  writes it into the shared App Group. This extension only reads and draws —
 //  it re-derives nothing, so web and widget can never disagree.
@@ -50,12 +50,6 @@ struct WidgetSnapshot: Codable {
         var rank: Int?
         var distanceMi: Double?
     }
-    struct LastActivity: Codable {
-        var name: String?
-        var sport: String?
-        var date: String?
-        var relativeEffort: Int?
-    }
     struct NextEvent: Codable {
         var title: String?
         var club: String?
@@ -76,7 +70,6 @@ struct WidgetSnapshot: Codable {
     var streaks: Streaks?
     var weather: Weather?
     var tailwind: Tailwind?
-    var lastActivity: LastActivity?
     var nextEvent: NextEvent?
 }
 
@@ -198,10 +191,6 @@ struct SmallView: View {
                 Text("\(mi) mi this week")
                     .font(.caption).foregroundStyle(Color.pmText)
             }
-            if let activity = snapshot.lastActivity {
-                Text("\(activity.name ?? "Last activity") · Relative Effort \(activity.relativeEffort.map(String.init) ?? "—")")
-                    .font(.caption2).foregroundStyle(Color.pmGold).lineLimit(1)
-            }
             if let wx = snapshot.weather, let wind = wx.windMph {
                 Text("\(wx.windDir ?? "") wind \(wind) mph")
                     .font(.caption2).foregroundStyle(Color.pmMuted)
@@ -234,10 +223,6 @@ struct MediumView: View {
                 if let week = snapshot.week, let mi = week.miles {
                     Text("\(mi) mi · \(week.activities ?? 0) rides this week")
                         .font(.caption).foregroundStyle(Color.pmText)
-                }
-                if let activity = snapshot.lastActivity {
-                    Text("\(activity.name ?? "Last activity") · Relative Effort \(activity.relativeEffort.map(String.init) ?? "—")")
-                        .font(.caption2).foregroundStyle(Color.pmGold).lineLimit(1)
                 }
                 if let streaks = snapshot.streaks, let daily = streaks.daily, daily > 0 {
                     Text("🔥 \(daily)-day streak")
@@ -314,8 +299,6 @@ extension SnapshotRecord {
             weather: .init(tempHi: 88, tempLo: 71, desc: "Clear", icon: "☀️",
                            windMph: 9, windDir: "SW", source: "Open-Meteo"),
             tailwind: .init(name: "Old Northport Rd", mph: 12, rank: 2, distanceMi: 1.4),
-            lastActivity: .init(name: "Morning Ride", sport: "Ride",
-                                date: "2026-07-28T11:15:00Z", relativeEffort: 86),
             nextEvent: .init(title: "LiVelo Night Ride", club: "LiVelo",
                              date: "2026-07-22T22:30:00Z")
         ),
