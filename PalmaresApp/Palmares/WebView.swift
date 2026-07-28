@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import UIKit   // UIAlertController / UIApplication for the WKUIDelegate dialogs
 
 // Wraps a single, persistent WKWebView so switching bottom tabs runs
 // showSection('...') on the *same* page instance instead of reloading the
@@ -42,6 +43,14 @@ struct WebView: UIViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+        // Without a uiDelegate, WKWebView silently swallows window.alert,
+        // window.confirm and window.prompt - confirm() returns false and
+        // prompt() returns nil immediately, with no dialog shown. Every
+        // confirm-gated action in the page was therefore dead in the app:
+        // Force full resync in particular looked like a button that did
+        // nothing, because it did nothing. The page now uses its own in-page
+        // dialogs, so this is a safety net for any native dialog that remains.
+        webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
         // Rubber-band overscroll let the in-page top bar look like it
         // "detached" and let page content scroll above it - WKWebView (like
@@ -73,7 +82,7 @@ struct WebView: UIViewRepresentable {
         }
     }
 
-    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, WKUIDelegate {
         @Binding var isLoading: Bool
         @Binding var athleteName: String?
         init(isLoading: Binding<Bool>, athleteName: Binding<String?>) {
@@ -98,6 +107,48 @@ struct WebView: UIViewRepresentable {
         }
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             isLoading = false
+        }
+
+        // MARK: - WKUIDelegate: JS dialogs
+        // WKWebView shows none of these unless the host implements them.
+
+        private func topViewController() -> UIViewController? {
+            let scene = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive }
+            var top = scene?.keyWindow?.rootViewController
+            while let presented = top?.presentedViewController { top = presented }
+            return top
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+            guard let vc = topViewController() else { completionHandler(); return }
+            let a = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
+            vc.present(a, animated: true)
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+            guard let vc = topViewController() else { completionHandler(false); return }
+            let a = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
+            a.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
+            vc.present(a, animated: true)
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
+                     defaultText: String?, initiatedByFrame frame: WKFrameInfo,
+                     completionHandler: @escaping (String?) -> Void) {
+            guard let vc = topViewController() else { completionHandler(nil); return }
+            let a = UIAlertController(title: nil, message: prompt, preferredStyle: .alert)
+            a.addTextField { $0.text = defaultText }
+            a.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(nil) })
+            a.addAction(UIAlertAction(title: "OK", style: .default) { _ in
+                completionHandler(a.textFields?.first?.text)
+            })
+            vc.present(a, animated: true)
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {

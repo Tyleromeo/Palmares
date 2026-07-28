@@ -521,6 +521,19 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
 .toast-body { font-size:12px; color:#7d8590; }
 .toast-icon { font-size:18px; margin-right:8px; float:left; }
 
+/* IN-PAGE CONFIRM / PROMPT. Replaces window.confirm and window.prompt, which
+   WKWebView refuses to display unless the host app implements WKUIDelegate -
+   so in the iOS app they returned false/null instantly and every action gated
+   on them did nothing at all. Above the map's full-screen layer (10000) and
+   the setup sheet (20000). */
+.ask-overlay { position: fixed; inset: 0; z-index: 30000; background: rgba(1,4,9,.72); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.ask-box { background: #161b22; border: 1px solid #30363d; border-radius: 14px; padding: 20px; width: 100%; max-width: 400px; box-shadow: 0 20px 50px rgba(0,0,0,.6); }
+.ask-msg { font-size: 14px; color: #e6edf3; line-height: 1.55; }
+.ask-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+.ask-actions .gold-btn { padding: 9px 18px; }
+.ask-cancel { background: transparent; border: 1px solid #30363d; color: #7d8590; border-radius: 8px; padding: 9px 16px; font-size: 13px; cursor: pointer; }
+.ask-cancel:hover { color: #e6edf3; border-color: #8b949e; }
+
 /* FIRST-RUN PROFILE SETUP - a full-screen sheet on first launch. Sits above
    everything including the map's full-screen layer (z 10000) and the nav. */
 body.ob-open { overflow: hidden; }
@@ -2181,8 +2194,68 @@ function reloadClubEvents() {
   loadClubEvents();
 }
 
-function disconnectStrava() {
-  if (!confirm('Disconnect Strava and return to login?')) return;
+// WKWebView does NOT show window.confirm/alert/prompt unless the host app
+// implements WKUIDelegate - it just returns false (or null) immediately. The
+// iOS app never set a uiDelegate, so every confirm-gated action was silently
+// dead in the app: nothing appeared, nothing happened. Force full resync was
+// the one that mattered - it looked like the button did nothing, because it
+// literally did nothing.
+//
+// These in-page replacements work identically in the app and the browser, so
+// the behaviour no longer depends on the host. (The app is also gaining a
+// WKUIDelegate so any stray native dialog works too, but that needs a
+// rebuild; this does not.)
+function askConfirm(message, confirmLabel) {
+  return new Promise(function (resolve) {
+    const wrap = document.createElement('div');
+    wrap.className = 'ask-overlay';
+    wrap.innerHTML =
+      '<div class="ask-box" role="dialog" aria-modal="true">' +
+        '<div class="ask-msg"></div>' +
+        '<div class="ask-actions">' +
+          '<button class="ask-cancel" type="button">Cancel</button>' +
+          '<button class="gold-btn ask-ok" type="button"></button>' +
+        '</div>' +
+      '</div>';
+    wrap.querySelector('.ask-msg').textContent = message;
+    wrap.querySelector('.ask-ok').textContent = confirmLabel || 'Continue';
+    const done = function (val) { wrap.remove(); resolve(val); };
+    wrap.querySelector('.ask-ok').onclick = function () { done(true); };
+    wrap.querySelector('.ask-cancel').onclick = function () { done(false); };
+    wrap.onclick = function (e) { if (e.target === wrap) done(false); };
+    document.body.appendChild(wrap);
+    setTimeout(function () { const b = wrap.querySelector('.ask-ok'); if (b) b.focus(); }, 30);
+  });
+}
+
+function askPrompt(message, defaultValue) {
+  return new Promise(function (resolve) {
+    const wrap = document.createElement('div');
+    wrap.className = 'ask-overlay';
+    wrap.innerHTML =
+      '<div class="ask-box" role="dialog" aria-modal="true">' +
+        '<div class="ask-msg"></div>' +
+        '<input class="setting-input ask-input" type="text" style="width:100%;margin-top:10px" />' +
+        '<div class="ask-actions">' +
+          '<button class="ask-cancel" type="button">Cancel</button>' +
+          '<button class="gold-btn ask-ok" type="button">Save</button>' +
+        '</div>' +
+      '</div>';
+    wrap.querySelector('.ask-msg').textContent = message;
+    const input = wrap.querySelector('.ask-input');
+    input.value = defaultValue || '';
+    const done = function (val) { wrap.remove(); resolve(val); };
+    wrap.querySelector('.ask-ok').onclick = function () { done(input.value.trim() || null); };
+    wrap.querySelector('.ask-cancel').onclick = function () { done(null); };
+    wrap.onclick = function (e) { if (e.target === wrap) done(null); };
+    input.onkeydown = function (e) { if (e.key === 'Enter') done(input.value.trim() || null); };
+    document.body.appendChild(wrap);
+    setTimeout(function () { input.focus(); input.select(); }, 30);
+  });
+}
+
+async function disconnectStrava() {
+  if (!await askConfirm('Disconnect Strava and return to login?', 'Disconnect')) return;
   const sessionId = localStorage.getItem('ed_session');
   if (sessionId) callEdge('disconnect', { session_id: sessionId }).catch(function(e){ console.log('Disconnect edge cleanup failed:', e); });
   localStorage.removeItem('ed_token');
@@ -2194,8 +2267,8 @@ function disconnectStrava() {
   location.reload();
 }
 
-function forceFullResync() {
-  if (!confirm('This will re-fetch your complete activity history from Strava (up to 36 pages) and may take a moment. Continue?')) return;
+async function forceFullResync() {
+  if (!await askConfirm('This re-fetches your complete activity history from Strava and removes anything you have since deleted there. It may take a moment. Continue?', 'Resync')) return;
   localStorage.setItem('ed_force_full_sync', '1');
   location.reload();
 }
@@ -2474,10 +2547,10 @@ function confirmRoadStatus(i) {
   if (g) postRoadLifecycle(g, '[confirm]', 'Status confirmed');
 }
 
-function clearRoadStatus(i) {
+async function clearRoadStatus(i) {
   const g = _roadGroups[i];
   if (!g) return;
-  if (!confirm('Mark "' + g.report.road_name + '" as back to normal? It will disappear from the list for everyone.')) return;
+  if (!await askConfirm('Mark "' + g.report.road_name + '" as back to normal? It will disappear from the list for everyone.', 'Mark resolved')) return;
   postRoadLifecycle(g, '[cleared]', 'Marked cleared');
 }
 
@@ -4727,7 +4800,7 @@ function savePowerScanProgress(athleteId, sport, progress) {
 }
 
 async function resetPowerScan(athleteId, sport) {
-  if (!confirm(`This clears all ${POWER_SPORTS[sport].label.toLowerCase()} power curve scan progress and starts over from scratch. Continue?`)) return;
+  if (!await askConfirm(`This clears all ${POWER_SPORTS[sport].label.toLowerCase()} power curve scan progress and starts over from scratch. Continue?`, 'Restart scan')) return;
   await savePowerScanProgress(athleteId, sport, freshPowerProgress(sport));
   await renderPowerScanUI();
   renderPowerCurveFromScan();
@@ -5104,7 +5177,7 @@ function saveBikeDistanceProgress(athleteId, progress) {
 }
 
 async function resetBikeDistanceScan(athleteId) {
-  if (!confirm('This clears all ride distance-record scan progress and starts over from scratch. Continue?')) return;
+  if (!await askConfirm('This clears all ride distance-record scan progress and starts over from scratch. Continue?', 'Restart scan')) return;
   await saveBikeDistanceProgress(athleteId, { scannedIds: [], distanceRecords: {}, complete: false });
   renderDistanceRecords();
 }
@@ -8651,7 +8724,7 @@ async function runKomEnrichChunk() {
 }
 
 async function restartKomScan() {
-  if (!confirm('This clears all scan progress and starts over from scratch. Continue?')) return;
+  if (!await askConfirm('This clears all scan progress and starts over from scratch. Continue?', 'Restart scan')) return;
   if (!athleteData) return;
   await resetKomScan(athleteData.id);
   await setCached(athleteData.id, 'kom_enriched_details_v7', {});
@@ -9993,7 +10066,7 @@ async function saveCurrentRoute() {
   }
   const totals = getRouteTotals();
   const defaultName = (routeMode === 'bike' ? 'Bike route ' : (routeMode === 'manual' ? 'Trail run route ' : 'Run route ')) + new Date().toLocaleDateString('en-US', { month:'short', day:'numeric' });
-  const name = prompt('Route name:', defaultName);
+  const name = await askPrompt('Route name:', defaultName);
   if (!name) return;
   const routes = await loadSavedRouteCollection();
   const route = {
@@ -10037,7 +10110,7 @@ async function loadSavedRoute(id) {
 async function deleteSavedRoute(id) {
   const routes = await loadSavedRouteCollection();
   const r = routes.find(function(x){ return x.id === id; });
-  if (!confirm('Delete saved route "' + (r ? r.name : 'this route') + '"?')) return;
+  if (!await askConfirm('Delete saved route "' + (r ? r.name : 'this route') + '"?', 'Delete')) return;
   await saveRouteCollection(routes.filter(function(x){ return x.id !== id; }));
   renderSavedRoutes();
 }
