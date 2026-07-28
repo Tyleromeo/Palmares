@@ -3048,17 +3048,25 @@ window.syncNowFromNative = function() {
       // Wait until the gesture's intent is clear. A mostly-vertical move is a
       // scroll: bail out entirely so we never stutter the page.
       if (Math.abs(dy) > Math.abs(dx)) { sx = null; return; }
+      // The gesture is already horizontal-dominant. Stop the browser's
+      // vertical pan now, before the larger drag threshold is crossed, so a
+      // diagonal thumb arc cannot move the page underneath the push.
+      e.preventDefault();
       if (dx > 12 && Math.abs(dx) > Math.abs(dy) * RATIO) {
         dragging = true;
         sec.classList.add('detail-dragging');
       } else return;
     }
+    // Once the push has begun, keep the document at the same vertical
+    // position until touchend. This listener must be non-passive for iOS
+    // Safari/WKWebView to honor preventDefault().
+    e.preventDefault();
     // Only ever follow rightward travel, with resistance so it feels attached.
     lastDx = Math.max(0, dx);
     // Drives the detail layer's transform via CSS, so the grid underneath
     // stays still and is revealed rather than travelling with the finger.
     sec.style.setProperty('--detail-x', (lastDx * 0.85) + 'px');
-  }, { passive: true });
+  }, { passive: false });
 
   document.addEventListener('touchend', function () {
     if (!dragging || !sec) { reset(); return; }
