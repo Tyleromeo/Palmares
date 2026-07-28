@@ -811,6 +811,13 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
     <div id="today-wx-body" style="font-size:13px;color:#7d8590">Loading conditions...</div>
   </div>
 
+  <div class="card" id="today-coaching-card">
+    <div class="card-title">
+      <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>Today's coaching</div>
+    </div>
+    <div id="coaching-area"></div>
+  </div>
+
   <!-- Only appears when a group ride is happening today; loadClubEvents
        unhides it. The full list lives on Scout - Today should say "there's
        a ride today" and nothing more. -->
@@ -837,7 +844,7 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
 
 <!-- PERFORMANCE -->
 <div id="section-performance" class="section">
-  <div class="section-header"><h2>Train</h2><p>Swipe between True Age, year-over-year, power curve, aerobic efficiency, goals, zones, and coaching.</p></div>
+  <div class="section-header"><h2>Train</h2><p>Swipe between True Age, year-over-year, power curve, aerobic efficiency, goals, and zones.</p></div>
 
   <div class="swipe-deck-wrap">
     <div class="swipe-nav">
@@ -984,13 +991,6 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
     </div>
     </div>
   </div>
-
-  <div class="card" data-deck-title="Today's coaching">
-      <div class="card-title">
-        <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>Today's coaching</div>
-      </div>
-      <div id="coaching-area"></div>
-    </div>
 
     </div><!-- /.swipe-deck -->
     <div class="swipe-dots" id="performance-deck-dots"></div>
@@ -4550,6 +4550,8 @@ async function checkActivityAchievements(activity) {
   return badges;
 }
 
+let currentCoachingItems = [];
+
 function renderCoaching(metrics, allActs) {
   const area = document.getElementById('coaching-area');
   let items = [];
@@ -4653,8 +4655,10 @@ function renderCoaching(metrics, allActs) {
     }
   }
   items = recovery.concat(items);
+  currentCoachingItems = items;
 
   area.innerHTML = items.map(i=>`<div class="coach-item"><div class="coach-title">${i.title}</div><div class="coach-text">${i.text}</div></div>`).join('');
+  buildWidgets('dashboard');
 }
 
 // FITNESS CHART
@@ -5696,12 +5700,12 @@ function wActivityDateStamp(activity) {
 // charts and tables, which are unreadable squeezed into a half-width tile.
 const WIDGET_ORDER = {
   dashboard: ['today-event-card', 'last-activity-card', 'today-focus-card',
-              'collapse-streaks', 'today-wx-card'],
+              'collapse-streaks', 'today-wx-card', 'today-coaching-card'],
   map: ['card-dashboard-events']
 };
 const WIDGET_FULLWIDTH = {
   dashboard: ['last-activity-card', 'today-focus-card', 'collapse-streaks',
-              'today-wx-card'],
+              'today-wx-card', 'today-coaching-card'],
   performance: '*',
   segments: '*'
 };
@@ -5812,6 +5816,22 @@ const WIDGET_RENDERERS = {
     return today + (strip ? '<div style="display:flex;gap:4px;margin-top:10px;padding-top:9px;border-top:1px solid #21262d">' + strip + '</div>' : '');
   },
 
+  // Lead with the highest-priority recommendation. Tapping this tile opens
+  // the source card, where the complete coaching list remains available.
+  'today-coaching-card': function() {
+    const tip = currentCoachingItems[0];
+    if (!tip) return null;
+    const more = Math.max(0, currentCoachingItems.length - 1);
+    return '<div style="font-size:17px;font-weight:700;line-height:1.3;color:#C9A227">' +
+        escapeHTML(tip.title) +
+      '</div>' +
+      '<div class="w-sub" style="font-size:13px;line-height:1.45;margin-top:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">' +
+        escapeHTML(tip.text) +
+      '</div>' +
+      '<div class="w-stat-l" style="margin-top:10px">' +
+        (more ? 'Tap to view ' + more + ' more coaching tip' + (more === 1 ? '' : 's') : 'Tap for full coaching detail') +
+      '</div>';
+  },
 
   'last-activity-card': function() {
     if (!allActivities.length) return null;
