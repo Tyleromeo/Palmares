@@ -5,13 +5,44 @@ Macs — a desktop and a laptop — often with an AI assistant session on each,
 and those sessions cannot see one another. Most of what follows is written
 down because it has already gone wrong once.
 
-## Start every session with a fetch
+## Shared development branch
+
+Claude and Codex work from the same long-lived `shared-development` branch
+on both Macs. `main` is the protected production branch and receives tested
+changes through pull requests from `shared-development`.
+
+Set up a checkout once:
 
 ```sh
-git fetch && git rev-list --left-right --count origin/main...HEAD
+git fetch origin
+git switch shared-development ||
+  git switch --track -c shared-development origin/shared-development
 ```
 
-`0 0` means in sync. Anything else, reconcile **before** editing.
+Start every session by updating the shared branch **before editing**:
+
+```sh
+git switch shared-development
+git pull --rebase origin shared-development
+git status --short --branch
+```
+
+A clean status after the pull means the checkout is ready. If the rebase or
+status reports a conflict, stop and reconcile it **before** editing.
+
+Finish each coherent chunk by committing and pushing it:
+
+```sh
+git add <only-the-files-you-changed>
+git commit -m "Describe the completed change"
+git push origin shared-development
+```
+
+The other computer must pull again before starting its next chunk. GitHub is
+the source of truth; neither Dropbox nor an open AI session is synchronization.
+Avoid having two assistants edit the same file at the same time, especially
+`index.html` or `ios.html`, because Git cannot always combine overlapping
+edits automatically.
 
 **Dropbox syncs the working files but not git state.** The folder can look
 completely up to date while the repository is days behind, and the working
@@ -43,12 +74,15 @@ Preserve local commits on a dated branch before any reset.
 ## Verifying a change
 
 There is no build, no bundler, and no test suite, so nothing will catch a
-syntax error before it ships. After editing `index.html`, check the script:
+syntax error before it ships. After editing either product entry point, check
+the script:
 
 ```sh
-START=$(grep -n '^<script>$' index.html | tail -1 | cut -d: -f1)
-END=$(awk -v s="$START" 'NR>s && /^<\/script>/{print NR; exit}' index.html)
-sed -n "$((START+1)),$((END-1))p" index.html > /tmp/main.js && node --check /tmp/main.js
+PAGE=index.html # or ios.html
+START=$(grep -n '^<script>$' "$PAGE" | tail -1 | cut -d: -f1)
+END=$(awk -v s="$START" 'NR>s && /^<\/script>/{print NR; exit}' "$PAGE")
+sed -n "$((START+1)),$((END-1))p" "$PAGE" > /tmp/main.js
+node --check /tmp/main.js
 ```
 
 For logic changes — date handling, filters — copy the function into a scratch
@@ -106,14 +140,18 @@ cached activities and settings.
 
 ## Architecture, briefly
 
-The page is the brain; the native app supplies sensors and OS surfaces.
-`index.html` computes everything and pushes snapshots over the
+The web pages are the brain; the native app supplies sensors and OS surfaces.
+`index.html` is the larger-screen website. `ios.html` is a separate phone
+surface loaded by the iOS wrapper, so each interface can evolve independently.
+`ios.html` computes the native app's data and pushes snapshots over the
 `palmaresNative` bridge; Swift persists them and draws OS-level UI. The
 widget re-derives nothing, so web and widget can never disagree.
 
-This is what makes a single `git push` update both the website and the iOS
-app at once, with no App Store review. Weigh any proposal to move logic into
-Swift against that.
+Both entry points deploy together, but changes to one file do not implicitly
+change the other product. Data fixes that should apply everywhere must be
+ported deliberately to both files. Bridge message shapes, `ed_*` storage
+keys, authentication behavior, and backend action contracts are shared
+compatibility boundaries and must not drift.
 
 Bridge message types (`WebView.swift` routes them):
 
