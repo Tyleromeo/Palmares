@@ -405,8 +405,8 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 .yoy-table th { font-size: 11px; color: #7d8590; text-align: left; padding: 6px 8px; border-bottom: 1px solid #21262d; font-weight: 500; }
 .yoy-table td { padding: 8px 8px; border-bottom: 1px solid #21262d; color: #e6edf3; }
 .yoy-table tr:last-child td { border-bottom: none; }
-.up { color: #3fb950; }
-.down { color: #f85149; }
+.yoy-table td.up { color: #3fb950; }
+.yoy-table td.down { color: #f85149; }
 
 /* WEATHER */
 .wx-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 8px; margin-bottom:1.5rem; }
@@ -5792,7 +5792,7 @@ const WIDGET_RENDERERS = {
     const diff = lastToDate > 0 ? Math.round(((now - lastToDate) / lastToDate) * 100) : null;
     return '<div class="w-head"><span class="w-big">' + now.toLocaleString() + '</span><span class="w-cap">mi in ' + yr + '</span></div>' +
       '<div class="w-sub">' + (diff === null ? 'No ' + (yr - 1) + ' data to compare'
-        : '<span style="color:' + (diff >= 0 ? '#3fb950' : '#d29922') + '">' + (diff >= 0 ? '+' : '') + diff + '%</span> vs same point in ' + (yr - 1)) + '</div>' +
+        : '<span style="color:' + (diff > 0 ? '#3fb950' : diff < 0 ? '#f85149' : '#7d8590') + '">' + (diff > 0 ? '+' : '') + diff + '%</span> vs same point in ' + (yr - 1)) + '</div>' +
       '<div class="w-stats"><div><div class="w-stat-v">' + lastToDate.toLocaleString() + '</div><div class="w-stat-l">' + (yr - 1) + ' to date</div></div></div>';
   },
 
