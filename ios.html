@@ -718,14 +718,6 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
     <div id="today-wx-body" style="font-size:13px;color:#7d8590">Loading conditions...</div>
   </div>
 
-  <div class="card" id="today-opportunity-card">
-    <div class="card-title">
-      <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>Best opportunity nearby</div>
-      <a href="#" class="ext-link" onclick="showSection('segments');return false" style="color:#C9A227">All segments ›</a>
-    </div>
-    <div id="today-opportunity-body" style="font-size:13px;color:#7d8590">Loading...</div>
-  </div>
-
   <!-- Only appears when a group ride is happening today; loadClubEvents
        unhides it. The full list lives on Scout - Today should say "there's
        a ride today" and nothing more. -->
@@ -4095,12 +4087,16 @@ function renderTodayCards() {
     }
   }
 
+  // Today no longer shows a tailwind card, but this still feeds the iOS home
+  // screen widget and Scout's tailwind tile - so it must NOT be gated on that
+  // element existing, or removing the card would silently starve both. It
+  // renders into the element only when one is present.
   const oppEl = document.getElementById('today-opportunity-body');
-  if (oppEl && data && data.daily && athleteData) {
+  if (data && data.daily && athleteData) {
     computeTailwindSegments(0).then(function(top) {
       if (!top.length) {
-        oppEl.innerHTML = 'No tailwind segments found nearby today — check the full list under <a href="#" onclick="showSection(\'segments\');return false" style="color:#C9A227">Segments</a>.';
-        updateWidgetData({ tailwind: null });
+        updateWidgetData({ tailwind: null, tailwindTop: [] });
+        if (oppEl) oppEl.innerHTML = 'No tailwind segments found nearby today — check the full list under <a href="#" onclick="showSection(\'segments\');return false" style="color:#C9A227">Segments</a>.';
         return;
       }
       const s = top[0];
@@ -4123,6 +4119,7 @@ function renderTodayCards() {
           };
         })
       });
+      if (!oppEl) return; // snapshot is updated above; nothing on screen to draw
       const label = s.component >= 0 ? ('Tailwind ' + Math.round(s.component) + ' mph') : ('Headwind ' + Math.abs(Math.round(s.component)) + ' mph');
       const color = s.component >= 10 ? '#3fb950' : s.component >= 0 ? '#d29922' : '#f85149';
       const rankBadge = s.rank === 1 ? '<span class="badge b-gold" style="margin-right:6px">#1</span>'
@@ -4131,7 +4128,7 @@ function renderTodayCards() {
         '<div><div class="row-name">' + rankBadge + '<a href="' + stravaSegmentHref(s.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">' + escapeHTML(s.segment_name || 'Segment') + '</a></div>' +
         '<div class="row-meta">' + (s.distanceMi ? s.distanceMi.toFixed(2) + ' mi · ' : '') + 'today\'s wind favors this one</div></div>' +
         '<div class="row-right" style="color:' + color + '">' + label + '</div></div>';
-    }).catch(function(){ oppEl.textContent = 'Could not compute today\'s opportunities.'; });
+    }).catch(function(){ if (oppEl) oppEl.textContent = 'Could not compute today\'s opportunities.'; });
   }
 }
 
@@ -5559,58 +5556,55 @@ function wActivityDateStamp(activity) {
   return date;
 }
 
-// Weekly mileage for the last N weeks, oldest first - the hero's trend bars.
-function wWeeklyMiles(weeks) {
-  const out = [];
-  const now = new Date();
-  const monday = new Date(now);
-  { const d = now.getDay(); monday.setDate(now.getDate() - (d === 0 ? 6 : d - 1)); }
-  monday.setHours(0, 0, 0, 0);
-  for (let i = weeks - 1; i >= 0; i--) {
-    const start = new Date(monday); start.setDate(start.getDate() - i * 7);
-    const end = new Date(start); end.setDate(end.getDate() + 7);
-    const mi = allActivities
-      .filter(a => { const t = new Date(a.start_date); return t >= start && t < end; })
-      .reduce((s, a) => s + a.distance, 0) / 1609.34;
-    out.push(Math.round(mi));
-  }
-  return out;
-}
-
 // Which tiles lead each section, and which span the full width. '*' means
 // every tile in that section is full width - the Train page's cards are
 // charts and tables, which are unreadable squeezed into a half-width tile.
 const WIDGET_ORDER = {
   dashboard: ['today-event-card', 'last-activity-card', 'today-focus-card',
-              'collapse-streaks', 'today-wx-card', 'today-opportunity-card'],
+              'collapse-streaks', 'today-wx-card'],
   map: ['card-dashboard-events']
 };
 const WIDGET_FULLWIDTH = {
   dashboard: ['last-activity-card', 'today-focus-card', 'collapse-streaks',
-              'today-wx-card', 'today-opportunity-card'],
+              'today-wx-card'],
   performance: '*',
   segments: '*'
 };
 
 const WIDGET_RENDERERS = {
   // In Focus: form is the number that should drive today's decision, so it
-  // leads, with the load that produced it and four weeks of volume behind.
+  // leads, with the load that produced it and the past week of form behind.
   'today-focus-card': function() {
     if (!allActivities.length) return null;
     const m = computeMetrics(allActivities);
-    const color = m.tsb > 5 ? '#3fb950' : m.tsb > -10 ? '#e6edf3' : m.tsb > -30 ? '#d29922' : '#f85149';
+    const formColor = function(v) { return v > 5 ? '#3fb950' : v > -10 ? '#e6edf3' : v > -30 ? '#d29922' : '#f85149'; };
+    const color = formColor(m.tsb);
     const label = m.tsb > 5 ? 'Fresh' : m.tsb > -10 ? 'Neutral' : m.tsb > -30 ? 'Tired' : 'Very fatigued';
     const advice = m.tsb > 10 ? 'Good day to target something'
       : m.tsb > 5 ? 'Legs are available'
       : m.tsb > -10 ? 'Train normally'
       : m.tsb > -30 ? 'Keep it aerobic' : 'Rest or Z1 only';
-    const weeks = wWeeklyMiles(4);
-    const peak = Math.max.apply(null, weeks.concat([1]));
     const delta = m.ctl - m.prevCtl;
-    const bars = weeks.map(function(mi, i) {
-      const h = Math.max(3, Math.round((mi / peak) * 30));
-      const isNow = i === weeks.length - 1;
-      return '<div class="w-bar" style="height:' + h + 'px;background:' + (isNow ? '#C9A227' : '#30363d') + '" title="' + mi + ' mi"></div>';
+
+    // A week of form, not four weeks of mileage: on a screen whose whole
+    // point is "how do my legs feel today", the direction form is trending
+    // over the last few days is the useful context. Volume already lives on
+    // Train. Bars diverge from a zero line - above it means fresh, below
+    // means carrying fatigue - and use the same colour thresholds as the
+    // headline, so a run of red reads as digging a hole at a glance.
+    const week = m.tsbWeek || [];
+    const scale = Math.max(10, Math.max.apply(null, week.map(Math.abs).concat([1])));
+    const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const today = new Date();
+    const bars = week.map(function(v, i) {
+      const h = Math.max(2, Math.round(Math.abs(v) / scale * 15));
+      const up = v >= 0;
+      const d = new Date(today); d.setDate(d.getDate() - (week.length - 1 - i));
+      const isToday = i === week.length - 1;
+      return '<div style="flex:1;position:relative;height:34px" title="' + dayNames[d.getDay()] + ': ' + (v >= 0 ? '+' : '') + v + '">' +
+        '<div style="position:absolute;left:0;right:0;' + (up ? 'bottom:50%' : 'top:50%') + ';height:' + h + 'px;' +
+          'background:' + formColor(v) + ';opacity:' + (isToday ? '1' : '.6') + ';border-radius:2px"></div>' +
+      '</div>';
     }).join('');
     // Fitness, fatigue and form carry equal weight - they're read together,
     // and blowing one up to 30px while the other two sat in 14px footnotes
@@ -5628,7 +5622,9 @@ const WIDGET_RENDERERS = {
 
     return '<div style="display:flex;gap:12px;flex-wrap:wrap">' + triple + '</div>' +
       '<div class="w-sub" style="margin-top:8px">' + advice + '</div>' +
-      '<div class="w-bars">' + bars + '</div><div class="w-stat-l" style="margin-top:3px">Weekly volume, last 4 weeks</div>';
+      '<div style="display:flex;align-items:center;gap:4px;margin-top:8px;position:relative">' +
+        '<div style="position:absolute;left:0;right:0;top:50%;height:1px;background:#30363d"></div>' + bars +
+      '</div><div class="w-stat-l" style="margin-top:3px">Form (TSB), last 7 days</div>';
   },
 
   // Full width, and shows the whole picture: today's conditions plus the
@@ -5681,33 +5677,6 @@ const WIDGET_RENDERERS = {
     return today + (strip ? '<div style="display:flex;gap:4px;margin-top:10px;padding-top:9px;border-top:1px solid #21262d">' + strip + '</div>' : '');
   },
 
-  'today-opportunity-card': function() {
-    // Three picks, not one: choosing where to ride is a comparison, so the
-    // tile lists the options side by side rather than making you tap in.
-    // Check the list BEFORE the single pick - the single one is nulled when
-    // a recompute finds nothing, which would otherwise hide a good list.
-    const t = _widgetSnapshot.tailwind;
-    const list = (_widgetSnapshot.tailwindTop && _widgetSnapshot.tailwindTop.length)
-      ? _widgetSnapshot.tailwindTop.slice(0, 3)
-      : (t && t.name ? [t] : []);
-    // Say what's happening instead of falling through to a bare "View":
-    // no tailwind pick is itself the answer, and the forecast may simply
-    // not have landed yet.
-    if (!list.length) {
-      return '<div class="w-sub" style="margin-top:auto">' +
-        (window._wxData ? 'No standout tailwind segment nearby today.' : 'Waiting on today\'s forecast…') + '</div>';
-    }
-    const rows = list.map(function(x) {
-      const c = x.mph >= 10 ? '#3fb950' : x.mph >= 0 ? '#d29922' : '#f85149';
-      return '<div style="display:flex;align-items:center;gap:9px;padding:5px 0;border-top:1px solid #21262d">' +
-        '<span style="font-size:17px;font-weight:700;color:' + c + ';min-width:52px">' + (x.mph >= 0 ? '+' : '') + x.mph + '<span style="font-size:10px;font-weight:400"> mph</span></span>' +
-        '<span class="w-truncate" style="flex:1;font-size:13px;color:#e6edf3">' + escapeHTML(x.name) + '</span>' +
-        (x.rank ? '<span class="badge ' + (x.rank === 1 ? 'b-gold' : 'b-blue') + '" style="flex-shrink:0">#' + x.rank + '</span>' : '') +
-        (x.distanceMi ? '<span class="w-stat-l" style="flex-shrink:0">' + x.distanceMi.toFixed(1) + ' mi</span>' : '') +
-      '</div>';
-    }).join('');
-    return '<div class="w-sub" style="margin-bottom:2px">Best wind-assisted segments right now</div>' + rows;
-  },
 
   'last-activity-card': function() {
     if (!allActivities.length) return null;
@@ -5758,10 +5727,27 @@ const WIDGET_RENDERERS = {
       return '<div><div class="w-stat-v">' + p.count + ' <span style="font-size:11px;font-weight:400;color:#7d8590">' + noun + '</span></div>' +
         '<div class="w-stat-l">' + (p.meters / 1609.34).toFixed(0) + ' mi</div></div>';
     }).join('');
+    // The record status was only visible after opening the card, which buried
+    // the one thing worth celebrating. Matching the detail view's wording, so
+    // the tile and the card agree.
+    const bestDaily = calcAllTimeDailyStreak(), bestWeekly = calcAllTimeWeeklyStreak();
+    const atDailyBest = daily > 0 && daily >= bestDaily;
+    const atWeeklyBest = weekly > 0 && weekly >= bestWeekly;
+    let bestLine;
+    if (atDailyBest || atWeeklyBest) {
+      const which = (atDailyBest && atWeeklyBest) ? '' : atDailyBest ? ' daily streak' : ' weekly streak';
+      bestLine = '<div class="w-sub" style="color:#C9A227;font-weight:600">🏆 Currently at your all-time best' + which + '</div>';
+    } else {
+      const away = bestDaily - daily;
+      bestLine = '<div class="w-sub">' + away + ' day' + (away === 1 ? '' : 's') + ' from your all-time best (' + bestDaily + ')</div>';
+    }
+
     return '<div class="w-head"><span class="w-big">' + daily + '</span><span class="w-cap">day streak</span>' +
+        (atDailyBest ? '<span style="font-size:19px" title="All-time best">🏆</span>' : '') +
         (totalMi > 0 ? '<span class="w-cap" style="color:#C9A227">' + totalMi.toFixed(0) + ' mi total</span>' : '') + '</div>' +
       '<div class="w-sub">' + (daily >= 14 ? '🔥 On a tear' : daily >= 7 ? '⚡ Building' : daily > 0 ? 'Keep it going' : 'Rest day') +
         ' &middot; ' + weekly + '-week streak</div>' +
+      bestLine +
       (breakdown ? '<div class="w-stats">' + breakdown + '</div>' : '');
   },
 
@@ -8399,6 +8385,10 @@ function computeMetrics(rides) {
   const seed = seedDays ? seedSum/seedDays : 20;
 
   let ctl=seed, atl=seed, prevCtl=seed;
+  // Form for each of the last 7 days, captured from this same loop so the
+  // sparkline can never disagree with the headline number it sits under.
+  // Oldest first, today last.
+  const tsbWeek=[];
   for (let i=daysOfHistory;i>=0;i--) {
     const d=new Date(now); d.setDate(d.getDate()-i);
     const key=localDateKey(d);
@@ -8406,8 +8396,9 @@ function computeMetrics(rides) {
     if (i===7) prevCtl=ctl;
     ctl=ctl+(tss-ctl)/42;
     atl=atl+(tss-atl)/7;
+    if (i<=6) tsbWeek.push(Math.round(ctl-atl));
   }
-  return {ctl:Math.round(ctl),atl:Math.round(atl),tsb:Math.round(ctl-atl),prevCtl:Math.round(prevCtl)};
+  return {ctl:Math.round(ctl),atl:Math.round(atl),tsb:Math.round(ctl-atl),prevCtl:Math.round(prevCtl),tsbWeek:tsbWeek};
 }
 
 function setLoading(text, sub='') {
