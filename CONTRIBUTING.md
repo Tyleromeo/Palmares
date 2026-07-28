@@ -5,13 +5,44 @@ Macs — a desktop and a laptop — often with an AI assistant session on each,
 and those sessions cannot see one another. Most of what follows is written
 down because it has already gone wrong once.
 
-## Start every session with a fetch
+## Shared development branch
+
+Claude and Codex work from the same long-lived `shared-development` branch
+on both Macs. `main` is the protected production branch and receives tested
+changes through pull requests from `shared-development`.
+
+Set up a checkout once:
 
 ```sh
-git fetch && git rev-list --left-right --count origin/main...HEAD
+git fetch origin
+git switch shared-development ||
+  git switch --track -c shared-development origin/shared-development
 ```
 
-`0 0` means in sync. Anything else, reconcile **before** editing.
+Start every session by updating the shared branch **before editing**:
+
+```sh
+git switch shared-development
+git pull --rebase origin shared-development
+git status --short --branch
+```
+
+A clean status after the pull means the checkout is ready. If the rebase or
+status reports a conflict, stop and reconcile it **before** editing.
+
+Finish each coherent chunk by committing and pushing it:
+
+```sh
+git add <only-the-files-you-changed>
+git commit -m "Describe the completed change"
+git push origin shared-development
+```
+
+The other computer must pull again before starting its next chunk. GitHub is
+the source of truth; neither Dropbox nor an open AI session is synchronization.
+Avoid having two assistants edit the same file at the same time, especially
+`index.html` or `ios.html`, because Git cannot always combine overlapping
+edits automatically.
 
 **Dropbox syncs the working files but not git state.** The folder can look
 completely up to date while the repository is days behind, and the working
