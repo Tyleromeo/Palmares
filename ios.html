@@ -189,7 +189,31 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
    only add clicks. Same markup, same data, layout chosen by viewport. */
 @media(max-width:900px) {
   .section.has-widgets > *:not(.section-header):not(.widget-grid):not(.detail-bar) { display: none; }
-  .section.has-widgets.detail-mode .widget-grid { display: none; }
+  /* The tile grid STAYS rendered while a detail is open, parked at the top of
+     the section underneath the detail layer. That's what the back gesture
+     uncovers: with display:none here, sliding the detail away revealed the
+     bare page background - a black void instead of the page you came from.
+     Inert while covered so a tile under the detail can't be tapped. */
+  .section.has-widgets.detail-mode .widget-grid {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 1; pointer-events: none;
+  }
+  /* Clipped both ways: horizontally so the sliding layer can't add a
+     scrollbar, vertically so a grid taller than the open card can't peek out
+     below it. Safe here because only Today drills in and nothing inside it
+     is position:fixed. */
+  .section.has-widgets.detail-mode { position: relative; overflow: clip; }
+  /* Padding, not margin, so the bar's opaque background runs continuously
+     into the card - a margin gap would let the grid show through between
+     them mid-swipe. Same spacing either way. */
+  .section.has-widgets.detail-mode > .detail-bar { margin-bottom: 0; padding-bottom: 1rem; }
+  /* The detail is a layer above the grid: opaque so the grid never shows
+     through it, and the only thing that moves. --detail-x is what the drag
+     writes, so the finger moves the layer and not the whole section. */
+  .section.has-widgets.detail-mode > .detail-bar,
+  .section.has-widgets.detail-mode > .detail-open {
+    position: relative; z-index: 3; background: #0d1117;
+    transform: translate3d(var(--detail-x, 0px), 0, 0);
+  }
   .section.has-widgets.detail-mode .detail-bar { display: flex; }
   .section.has-widgets.detail-mode .section-header { display: none; }
   .section.has-widgets .detail-open { display: block !important; }
@@ -205,22 +229,33 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 }
 
 /* BACK-SWIPE / BACK-BUTTON MOTION for drilled-in detail views.
-   While dragging, the section follows the finger with no transition so it
-   feels attached; on release it either springs back or plays detail-closing.
-   Transform-only, so it composites on the GPU and never reflows. */
-.section.detail-mode { transition: transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1); }
-.section.detail-mode.detail-dragging { transition: none; }
-.section.detail-closing { animation: detail-push-out 200ms cubic-bezier(0.4, 0, 1, 1) forwards; }
-@keyframes detail-push-out { to { transform: translate3d(100%, 0, 0); opacity: 0; } }
-.section.detail-returning { animation: detail-pop-in 280ms cubic-bezier(0.22, 0.61, 0.36, 1); }
-@keyframes detail-pop-in { from { opacity: 0; transform: translate3d(-26px, 0, 0); } to { opacity: 1; transform: none; } }
-/* Opening a widget pushes the detail in from the right, mirroring the pop
-   out on the way back - the symmetric iOS push/pop feel. */
-.section.detail-opening { animation: detail-push-in 260ms cubic-bezier(0.22, 0.61, 0.36, 1); }
-@keyframes detail-push-in { from { opacity: 0; transform: translate3d(100%, 0, 0); } to { opacity: 1; transform: none; } }
+   Only the DETAIL LAYER moves - the tile grid stays put underneath and is
+   progressively uncovered, which is what makes the gesture read as "going
+   back to Today" instead of the page sliding off into nothing. While
+   dragging it follows the finger with no transition so it feels attached;
+   on release it either springs back or plays detail-closing. Transform-only,
+   so it composites on the GPU and never reflows. */
+.section.detail-mode > .detail-bar,
+.section.detail-mode > .detail-open { transition: transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+.section.detail-mode.detail-dragging > .detail-bar,
+.section.detail-mode.detail-dragging > .detail-open { transition: none; }
+.section.detail-closing > .detail-bar,
+.section.detail-closing > .detail-open { animation: detail-push-out 200ms cubic-bezier(0.4, 0, 1, 1) forwards; }
+@keyframes detail-push-out { to { transform: translate3d(100%, 0, 0); } }
+/* The uncovered grid eases the last of the way in, a subtle parallax like
+   iOS gives the underlying screen. */
+.section.detail-returning .widget-grid { animation: detail-pop-in 280ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+@keyframes detail-pop-in { from { opacity: 0.6; transform: translate3d(-22px, 0, 0); } to { opacity: 1; transform: none; } }
+/* Opening a widget pushes the detail in from the right over the grid,
+   mirroring the pop out on the way back - the symmetric iOS push/pop. */
+.section.detail-opening > .detail-bar,
+.section.detail-opening > .detail-open { animation: detail-push-in 260ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+@keyframes detail-push-in { from { transform: translate3d(100%, 0, 0); } to { transform: none; } }
 @media (prefers-reduced-motion: reduce) {
-  .section.detail-mode { transition: none; }
-  .section.detail-closing, .section.detail-returning, .section.detail-opening { animation: none; }
+  .section.detail-mode > .detail-bar, .section.detail-mode > .detail-open { transition: none; }
+  .section.detail-closing > .detail-bar, .section.detail-closing > .detail-open,
+  .section.detail-opening > .detail-bar, .section.detail-opening > .detail-open,
+  .section.detail-returning .widget-grid { animation: none; }
 }
 
 /* LOG SWIPE DECK - the Log page is five full-size cards you swipe between
@@ -2910,7 +2945,7 @@ window.syncNowFromNative = function() {
   const RATIO = 1.4;           // must be this much more horizontal than vertical
 
   function reset() {
-    if (sec) { sec.classList.remove('detail-dragging'); sec.style.transform = ''; }
+    if (sec) { sec.classList.remove('detail-dragging'); sec.style.removeProperty('--detail-x'); }
     sx = sy = null; dragging = false; sec = null; lastDx = 0;
   }
 
@@ -2935,7 +2970,9 @@ window.syncNowFromNative = function() {
     }
     // Only ever follow rightward travel, with resistance so it feels attached.
     lastDx = Math.max(0, dx);
-    sec.style.transform = 'translate3d(' + (lastDx * 0.85) + 'px,0,0)';
+    // Drives the detail layer's transform via CSS, so the grid underneath
+    // stays still and is revealed rather than travelling with the finger.
+    sec.style.setProperty('--detail-x', (lastDx * 0.85) + 'px');
   }, { passive: true });
 
   document.addEventListener('touchend', function () {
@@ -2950,9 +2987,9 @@ window.syncNowFromNative = function() {
     } else {
       // Not far enough - spring back, so it's clear the gesture was seen.
       // Removing detail-dragging restores the transition, then clearing the
-      // transform animates it home.
+      // offset animates the layer home.
       target.classList.remove('detail-dragging');
-      target.style.transform = '';
+      target.style.removeProperty('--detail-x');
     }
   }, { passive: true });
 
@@ -6061,7 +6098,7 @@ function closeDetailAnimated(sectionName) {
     if (done) return; done = true;
     sec.removeEventListener('animationend', finish);
     sec.classList.remove('detail-closing');
-    sec.style.transform = '';
+    sec.style.removeProperty('--detail-x');
     delete sec.dataset.closing;
     closeDetail(sectionName);
     // Now the grid is back: bring it in from the left so the return reads as
