@@ -23,8 +23,11 @@ private let tabs: [PalmaresTab] = [
     PalmaresTab(title: "Log", icon: "list.bullet.rectangle", section: "activities")
 ]
 
-// Update this if the live site ever moves to a different URL.
-private let siteURL = URL(string: "https://palmares-gilt.vercel.app")!
+// The iOS app intentionally has its own hosted entry point. The desktop site
+// remains at `/`, while phone-specific layout and interaction work lives in
+// `ios.html`. Keeping the URLs separate lets both surfaces evolve without a
+// desktop deployment silently changing the installed app experience.
+private let siteURL = URL(string: "https://palmares-gilt.vercel.app/ios.html")!
 
 private let palmaresGold = Color(red: 0.788, green: 0.635, blue: 0.153) // #C9A227
 private let palmaresBarBackground = Color(red: 0.086, green: 0.106, blue: 0.133) // #161b22

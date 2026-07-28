@@ -9,16 +9,23 @@ building.
 
 ## Structure
 
-The entire app is a single file: **`index.html`** — markup, styles, and all
-application JavaScript. There is no build step, no bundler, and no
-`package.json`. Open it, edit it, ship it.
+The two product surfaces have separate static entry points:
+
+- **`index.html`** is the desktop/larger-screen website.
+- **`ios.html`** is the phone experience loaded by the native iOS wrapper.
+
+Each currently contains its own markup, styles, and application JavaScript.
+There is no build step, no bundler, and no `package.json`. Shared service
+contracts, storage keys, and native bridge messages must remain compatible,
+but layout and interaction changes should be made in the intended surface
+rather than copied automatically to both.
 
 `privacy.html` is the privacy policy that the Strava API terms require a
 registered application to publish.
 
 `PalmaresApp/` is the Xcode project for the iOS app — a WKWebView wrapper
-around this same page, plus a home screen widget. `ios/` holds reference
-copies of its Swift files, and `docs/` covers server-side setup.
+around `ios.html`, plus a home screen widget. `ios/` holds reference copies
+of its Swift files, and `docs/` covers server-side setup.
 
 **Before editing, read [CONTRIBUTING.md](CONTRIBUTING.md).** This project is
 worked on from two machines and has no build or test suite; that file covers
@@ -71,9 +78,9 @@ Chart.js 4.4.0 and Leaflet 1.9.4 are loaded from CDN.
 
 ## iOS wrapper
 
-The site is also wrapped in a native iOS WebView. The page talks to it over
-`window.webkit.messageHandlers.palmaresNative`, and sets a `native-app` body
-class when `window.isPalmaresNativeApp` is present.
+The dedicated `ios.html` surface is wrapped in a native iOS WebView. It talks
+to Swift over `window.webkit.messageHandlers.palmaresNative`, and sets a
+`native-app` body class when `window.isPalmaresNativeApp` is present.
 
 Both checks fall back to the older `eldoradoNative` / `isEldoradoNativeApp`
 names so that a freshly deployed page still works against an installed app
@@ -82,10 +89,13 @@ retired.
 
 ## Editing
 
-Because there is no test suite or build, the only guard against a broken deploy
-is checking the script yourself after an edit:
+Because there is no web build step, check the script in whichever surface you
+edited:
 
 ```sh
-END=$(awk 'NR>1100 && /^<\/script>/{print NR; exit}' index.html)
-sed -n "1101,$((END-1))p" index.html > /tmp/main.js && node --check /tmp/main.js
+PAGE=index.html # or ios.html
+START=$(grep -n '^<script>$' "$PAGE" | tail -1 | cut -d: -f1)
+END=$(awk -v s="$START" 'NR>s && /^<\/script>/{print NR; exit}' "$PAGE")
+sed -n "$((START+1)),$((END-1))p" "$PAGE" > /tmp/main.js
+node --check /tmp/main.js
 ```

@@ -43,12 +43,15 @@ Preserve local commits on a dated branch before any reset.
 ## Verifying a change
 
 There is no build, no bundler, and no test suite, so nothing will catch a
-syntax error before it ships. After editing `index.html`, check the script:
+syntax error before it ships. After editing either product entry point, check
+the script:
 
 ```sh
-START=$(grep -n '^<script>$' index.html | tail -1 | cut -d: -f1)
-END=$(awk -v s="$START" 'NR>s && /^<\/script>/{print NR; exit}' index.html)
-sed -n "$((START+1)),$((END-1))p" index.html > /tmp/main.js && node --check /tmp/main.js
+PAGE=index.html # or ios.html
+START=$(grep -n '^<script>$' "$PAGE" | tail -1 | cut -d: -f1)
+END=$(awk -v s="$START" 'NR>s && /^<\/script>/{print NR; exit}' "$PAGE")
+sed -n "$((START+1)),$((END-1))p" "$PAGE" > /tmp/main.js
+node --check /tmp/main.js
 ```
 
 For logic changes — date handling, filters — copy the function into a scratch
@@ -106,14 +109,18 @@ cached activities and settings.
 
 ## Architecture, briefly
 
-The page is the brain; the native app supplies sensors and OS surfaces.
-`index.html` computes everything and pushes snapshots over the
+The web pages are the brain; the native app supplies sensors and OS surfaces.
+`index.html` is the larger-screen website. `ios.html` is a separate phone
+surface loaded by the iOS wrapper, so each interface can evolve independently.
+`ios.html` computes the native app's data and pushes snapshots over the
 `palmaresNative` bridge; Swift persists them and draws OS-level UI. The
 widget re-derives nothing, so web and widget can never disagree.
 
-This is what makes a single `git push` update both the website and the iOS
-app at once, with no App Store review. Weigh any proposal to move logic into
-Swift against that.
+Both entry points deploy together, but changes to one file do not implicitly
+change the other product. Data fixes that should apply everywhere must be
+ported deliberately to both files. Bridge message shapes, `ed_*` storage
+keys, authentication behavior, and backend action contracts are shared
+compatibility boundaries and must not drift.
 
 Bridge message types (`WebView.swift` routes them):
 
