@@ -4117,7 +4117,12 @@ function navigateToPerformance(sport, view) {
 async function renderLastActivityHighlight() {
   const card = document.getElementById('last-activity-card');
   const body = document.getElementById('last-activity-body');
-  if (!card || !body || !allActivities.length) return;
+  if (!card || !body) return;
+  if (!allActivities.length) {
+    card.style.display = 'none';
+    updateWidgetData({ lastActivity: null });
+    return;
+  }
 
   const a = allActivities[0]; // allActivities is sorted newest-first
   card.style.display = '';
@@ -4131,6 +4136,19 @@ async function renderLastActivityHighlight() {
   const date = new Date(a.start_date).toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric', year:'numeric'});
   const location = [a.location_city, a.location_state].filter(Boolean).join(', ');
   const typeTag = isRun ? '<span class="badge b-run">RUN</span>' : isRide ? '<span class="badge b-blue">RIDE</span>' : `<span class="badge" style="background:#21262d;color:#7d8590">${escapeHTML(a.type||'')}</span>`;
+  const relativeEffort = a.suffer_score != null && a.suffer_score !== '' &&
+    Number.isFinite(Number(a.suffer_score))
+    ? Math.round(Number(a.suffer_score))
+    : null;
+
+  updateWidgetData({
+    lastActivity: {
+      name: a.name || 'Untitled activity',
+      sport: a.type || '',
+      date: a.start_date,
+      relativeEffort: relativeEffort
+    }
+  });
 
   const statTile = (label, val, sub) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-val">${val}</div><div class="metric-sub">${sub||''}</div></div>`;
 
@@ -4138,7 +4156,7 @@ async function renderLastActivityHighlight() {
     statTile('Distance', mi + ' mi') +
     statTile('Moving Time', movingTime) +
     statTile('Elevation', elev) +
-    statTile('Relative Effort', a.suffer_score || '--') +
+    statTile('Relative Effort', relativeEffort == null ? '--' : relativeEffort) +
   `</div>`;
 
   // Strava reports running cadence as steps/min for a single leg (half true
