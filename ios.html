@@ -359,6 +359,74 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .legend-line { width: 16px; height: 3px; border-radius: 2px; display: inline-block; }
 
+/* Miles by year is a phone-first comparison, not a desktop chart squeezed
+   into a swipe card. Directly labelled DOM bars stay readable at iPhone
+   width and make the whole year row a proper 44px+ disclosure target. */
+.swipe-deck > #collapse-miles-year { height: auto; min-height: 0; overflow-y: visible; }
+.miles-year-list { display: flex; flex-direction: column; }
+.miles-year-item { border-bottom: 1px solid #21262d; }
+.miles-year-item:last-child { border-bottom: none; }
+.miles-year-row {
+  width: 100%;
+  min-height: 78px;
+  padding: 9px 0;
+  border: 0;
+  background: transparent;
+  color: #e6edf3;
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.miles-year-row:active { background: rgba(255,255,255,0.035); }
+.miles-year-year { font-size: 15px; font-weight: 700; color: #e6edf3; line-height: 1.15; }
+.miles-year-ytd { display: block; margin-top: 3px; font-size: 14px; font-weight: 600; color: #C9A227; }
+.miles-year-bars { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.miles-year-series { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 7px; align-items: center; }
+.miles-year-series-name { font-size: 14px; font-weight: 600; color: #e6edf3; }
+.miles-year-track { height: 27px; position: relative; overflow: hidden; border-radius: 5px; background: #21262d; }
+.miles-year-fill { display: block; height: 100%; min-width: 0; border-radius: 5px; }
+.miles-year-fill.ride { background: rgba(252,76,2,0.82); }
+.miles-year-fill.run { background: rgba(88,166,255,0.82); }
+.miles-year-value {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 700;
+  color: #e6edf3;
+  font-variant-numeric: tabular-nums;
+}
+.miles-year-value.inside { color: #fff; transform: translate(-100%, -50%); }
+.miles-year-details {
+  margin: 0 0 9px 63px;
+  padding: 9px 10px;
+  border-left: 2px solid #30363d;
+  color: #c9d1d9;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.miles-year-detail-line + .miles-year-detail-line { margin-top: 3px; }
+.miles-year-detail-sport { color: #e6edf3; font-weight: 600; }
+.miles-year-toggle {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 6px;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  background: #0d1117;
+  color: #e6edf3;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.miles-year-toggle:active { border-color: #C9A227; }
+
 /* COACHING */
 .coach-item { background: #0d1117; border-left: 3px solid #C9A227; border-radius: 0 8px 8px 0; padding: 0.875rem 1rem; margin-bottom: 10px; }
 .coach-item:last-child { margin-bottom: 0; }
@@ -4676,29 +4744,132 @@ function renderPRCards() {
   renderMilesByYear();
 }
 
+let milesYearRowsData = [];
+let milesYearShowAll = false;
+let milesYearExpanded = null;
+
+function formatMilesYearHours(seconds) {
+  const hours = (seconds || 0) / 3600;
+  if (hours === 0) return '0 hr';
+  return (hours >= 10 ? Math.round(hours).toLocaleString() : hours.toFixed(1)) + ' hr';
+}
+
+function milesYearSeriesHTML(name, type, miles, maxMiles) {
+  const rawPct = maxMiles > 0 ? (miles / maxMiles) * 100 : 0;
+  const pct = miles > 0 ? Math.max(1.5, rawPct) : 0;
+  const inside = pct >= 56;
+  const valueStyle = 'left:calc(' + pct.toFixed(2) + '% ' + (inside ? '- 7px' : '+ 7px') + ')';
+  return '<div class="miles-year-series">' +
+    '<span class="miles-year-series-name">' + name + '</span>' +
+    '<span class="miles-year-track">' +
+      '<span class="miles-year-fill ' + type + '" style="width:' + pct.toFixed(2) + '%"></span>' +
+      '<span class="miles-year-value' + (inside ? ' inside' : '') + '" style="' + valueStyle + '">' +
+        Math.round(miles).toLocaleString() + ' mi</span>' +
+    '</span>' +
+  '</div>';
+}
+
+function renderMilesYearRows() {
+  const list = document.getElementById('miles-year-list');
+  if (!list) return;
+  const visible = milesYearShowAll ? milesYearRowsData : milesYearRowsData.slice(0, 6);
+  const maxMiles = Math.max.apply(null, milesYearRowsData.reduce(function(values, row) {
+    values.push(row.ride, row.run);
+    return values;
+  }, [1]));
+  const currentYear = String(new Date().getFullYear());
+
+  list.innerHTML = visible.map(function(row) {
+    const year = row.year;
+    const expanded = milesYearExpanded === year;
+    const rideLabel = row.rideCount === 1 ? 'ride' : 'rides';
+    const runLabel = row.runCount === 1 ? 'run' : 'runs';
+    const detailsId = 'miles-year-details-' + year;
+    return '<div class="miles-year-item">' +
+      '<button type="button" class="miles-year-row" aria-expanded="' + expanded + '" aria-controls="' + detailsId + '"' +
+        ' aria-label="' + year + (year === currentYear ? ' year to date' : '') + ', Ride ' + Math.round(row.ride).toLocaleString() +
+        ' miles, Run ' + Math.round(row.run).toLocaleString() + ' miles. Tap for details."' +
+        ' onclick="toggleMilesYearDetails(\'' + year + '\')">' +
+        '<span class="miles-year-year">' + year + (year === currentYear ? '<span class="miles-year-ytd">YTD</span>' : '') + '</span>' +
+        '<span class="miles-year-bars">' +
+          milesYearSeriesHTML('Ride', 'ride', row.ride, maxMiles) +
+          milesYearSeriesHTML('Run', 'run', row.run, maxMiles) +
+        '</span>' +
+      '</button>' +
+      '<div class="miles-year-details" id="' + detailsId + '"' + (expanded ? '' : ' hidden') + '>' +
+        '<div class="miles-year-detail-line"><span class="miles-year-detail-sport">Ride</span> · ' +
+          row.rideCount.toLocaleString() + ' ' + rideLabel + ' · ' + Math.round(row.rideElevation).toLocaleString() +
+          ' ft climbed · ' + formatMilesYearHours(row.rideTime) + '</div>' +
+        '<div class="miles-year-detail-line"><span class="miles-year-detail-sport">Run</span> · ' +
+          row.runCount.toLocaleString() + ' ' + runLabel + ' · ' + Math.round(row.runElevation).toLocaleString() +
+          ' ft climbed · ' + formatMilesYearHours(row.runTime) + '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  const toggle = document.getElementById('miles-year-toggle');
+  if (toggle) {
+    toggle.hidden = milesYearRowsData.length <= 6;
+    toggle.textContent = milesYearShowAll ? 'Show recent years' : 'Show all years';
+    toggle.setAttribute('aria-expanded', String(milesYearShowAll));
+  }
+}
+
+function toggleMilesYearDetails(year) {
+  milesYearExpanded = milesYearExpanded === year ? null : year;
+  document.querySelectorAll('#miles-year-list .miles-year-item').forEach(function(item) {
+    const button = item.querySelector('.miles-year-row');
+    const details = item.querySelector('.miles-year-details');
+    const expanded = details && details.id === 'miles-year-details-' + milesYearExpanded;
+    if (button) button.setAttribute('aria-expanded', String(!!expanded));
+    if (details) details.hidden = !expanded;
+  });
+}
+
+function toggleMilesYearList() {
+  milesYearShowAll = !milesYearShowAll;
+  if (!milesYearShowAll && milesYearExpanded && !milesYearRowsData.slice(0, 6).some(function(row) {
+    return row.year === milesYearExpanded;
+  })) milesYearExpanded = null;
+  renderMilesYearRows();
+}
+
 function renderMilesByYear() {
   // Group activities by year
   const yearMap = {};
   allActivities.forEach(a => {
-    const yr = new Date(a.start_date).getFullYear();
-    if (!yearMap[yr]) yearMap[yr] = {ride:0, run:0, swim:0};
+    const yr = activityLocalDateKey(a).slice(0, 4);
+    if (!yearMap[yr]) yearMap[yr] = {
+      ride:0, run:0, rideCount:0, runCount:0,
+      rideElevation:0, runElevation:0, rideTime:0, runTime:0
+    };
     const mi = a.distance/1609.34;
-    if (a.type==='Ride'||a.type==='VirtualRide') yearMap[yr].ride += mi;
-    else if (a.type==='Run'||a.type==='TrailRun') yearMap[yr].run += mi;
-    else if (a.type==='Swim') yearMap[yr].swim += mi/1.609; // swim in yards
+    if (a.type==='Ride'||a.type==='VirtualRide') {
+      yearMap[yr].ride += mi;
+      yearMap[yr].rideCount++;
+      yearMap[yr].rideElevation += (a.total_elevation_gain || 0) * 3.28084;
+      yearMap[yr].rideTime += a.moving_time || 0;
+    } else if (a.type==='Run'||a.type==='TrailRun') {
+      yearMap[yr].run += mi;
+      yearMap[yr].runCount++;
+      yearMap[yr].runElevation += (a.total_elevation_gain || 0) * 3.28084;
+      yearMap[yr].runTime += a.moving_time || 0;
+    }
   });
 
-  // The iPhone chart is a vertical list: newest years come first so the
-  // current season is immediately visible without scanning to the far edge.
+  // Newest first; the phone initially renders only the six most recent years.
   const years = Object.keys(yearMap)
     .filter(y => yearMap[y].ride > 0 || yearMap[y].run > 0)
     .sort((a, b) => Number(b) - Number(a));
   if (years.length < 2) return; // not enough data
-  const currentYear = String(new Date().getFullYear());
-  const yearLabels = years.map(y => y === currentYear ? y + ' YTD' : y);
-  const rideMiles = years.map(y => Math.round(yearMap[y].ride));
-  const runMiles = years.map(y => Math.round(yearMap[y].run));
+  milesYearRowsData = years.map(function(year) {
+    return Object.assign({ year: year }, yearMap[year]);
+  });
 
+  if (charts['milesyr']) {
+    charts['milesyr'].destroy();
+    delete charts['milesyr'];
+  }
   const existing = document.getElementById('collapse-miles-year');
   if (existing) existing.remove();
 
@@ -4713,7 +4884,8 @@ function renderMilesByYear() {
       Miles by year
     </div></div>
     <div class="collapse-body">
-      <div class="chart-wrap" style="height:${Math.max(300, years.length * 46 + 54)}px"><canvas id="miles-year-chart"></canvas></div>
+      <div class="miles-year-list" id="miles-year-list" role="group" aria-label="Ride and run miles by year"></div>
+      <button type="button" class="miles-year-toggle" id="miles-year-toggle" aria-expanded="false" onclick="toggleMilesYearList()">Show all years</button>
     </div>`;
 
   // Append into the Train swipe deck so it's the last swipeable panel, not a
@@ -4729,69 +4901,7 @@ function renderMilesByYear() {
   if (getCollapsed()['miles-year']) card.classList.add('collapsed');
   // Register the newly added panel so its dot appears in the deck.
   if (deck) deckUpdate('performance-deck');
-
-  setTimeout(() => {
-    if (charts['milesyr']) charts['milesyr'].destroy();
-    const ctx = document.getElementById('miles-year-chart').getContext('2d');
-    // Direct labels replace the desktop-style hover tooltip. Long bars keep
-    // the label inside; short bars place it just beyond the mark.
-    const milesValueLabels = {
-      id: 'milesValueLabels',
-      afterDatasetsDraw(chart) {
-        const draw = chart.ctx;
-        draw.save();
-        draw.font = '600 11px -apple-system, BlinkMacSystemFont, sans-serif';
-        draw.textBaseline = 'middle';
-        chart.data.datasets.forEach((dataset, datasetIndex) => {
-          const meta = chart.getDatasetMeta(datasetIndex);
-          meta.data.forEach((bar, index) => {
-            const value = dataset.data[index];
-            if (!value) return;
-            const label = dataset.shortLabel + ' ' + value.toLocaleString() + ' mi';
-            const labelWidth = draw.measureText(label).width;
-            const roomInside = bar.x - chart.chartArea.left;
-            const placeInside = roomInside >= labelWidth + 16;
-            draw.textAlign = placeInside ? 'right' : 'left';
-            draw.fillStyle = placeInside ? '#ffffff' : '#e6edf3';
-            let x = placeInside ? bar.x - 7 : bar.x + 7;
-            if (!placeInside && x + labelWidth > chart.chartArea.right) {
-              draw.textAlign = 'right';
-              x = chart.chartArea.right;
-            }
-            draw.fillText(label, x, bar.y);
-          });
-        });
-        draw.restore();
-      }
-    };
-    charts['milesyr'] = new Chart(ctx, {
-      type:'bar',
-      data:{
-        labels: yearLabels,
-        datasets:[
-          {label:'Ride miles', shortLabel:'Ride', data:rideMiles, backgroundColor:'rgba(252,76,2,0.78)', borderRadius:4, borderSkipped:false},
-          {label:'Run miles', shortLabel:'Run', data:runMiles, backgroundColor:'rgba(88,166,255,0.78)', borderRadius:4, borderSkipped:false}
-        ]
-      },
-      plugins:[milesValueLabels],
-      options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
-        animation:{duration:250},
-        interaction:{mode:'nearest',axis:'y',intersect:false},
-        plugins:{legend:{display:false},tooltip:{enabled:false}},
-        scales:{
-          x:{
-            beginAtZero:true,
-            grid:{color:'rgba(255,255,255,0.04)'},
-            ticks:{color:'#8b949e',font:{size:11},maxTicksLimit:4,callback:v=>v.toLocaleString()}
-          },
-          y:{
-            grid:{display:false},
-            ticks:{color:'#e6edf3',font:{size:12,weight:'600'},padding:8}
-          }
-        }
-      }
-    });
-  }, 100);
+  renderMilesYearRows();
 }
 
 // Strava's own 14 power-curve durations (seconds), in order.
