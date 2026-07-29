@@ -86,6 +86,19 @@ enum HealthMetricsReader {
             set("vo2max", v); group.leave()
         }
 
+        // VO2 max broken down by where it came from. Apple Watch derives its
+        // figure from outdoor walks/runs/hikes only - never cycling - so it is
+        // a RUNNING number. A Garmin (or other) sample written into Health can
+        // be a cycling number, and the two legitimately differ by several
+        // points for the same person. Taking whichever synced last silently
+        // mixed the two, so the page now gets each source separately and can
+        // pick the one that matches the reference norms it compares against.
+        group.enter()
+        latestQuantityPerSource(.vo2Max, unit: HKUnit(from: "ml/kg*min")) { bySource in
+            if !bySource.isEmpty { set("vo2maxBySource", bySource) }
+            group.leave()
+        }
+
         // Most recent body weight, in kg to match how the page stores it.
         group.enter()
         latestQuantity(.bodyMass, unit: .gramUnit(with: .kilo)) { v in
@@ -129,6 +142,30 @@ enum HealthMetricsReader {
         let query = HKSampleQuery(sampleType: type, predicate: nil, limit: 1, sortDescriptors: [sort]) { _, samples, _ in
             let value = (samples?.first as? HKQuantitySample)?.quantity.doubleValue(for: unit)
             completion(value)
+        }
+        store.execute(query)
+    }
+
+    /// Most recent VO2 max per originating app/device, keyed by source name
+    /// (e.g. "Apple Watch", "Garmin Connect"). Health can hold several sources
+    /// at once and they are not interchangeable - see the call site.
+    private static func latestQuantityPerSource(
+        _ id: HKQuantityTypeIdentifier, unit: HKUnit,
+        completion: @escaping ([String: Double]) -> Void
+    ) {
+        guard let type = HKObjectType.quantityType(forIdentifier: id) else { return completion([:]) }
+        let sort = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
+        // 200 samples is far more than enough to see every source that has
+        // written recently, without walking the whole history.
+        let query = HKSampleQuery(sampleType: type, predicate: nil, limit: 200,
+                                  sortDescriptors: [sort]) { _, samples, _ in
+            var out: [String: Double] = [:]
+            for case let sample as HKQuantitySample in samples ?? [] {
+                let name = sample.sourceRevision.source.name
+                // Sorted newest-first, so the first hit for a source wins.
+                if out[name] == nil { out[name] = sample.quantity.doubleValue(for: unit) }
+            }
+            completion(out)
         }
         store.execute(query)
     }

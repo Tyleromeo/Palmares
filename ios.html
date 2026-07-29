@@ -7284,8 +7284,35 @@ window.receiveHealthData = function(data) {
 // Best available VO2 max, in priority order: Apple Health measurement
 // (device-measured), manually entered reading (Settings), then the
 // formula-based estimates (Daniels VDOT from threshold pace, HR-ratio).
+// Health can hold VO2 max from several sources at once, and they are NOT
+// interchangeable. Apple Watch derives its figure from outdoor walks, runs and
+// hikes only - it never uses cycling - so it is a running number. A Garmin
+// figure written into Health may be cycling-derived, and for the same rider
+// the two legitimately differ by several points (cycling recruits less muscle
+// mass, so it usually reads lower unless you're a cycling specialist).
+//
+// True Age compares against ACSM/Cooper norms, which come from treadmill
+// testing. So the RUNNING-derived figure is the like-for-like input; scoring a
+// cycling VO2 max against running norms would understate a rider's fitness.
+// Apple's is preferred for that reason, not because it is the larger number.
+const RUN_DERIVED_VO2_SOURCES = /apple\s*watch|watch|health|iphone/i;
+function vo2SourceBreakdown() {
+  const by = (healthKitData && healthKitData.vo2maxBySource) || null;
+  if (!by || typeof by !== 'object') return [];
+  return Object.keys(by).map(function (name) {
+    return { name: name, value: by[name], running: RUN_DERIVED_VO2_SOURCES.test(name) };
+  }).sort(function (a, b) { return (b.running ? 1 : 0) - (a.running ? 1 : 0); });
+}
+
 function getEffectiveVO2Max() {
   const s = getSettings();
+  // Prefer a running-derived source when Health holds more than one, so the
+  // figure matches the treadmill-based norms it will be measured against.
+  const breakdown = vo2SourceBreakdown();
+  if (breakdown.length > 1) {
+    const run = breakdown.filter(function (b) { return b.running; })[0];
+    if (run) return { value: Math.round(run.value * 10) / 10, source: run.name + ' (run-derived)' };
+  }
   if (healthKitData && healthKitData.vo2max) return { value: healthKitData.vo2max, source: 'Apple Health' };
   if (s.measuredVO2Max) return { value: s.measuredVO2Max, source: 'Settings (manual)' };
   const v = calcVO2Max();
@@ -7325,6 +7352,18 @@ function calcTrueAge() {
   const parts = [{ label: 'VO2 max', value: vo2.value + ' ml/kg/min', source: vo2.source, effect: null }];
   // Sex materially changes the reference curve (female medians run ~10-15%
   // lower), so show which one was used instead of leaving it invisible.
+  // When Health holds more than one VO2 max, show the others rather than
+  // silently picking one - a rider seeing 62.9 here and 54 in Garmin deserves
+  // to know both are right and why this one was used.
+  vo2SourceBreakdown().forEach(function (b) {
+    if (Math.abs(b.value - vo2.value) < 0.05) return;   // that's the one in use
+    parts.push({
+      label: 'Also in Health',
+      value: (Math.round(b.value * 10) / 10) + ' ml/kg/min',
+      source: b.name + (b.running ? '' : ' — likely cycling-derived, not used'),
+      effect: null
+    });
+  });
   parts.push({
     label: 'Reference curve',
     value: sex.value === 'F' ? 'Female median' : sex.value === 'M' ? 'Male median' : 'Male median (sex not set)',
