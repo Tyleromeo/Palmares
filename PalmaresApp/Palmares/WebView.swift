@@ -99,11 +99,10 @@ struct WebView: UIViewRepresentable {
         }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isLoading = false
-            // Superset health payload (adds sleepHours, hrv7day, hrv30day on
-            // top of the original four) for the coaching card. Sent after the
-            // page is ready so window.receiveHealthData exists; it lands last
-            // and therefore wins over HealthKitManager's smaller payload.
-            HealthMetricsReader.push(into: webView)
+            // Refresh Health metrics after a reload only when the user has
+            // already answered Apple's permission sheet. First launch must
+            // reach the welcome and Strava setup before Health is requested.
+            HealthMetricsReader.pushIfAuthorized(into: webView)
         }
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             isLoading = false
@@ -172,11 +171,10 @@ struct WebView: UIViewRepresentable {
                 PullToRefresh.shared.end()
                 return
             case "requestHealth":
-                // Triggered by the Connect Apple Health button in setup. Uses
-                // the message's own web view so the reply lands in the page
-                // that asked. HealthMetricsReader replies via
-                // window.receiveHealthData, which refreshes the open sheet.
-                if let wv = message.webView { HealthMetricsReader.push(into: wv) }
+                // Triggered only after Strava connects and the setup sheet has
+                // explained what Health contributes. This is the sole path
+                // that may present Apple's authorization UI.
+                if let wv = message.webView { HealthMetricsReader.requestAndPush(into: wv) }
                 return
             default:
                 break

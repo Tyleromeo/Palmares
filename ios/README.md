@@ -69,28 +69,24 @@ browser.
 
 ## Health metrics setup
 
-`HealthMetricsReader.swift` supersedes what `HealthKitManager.swift` sends
-today: same four fields (`vo2max`, `restingHR`, `hrvSDNN`, `age`), plus
+`HealthMetricsReader.swift` supersedes the now-unused launch-time
+`HealthKitManager`: same four fields (`vo2max`, `restingHR`, `hrvSDNN`, `age`), plus
 `sleepHours`, `hrv7day`, and `hrv30day`. The page's coaching card turns the
 new fields into morning-of recovery guidance (suppressed HRV → back off;
 above-baseline HRV + positive form → green light; short sleep → keep it
 aerobic). Old app builds that don't send them change nothing.
 
 1. Add `HealthMetricsReader.swift` to the app target.
-2. Where `HealthKitManager` currently pushes after page load
-   (`webView(_:didFinish:)`), call instead — or additionally:
+2. After a page reload, refresh only if permission was already resolved:
 
    ```swift
-   HealthMetricsReader.push(into: webView)
+   HealthMetricsReader.pushIfAuthorized(into: webView)
    ```
 
-3. Sleep analysis is a **new read type**: the first run after this change
-   re-prompts Health authorization. `NSHealthShareUsageDescription` must
-   already be in Info.plist from the existing integration; no change needed
-   unless you want to mention sleep in the text.
-4. Once it's confirmed working you can retire the overlapping reads in
-   `HealthKitManager.swift`, or keep both — `receiveHealthData` stores
-   whichever payload arrived last, and the reader sends a superset.
+3. Only call `requestAndPush(into:)` from an explained user action after
+   Strava is connected. That method may present Apple's permission sheet.
+4. `NSHealthShareUsageDescription` and the HealthKit capability must remain
+   configured. Sleep analysis is included in the requested read types.
 
 ## WeatherKit
 

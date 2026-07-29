@@ -40,14 +40,6 @@ struct ContentView: View {
     // (see WebView.swift's Coordinator) - nil until then, and reset back to
     // nil on every fresh navigation/reload (e.g. disconnecting Strava).
     @State private var athleteName: String? = nil
-    @StateObject private var healthKit = HealthKitManager()
-
-    // The page defines window.receiveHealthData; the guard makes the call a
-    // silent no-op if it ever runs against a stale cached page that predates
-    // the True Age feature.
-    private func healthInjectionJS(_ json: String) -> String {
-        "window.receiveHealthData && window.receiveHealthData(\(json));"
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -118,21 +110,6 @@ struct ContentView: View {
             .padding(.top, 8)
             .padding(.bottom, 4)
             .background(.bar)
-        }
-        .onAppear {
-            healthKit.requestAndFetch()
-        }
-        .onChange(of: healthKit.payloadJSON) { json in
-            if let json { pendingJS = healthInjectionJS(json) }
-        }
-        .onChange(of: isLoading) { loading in
-            // Re-inject after every completed page load (reload, disconnect,
-            // back/forward) - the page's in-memory copy of the health data
-            // is gone after a navigation, and HealthKit won't re-publish on
-            // its own.
-            if !loading, let json = healthKit.payloadJSON {
-                pendingJS = healthInjectionJS(json)
-            }
         }
     }
 }

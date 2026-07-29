@@ -13,12 +13,11 @@
 //
 //  Every field is optional on the JS side, so partial data is fine.
 //
-//  Integration: either call HealthMetricsReader.push(into: webView) from
-//  webView(_:didFinish:) where HealthKitManager currently pushes, or fold
-//  the three gather* functions into the existing manager. If replacing the
-//  manager entirely, remember its Info.plist prerequisites still apply
-//  (NSHealthShareUsageDescription + the HealthKit capability), and add the
-//  new read types below to the authorization request.
+//  Authorization is deliberately staged after Strava onboarding:
+//  requestAndPush(into:) may show Apple's permission sheet after an explained
+//  user action; pushIfAuthorized(into:) only refreshes an already-resolved
+//  permission after a page reload. Info.plist still needs
+//  NSHealthShareUsageDescription and the HealthKit capability.
 //
 
 import Foundation
@@ -42,23 +41,39 @@ enum HealthMetricsReader {
         return types
     }()
 
-    /// Gather all metrics and inject them into the page via
-    /// window.receiveHealthData. Call after the page finishes loading.
-    static func push(into webView: WKWebView) {
+    /// Called from the explained "Connect Apple Health" action. This is the
+    /// only method that may present Apple's authorization sheet.
+    static func requestAndPush(into webView: WKWebView) {
         guard HKHealthStore.isHealthDataAvailable() else { return }
         store.requestAuthorization(toShare: nil, read: readTypes) { granted, _ in
             guard granted else { return }
-            gather { payload in
-                guard
-                    let json = try? JSONSerialization.data(withJSONObject: payload),
-                    let jsonString = String(data: json, encoding: .utf8)
-                else { return }
-                DispatchQueue.main.async {
-                    webView.evaluateJavaScript(
-                        "window.receiveHealthData && window.receiveHealthData(\(jsonString));",
-                        completionHandler: nil
-                    )
-                }
+            gatherAndInject(into: webView)
+        }
+    }
+
+    /// Re-send metrics after a page reload without surprising a new user
+    /// with a permission prompt. `.unnecessary` means the authorization
+    /// request has already been resolved; individual denied read types simply
+    /// return no samples, as HealthKit intentionally hides their status.
+    static func pushIfAuthorized(into webView: WKWebView) {
+        guard HKHealthStore.isHealthDataAvailable() else { return }
+        store.getRequestStatusForAuthorization(toShare: [], read: readTypes) { status, _ in
+            guard status == .unnecessary else { return }
+            gatherAndInject(into: webView)
+        }
+    }
+
+    private static func gatherAndInject(into webView: WKWebView) {
+        gather { payload in
+            guard
+                let json = try? JSONSerialization.data(withJSONObject: payload),
+                let jsonString = String(data: json, encoding: .utf8)
+            else { return }
+            DispatchQueue.main.async {
+                webView.evaluateJavaScript(
+                    "window.receiveHealthData && window.receiveHealthData(\(jsonString));",
+                    completionHandler: nil
+                )
             }
         }
     }

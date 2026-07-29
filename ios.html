@@ -54,6 +54,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
    and holds regardless of orientation. */
 body.native-app .nav { display: none !important; }
 body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
+.native-only { display: none !important; }
+body.native-app .native-only { display: flex !important; }
 
 /* STRAVA BRANDING — see developers.strava.com/guidelines. "Powered by
    Strava" is OPTIONAL ("apps that CHOOSE to display..."), so it appears
@@ -68,7 +70,13 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 .connect-wrap { max-width: 460px; margin: 3rem auto; text-align: center; }
 .connect-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 2.5rem 2rem; }
 .connect-card h2 { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
-.connect-card p { font-size: 14px; color: #7d8590; line-height: 1.6; margin-bottom: 2rem; }
+.connect-card p { font-size: 14px; color: #7d8590; line-height: 1.6; margin-bottom: 1.25rem; }
+.connect-steps { text-align: left; margin: 1.25rem 0 1.5rem; border-top: 1px solid #30363d; }
+.connect-step { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid #30363d; }
+.connect-step-num { width: 26px; height: 26px; flex: 0 0 26px; border-radius: 50%; background: #C9A227; color: #0d1117; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; }
+.connect-step-title { color: #e6edf3; font-size: 14px; font-weight: 600; line-height: 1.25; }
+.connect-step-sub { color: #7d8590; font-size: 12px; line-height: 1.45; margin-top: 3px; }
+.connect-next { color: #C9A227 !important; font-size: 12px !important; margin-bottom: 12px !important; }
 .strava-connect-btn { background: none; border: none; padding: 0; cursor: pointer; line-height: 0; display: inline-block; }
 .strava-connect-btn img { display: block; max-width: 100%; height: auto; }
 .strava-btn { background: #FC4C02; color: #fff; border: none; border-radius: 8px; padding: 13px 28px; font-size: 14px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; }
@@ -722,8 +730,23 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
 <div id="connect-view">
   <div class="connect-wrap">
     <div class="connect-card">
-      <h2>Palmarès</h2>
-      <p>Your personal training intelligence dashboard. Connects to Strava for real-time fitness data, power analysis, gear tracking, and personalized coaching.</p>
+      <h2>Welcome to Palmarès</h2>
+      <p>Palmarès turns your rides and runs into a clear daily view of fitness, fatigue, recovery, personal records, and opportunities to ride.</p>
+      <div class="connect-steps" aria-label="Setup steps">
+        <div class="connect-step">
+          <div class="connect-step-num">1</div>
+          <div><div class="connect-step-title">Connect Strava</div><div class="connect-step-sub">Import your activities, segments, records, gear, and clubs.</div></div>
+        </div>
+        <div class="connect-step">
+          <div class="connect-step-num">2</div>
+          <div><div class="connect-step-title">Choose Apple Health access</div><div class="connect-step-sub">After Strava loads, we’ll explain the optional, read-only health metrics before iOS asks for permission.</div></div>
+        </div>
+        <div class="connect-step">
+          <div class="connect-step-num">3</div>
+          <div><div class="connect-step-title">Review your profile</div><div class="connect-step-sub">Confirm the imported numbers, then explore Today, Train, Scout, Palmarès, and Log.</div></div>
+        </div>
+      </div>
+      <p class="connect-next">Your first step is Strava. Apple Health will not be requested yet.</p>
       <!-- Official "Connect with Strava" button, used unmodified as Strava's
            brand guidelines (1.1) require. Do not restyle or recolor it:
            the previous hand-rolled button redrew their logo glyph, which
@@ -1544,6 +1567,10 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
   </div>
   <div class="card">
     <div class="settings-title">Data & sync</div>
+    <div class="setting-row native-only">
+      <div><div class="setting-label">Apple Health</div><div class="setting-sub">Optionally read VO₂ max, resting heart rate, HRV, sleep, and weight for recovery guidance and profile insights. Palmarès never writes to Health.</div></div>
+      <button onclick="requestAppleHealthFromSettings(this)" style="background:#1a2332;border:1px solid #C9A227;border-radius:6px;padding:6px 14px;color:#C9A227;cursor:pointer;font-size:13px;white-space:nowrap">Connect</button>
+    </div>
     <div class="setting-row">
       <div><div class="setting-label">Force full resync</div><div class="setting-sub">Re-fetches your complete activity history from Strava, and removes anything you've since deleted there. Normal loads use the cache and only pull new activities, so use this if older data looks wrong — for example after deleting an activity on Strava, or merging several rides into one.</div></div>
       <button onclick="forceFullResync()" style="background:#1a2332;border:1px solid #58a6ff;border-radius:6px;padding:6px 14px;color:#58a6ff;cursor:pointer;font-size:13px">Resync now</button>
@@ -2252,13 +2279,11 @@ function showProfileSetup() {
       '<div id="ob-step-welcome">' +
         '<div class="ob-head">' +
           '<div class="ob-logo">Palmarès</div>' +
-          '<h2 id="ob-title">' + (name ? 'Welcome, ' + escapeHTML(name) : 'Welcome') + '</h2>' +
-          '<p>Palmarès turns your training history into something you can act on: ' +
-            'your fitness and form day to day, every KOM and Top 10 you hold, and where ' +
-            'the wind favours you before you head out.</p>' +
-          '<p>It reads your rides and runs from <strong>Strava</strong>. Add ' +
-            '<strong>Apple Health</strong> and it gets deeper — your VO₂ max, resting heart rate, ' +
-            'HRV and sleep turn the training numbers into real recovery guidance.</p>' +
+          '<h2 id="ob-title">' + (name ? 'Strava is connected, ' + escapeHTML(name) : 'Strava is connected') + '</h2>' +
+          '<p>Your activity history is ready. Next, you can add <strong>Apple Health</strong> ' +
+            'for recovery context, then review the profile Palmarès builds from your own data.</p>' +
+          '<p>Health access is optional and read-only. VO₂ max, resting heart rate, HRV and sleep ' +
+            'make coaching more personal; Palmarès never writes anything back.</p>' +
         '</div>' +
         '<div class="ob-body">' +
           '<div class="ob-row">' +
@@ -2328,6 +2353,16 @@ function connectAppleHealth() {
   setTimeout(function () {
     const b = document.getElementById('ob-health-btn');
     if (b && b.disabled) { b.disabled = false; b.textContent = 'Connect Apple Health'; }
+  }, 6000);
+}
+
+function requestAppleHealthFromSettings(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Requesting…'; }
+  notifyNative({ type: 'requestHealth' });
+  setTimeout(function () {
+    if (!btn) return;
+    btn.disabled = false;
+    btn.textContent = healthKitData ? 'Refresh access' : 'Connect';
   }, 6000);
 }
 
