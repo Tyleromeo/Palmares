@@ -1570,6 +1570,27 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
         <button class="gold-btn" style="margin-top:0" onclick="addExtCalendar()">Add</button>
       </div>
     </div>
+    <div class="settings-section">
+      <div class="setting-label" style="margin-bottom:4px">Standing weekly rides</div>
+      <div class="setting-sub" style="margin-bottom:8px">For club rides Strava's API doesn't return. LiVelo's Wednesday night ride is one: the club's weekend events come through, but the recurring WNR never appears in Strava's response, so it can't be read from there. Add it once here and it shows up every week, with the same RSVP and reminders as any other ride.</div>
+      <div id="set-recurring-rides"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <input class="setting-input" id="rr-name" type="text" placeholder="Ride name (e.g. WNR)" style="width:170px;text-align:left" />
+        <input class="setting-input" id="rr-club" type="text" placeholder="Club (optional)" style="width:140px;text-align:left" />
+        <select class="form-select" id="rr-day" style="width:120px">
+          <option value="1">Monday</option>
+          <option value="2">Tuesday</option>
+          <option value="3" selected>Wednesday</option>
+          <option value="4">Thursday</option>
+          <option value="5">Friday</option>
+          <option value="6">Saturday</option>
+          <option value="0">Sunday</option>
+        </select>
+        <input class="setting-input" id="rr-time" type="time" value="17:30" style="width:120px;text-align:left" />
+        <input class="setting-input" id="rr-until" type="date" title="Last date (optional, for a seasonal ride)" style="width:150px;text-align:left" />
+        <button class="gold-btn" style="margin-top:0" onclick="addRecurringRide()">Add</button>
+      </div>
+    </div>
   </div>
   <div class="card">
     <div class="settings-title">Account</div>
@@ -2254,6 +2275,86 @@ function toggleSport(key, enabled) {
 // Club include/exclude toggles + external calendar list under Settings.
 // Any change re-runs loadClubEvents so the Today card reflects it at once
 // (the events cache key incorporates the exclusion set, so no stale hits).
+// ===== RECURRING RIDES YOU ADD YOURSELF =====
+// Strava's /clubs/{id}/group_events does not return every club ride. LiVelo's
+// Wednesday night ride is a case in point: the club's weekend one-offs come
+// back fine (Sundayz, Ronk, Tour de Fligg...) but the recurring WNR is absent
+// from the response entirely - not stale, not oddly shaped, simply not there.
+// Strava notifies members about it, so it exists; the API just won't hand it
+// over, and no amount of client-side inference can conjure a ride the server
+// never sends.
+//
+// So a rider can define a standing ride themselves: day, time, and an
+// optional last date for a seasonal one. Occurrences are generated locally,
+// merged with the Strava events, and behave like any other ride - including
+// RSVP and the 24h/12h/2h reminders.
+function recurringRides() { return (getSettings().recurringRides || []); }
+
+function saveRecurringRides(list) {
+  const s = getSettings();
+  s.recurringRides = list;
+  localStorage.setItem('ed_settings', JSON.stringify(s));
+  renderEventSourceSettings();
+  reloadClubEvents();
+}
+
+function addRecurringRide() {
+  const name = (document.getElementById('rr-name') || {}).value;
+  const club = (document.getElementById('rr-club') || {}).value;
+  const day = (document.getElementById('rr-day') || {}).value;
+  const time = (document.getElementById('rr-time') || {}).value;
+  const until = (document.getElementById('rr-until') || {}).value;
+  if (!name || !name.trim()) { try { showToast('Give the ride a name.'); } catch (e) {} return; }
+  if (!time) { try { showToast('Set a start time.'); } catch (e) {} return; }
+  const list = recurringRides().slice();
+  list.push({
+    name: name.trim(),
+    club: (club || '').trim() || null,
+    weekday: parseInt(day, 10) || 0,
+    time: time,
+    until: until || null
+  });
+  saveRecurringRides(list);
+  ['rr-name', 'rr-club', 'rr-until'].forEach(function (id) {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  try { showToast('Added. It will appear under upcoming rides.'); } catch (e) {}
+}
+
+function removeRecurringRide(i) {
+  const list = recurringRides().slice();
+  list.splice(i, 1);
+  saveRecurringRides(list);
+}
+
+// Next occurrence of each standing ride, as event objects the card already
+// knows how to render.
+function recurringRideEvents(now) {
+  const out = [];
+  recurringRides().forEach(function (r) {
+    const parts = String(r.time || '').split(':');
+    const hh = parseInt(parts[0], 10), mm = parseInt(parts[1], 10) || 0;
+    if (isNaN(hh)) return;
+    const d = new Date(now);
+    d.setHours(hh, mm, 0, 0);
+    // Step forward to the next matching weekday that hasn't already started.
+    while (d.getDay() !== r.weekday || d <= now) d.setDate(d.getDate() + 1);
+    if (r.until) {
+      const end = new Date(r.until + 'T23:59:59');
+      if (!isNaN(end.getTime()) && d > end) return;   // season is over
+    }
+    out.push({
+      title: r.name,
+      club_name: r.club || 'Standing ride',
+      nextDate: d,
+      recurring: true,
+      activity_type: 'Ride',
+      upcoming_occurrences: [d.toISOString()]
+    });
+  });
+  return out;
+}
+
 function renderEventSourceSettings() {
   const s = getSettings();
   const clubsEl = document.getElementById('set-event-clubs');
@@ -2268,6 +2369,26 @@ function renderEventSourceSettings() {
           '</label>').join('')
       : '<span style="font-size:12px;color:#7d8590">No clubs discovered yet — open the Today page once while connected.</span>';
   }
+  const rrEl = document.getElementById('set-recurring-rides');
+  if (rrEl) {
+    const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const list = recurringRides();
+    rrEl.innerHTML = list.length
+      ? list.map(function (r, i) {
+          const t = String(r.time || '').split(':');
+          const hh = parseInt(t[0], 10), mm = t[1] || '00';
+          const ampm = isNaN(hh) ? r.time : ((hh % 12 || 12) + ':' + mm + (hh < 12 ? 'am' : 'pm'));
+          return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0">' +
+            '<div style="font-size:13px;color:#e6edf3">' + escapeHTML(r.name) +
+              ' <span style="color:#57606a;font-size:11px">' + DAYS[r.weekday] + 's at ' + escapeHTML(ampm) +
+              (r.club ? ' \u00b7 ' + escapeHTML(r.club) : '') +
+              (r.until ? ' \u00b7 until ' + escapeHTML(r.until) : '') + '</span></div>' +
+            '<button onclick="removeRecurringRide(' + i + ')" style="background:transparent;border:1px solid #f85149;border-radius:6px;color:#f85149;cursor:pointer;font-size:11px;padding:2px 8px;flex-shrink:0">Remove</button>' +
+          '</div>';
+        }).join('')
+      : '<span style="font-size:12px;color:#7d8590">None yet.</span>';
+  }
+
   const extEl = document.getElementById('set-ext-calendars');
   if (extEl) {
     const cals = s.extCalendars || [];
@@ -7948,7 +8069,10 @@ async function loadClubEvents(forceFresh) {
     // External calendar sources (Settings > Group events) merge in here,
     // filtered to future dates just like the Strava events.
     const externalEvents = (await loadExternalCalendarEvents()).filter(e => e.nextDate >= now);
-    const upcoming = allUpcoming.concat(externalEvents);
+    // Standing rides the athlete defined themselves (Settings > Group events),
+    // for club rides Strava's API doesn't return.
+    const standingRides = recurringRideEvents(now);
+    const upcoming = allUpcoming.concat(externalEvents).concat(standingRides);
 
     // For display purposes, if a LiVelo/WolfPack event has an occurrence later
     // this week, prefer that date over a far-future one. The candidate must
