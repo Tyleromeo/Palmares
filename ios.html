@@ -7752,14 +7752,49 @@ async function loadClubEvents(forceFresh) {
       return true;
     });
 
+    // Occurrence dates per event, parsed once.
+    const datesFor = function (e) {
+      return (e.upcoming_occurrences || []).map(parseOccurrence)
+        .filter(d => d && !isNaN(d.getTime()));
+    };
+
+    // A weekly ride can be published two ways, and only one of them puts the
+    // series on a single event. LiVelo posts the Wednesday night ride as a
+    // SEPARATE event every week - 446 of them, each carrying one date - so
+    // looking for a cadence inside one event finds nothing. Group a club's
+    // events by title and read the cadence across the group instead, which is
+    // where the weekly pattern actually lives.
+    const seriesKey = function (e) {
+      return String(e.club_id) + '::' +
+        String(e.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    };
+    const seriesDates = {};
+    uniqueEvents.forEach(function (e) {
+      const k = seriesKey(e);
+      if (!seriesDates[k]) seriesDates[k] = [];
+      datesFor(e).forEach(function (d) { seriesDates[k].push(d); });
+    });
+    // Only the newest event of a series carries the projection, so a club with
+    // 446 past instances yields one upcoming ride rather than 446 of them.
+    const seriesNewest = {};
+    uniqueEvents.forEach(function (e) {
+      const k = seriesKey(e);
+      const ds = datesFor(e);
+      if (!ds.length) return;
+      const latest = ds.sort(function (a, b) { return b - a; })[0];
+      if (!seriesNewest[k] || latest > seriesNewest[k].date) seriesNewest[k] = { date: latest, id: e.id };
+    });
+
     const allUpcoming = uniqueEvents
       .map(e => {
-        const parsed = (e.upcoming_occurrences || [])
-          .map(parseOccurrence)
-          .filter(d => d && !isNaN(d.getTime()));
+        const parsed = datesFor(e);
         const future = parsed.filter(d => d >= now).sort((a, b) => a - b);
         if (future.length) return Object.assign({}, e, { nextDate: future[0] });
-        const projected = projectNextOccurrence(parsed, now);
+        // Fall back to the series cadence, but only on the series' newest
+        // event, so the projection appears exactly once.
+        const k = seriesKey(e);
+        if (!seriesNewest[k] || seriesNewest[k].id !== e.id) return null;
+        const projected = projectNextOccurrence(seriesDates[k] || parsed, now);
         return projected ? Object.assign({}, e, { nextDate: projected, projected: true }) : null;
       })
       .filter(Boolean)
