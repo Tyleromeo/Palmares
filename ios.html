@@ -8229,6 +8229,79 @@ async function loadExternalCalendarEvents() {
   return results.flat();
 }
 
+// ==================== EVENT ROUTE DETAIL ====================
+// Club events usually have a Strava route attached, but the event payload
+// carries little more than its id - distance, climbing and shape need a
+// lookup. Cached in localStorage permanently: a route's geometry doesn't
+// change, so this costs one call per route ever rather than one per render,
+// which matters against Strava's rate limit.
+const EVENT_ROUTE_CACHE_KEY = 'ed_event_routes_v1';
+function eventRouteCache() {
+  try { return JSON.parse(localStorage.getItem(EVENT_ROUTE_CACHE_KEY) || '{}'); } catch (e) { return {}; }
+}
+function cacheEventRoute(id, data) {
+  try { const c = eventRouteCache(); c[id] = data; localStorage.setItem(EVENT_ROUTE_CACHE_KEY, JSON.stringify(c)); } catch (e) {}
+}
+
+async function enrichEventsWithRoutes(events) {
+  if (!events || !events.length) return;
+  const cache = eventRouteCache();
+  let token = null, changed = false;
+  for (const e of events.slice(0, 6)) {
+    // Some payloads embed the whole route, which saves the call entirely.
+    const embedded = e.route && e.route.map ? e.route : null;
+    const id = (e.route && e.route.id) || e.route_id;
+    if (!id && !embedded) continue;
+    if (id && cache[id]) { e._route = cache[id]; changed = true; continue; }
+    let r = embedded;
+    if (!r) {
+      if (!token) { token = await getToken(); if (!token) return; }
+      try {
+        const resp = await fetch('https://www.strava.com/api/v3/routes/' + id, { headers: { Authorization: 'Bearer ' + token } });
+        if (!resp.ok) continue;   // 404s on private routes are expected, not an error
+        r = await resp.json();
+      } catch (err) { continue; }
+    }
+    const data = {
+      distanceMi: r.distance ? r.distance / 1609.34 : null,
+      elevationFt: r.elevation_gain ? r.elevation_gain * 3.281 : null,
+      polyline: (r.map && (r.map.summary_polyline || r.map.polyline)) || null
+    };
+    if (id) cacheEventRoute(id, data);
+    e._route = data; changed = true;
+  }
+  if (changed && window.renderEventRows) window.renderEventRows();
+}
+
+// The route drawn as an inline SVG path rather than a live map. Six map
+// instances in a list would cost far more than six <path> elements, and this
+// needs no tiles, no network and no map API budget.
+function routeThumbSVG(polyline, w, h) {
+  const pts = decodePolyline(polyline);
+  if (!pts || pts.length < 2) return '';
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  pts.forEach(function (pt) {
+    minLat = Math.min(minLat, pt[0]); maxLat = Math.max(maxLat, pt[0]);
+    minLng = Math.min(minLng, pt[1]); maxLng = Math.max(maxLng, pt[1]);
+  });
+  // Longitude degrees narrow as latitude rises, so scale them by cos(lat) or
+  // the shape comes out stretched sideways.
+  const lngScale = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180) || 1;
+  const spanX = ((maxLng - minLng) * lngScale) || 1e-6;
+  const spanY = (maxLat - minLat) || 1e-6;
+  const pad = 3;
+  const scale = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanY);
+  const offX = (w - spanX * scale) / 2, offY = (h - spanY * scale) / 2;
+  const d = pts.map(function (pt, i) {
+    const x = offX + (pt[1] - minLng) * lngScale * scale;
+    const y = h - (offY + (pt[0] - minLat) * scale); // SVG y grows downward
+    return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+  }).join(' ');
+  return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" aria-hidden="true" ' +
+    'style="display:block;flex-shrink:0;background:#0d1117;border:1px solid #21262d;border-radius:6px">' +
+    '<path d="' + d + '" fill="none" stroke="#FC4C02" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>';
+}
+
 // ==================== CLUB EVENTS ====================
 // ===== RIDE RSVP =====
 // Confirming a ride is what turns on its reminders: unconfirmed rides stay
@@ -8699,6 +8772,18 @@ async function loadClubEvents(forceFresh) {
           </div>
           <div class="row-meta">${dateStr} at ${timeStr} &middot; ${escapeHTML(e.club_name || 'Club')}${e.projected ? ' &middot; <span style="color:#d29922">expected</span>' : ''}</div>
           ${desc ? `<div style="font-size:11px;color:#444d56;margin-top:2px">${escapeHTML(descShort)}${desc.length>80?'...':''}</div>` : ''}
+          ${(() => {
+            const rt = e._route;
+            if (!rt || (!rt.distanceMi && !rt.polyline)) return '';
+            const stats = [
+              rt.distanceMi ? `<span style="color:#e6edf3;font-weight:600">${rt.distanceMi.toFixed(1)} mi</span>` : '',
+              rt.elevationFt ? `${Math.round(rt.elevationFt).toLocaleString()} ft` : ''
+            ].filter(Boolean).join(' &middot; ');
+            return `<div style="display:flex;align-items:center;gap:9px;margin-top:6px">
+              ${rt.polyline ? routeThumbSVG(rt.polyline, 62, 38) : ''}
+              <div style="font-size:11px;color:#7d8590">${stats}</div>
+            </div>`;
+          })()}
         </div>
         <div class="row-right" style="text-align:right">
           <div style="font-size:13px;font-weight:500;color:${daysUntil<=1?'#C9A227':'#7d8590'}">${isToday?'Today':isTomorrow?'Tomorrow':'in '+daysUntil+'d'}</div>
@@ -8712,6 +8797,7 @@ async function loadClubEvents(forceFresh) {
       }).join('');
     };
     renderEventRows();
+    enrichEventsWithRoutes(window._upcomingEvents || []);
 
     // Footer: outbound links to the configured external calendar sites (or
     // the historical SBRA link when none are configured yet), plus a note
