@@ -2068,6 +2068,67 @@ function observedMaxHR() {
   return max >= 120 ? Math.round(max) : null;
 }
 
+// Almost nobody knows their 1-hour threshold pace off the top of their head,
+// but everyone has run a 5K or a mile. Find their best recent effort at a
+// recognisable race distance and convert it, so the profile can stop asking a
+// question most people guess at. 5K is preferred over the mile: it is much
+// closer to threshold, so the conversion carries less error.
+const RUN_PACE_WINDOWS = [
+  { key:'5K',   min:4700, max:5400, toThreshold:1.06, label:'5K' },
+  { key:'mile', min:1500, max:1750, toThreshold:1.15, label:'mile' }
+];
+
+function deriveRunPace() {
+  const runs = (allActivities || []).filter(function (a) {
+    const k = activitySportKey(a);
+    return (k === 'run' || k === 'trailrun') && a.distance > 0 && a.moving_time > 0;
+  });
+  if (!runs.length) return null;
+  for (let i = 0; i < RUN_PACE_WINDOWS.length; i++) {
+    const w = RUN_PACE_WINDOWS[i];
+    let best = null;
+    runs.forEach(function (a) {
+      if (a.distance < w.min || a.distance > w.max) return;
+      const secsPerMile = a.moving_time / (a.distance / 1609.34);
+      // Guard against GPS junk producing a superhuman or walking "race".
+      if (secsPerMile < 240 || secsPerMile > 1200) return;
+      if (!best || secsPerMile < best.secsPerMile) best = { secsPerMile: secsPerMile, date: a.start_date };
+    });
+    if (best) {
+      return {
+        label: w.label,
+        effortSecs: Math.round(best.secsPerMile),
+        thresholdSecs: Math.round(best.secsPerMile * w.toThreshold),
+        date: best.date
+      };
+    }
+  }
+  return null;
+}
+
+function secsToPace(secs) {
+  if (!secs || !isFinite(secs)) return '';
+  const m = Math.floor(secs / 60), s = Math.round(secs % 60);
+  return m + ':' + String(s).padStart(2, '0');
+}
+
+// Which sports they actually do, so Sports starts matching their history
+// instead of every box being ticked. Deliberately cautious: a sport is kept
+// the moment it appears even once, and the whole thing is skipped unless
+// there's a real history to judge from. Turning a sport OFF hides those
+// activities, so the cost of being wrong is far higher than leaving an
+// unused box ticked. Always reversible in Settings.
+const SPORT_DETECT_MIN_HISTORY = 20;
+
+function detectSportsFromHistory() {
+  const acts = allActivities || [];
+  if (acts.length < SPORT_DETECT_MIN_HISTORY) return null;
+  const seen = {};
+  acts.forEach(function (a) { seen[activitySportKey(a)] = (seen[activitySportKey(a)] || 0) + 1; });
+  const keys = Object.keys(seen);
+  return keys.length ? keys : null;
+}
+
 function importProfile() {
   const out = {};
   const from = {};
@@ -2125,7 +2186,7 @@ const PROFILE_SETUP_FIELDS = [
   { key:'age',       id:'ob-age',        label:'Age',                 type:'number', unit:'years',   sub:'Used for fitness age and HR zones' },
   { key:'weight',    id:'ob-weight',     label:'Weight',              type:'number', unit:'',        unitSelect:true, sub:'Used for power-to-weight' },
   { key:'ftp',       id:'ob-ftp',        label:'FTP',                 type:'number', unit:'w',       sub:'Functional threshold power - leave blank if you don\'t ride with power' },
-  { key:'runPace',   id:'ob-run-pace',   label:'Threshold run pace',  type:'text',   unit:'min/mi',  sub:'Your roughly 1-hour race pace' },
+  // No threshold-pace question: it's derived from a real 5K or mile below.
   { key:'restingHR', id:'ob-resting-hr', label:'Resting heart rate',  type:'number', unit:'bpm',     sub:'Measured at rest, first thing in the morning' },
   { key:'maxHR',     id:'ob-max-hr',     label:'Max heart rate',      type:'number', unit:'bpm',     sub:'Highest you have actually seen' },
   { key:'city',      id:'ob-city',       label:'Town',                type:'text',   unit:'',        sub:'Used for your local forecast' }
@@ -2162,32 +2223,112 @@ function showProfileSetup() {
   const unitsVal = imported.values.units || s.units || 'imperial';
   const name = athleteData && athleteData.firstname ? athleteData.firstname : null;
 
+  // Pace comes from a real race-distance effort rather than a question.
+  const derived = deriveRunPace();
+  const paceRow = derived
+    ? '<div class="ob-row">' +
+        '<div class="ob-label">Best ' + derived.label + ' pace<span class="ob-chip">from your activities</span></div>' +
+        '<div class="ob-sub">Your fastest recent ' + derived.label + '. We use it to set your run zones, so you never have to know your threshold pace.</div>' +
+        '<div class="ob-input-wrap">' +
+          '<input class="setting-input" id="ob-race-pace" type="text" value="' + secsToPace(derived.effortSecs) + '" />' +
+          '<span class="ob-unit">min/mi</span>' +
+        '</div>' +
+        '<input type="hidden" id="ob-race-pace-factor" value="' +
+          (derived.thresholdSecs / derived.effortSecs) + '" />' +
+      '</div>'
+    : '';
+
+  // Health lives on the phone only; offering it in a browser would be a
+  // button that can never work.
+  const canHealth = !!(window.webkit && window.webkit.messageHandlers);
+  const healthConnected = !!healthKitData;
+
   const el = document.createElement('div');
   el.id = 'profile-setup';
   el.innerHTML =
     '<div class="ob-sheet" role="dialog" aria-modal="true" aria-labelledby="ob-title">' +
-      '<div class="ob-head">' +
-        '<div class="ob-logo">Palmarès</div>' +
-        '<h2 id="ob-title">' + (name ? 'Welcome, ' + escapeHTML(name) : 'Welcome') + '</h2>' +
-        '<p>We filled in what we could from your Strava profile' +
-          (healthKitData ? ' and Apple Health' : '') +
-          '. Check it over — every number here is yours to change, and you can edit all of it later in Settings.</p>' +
+
+      // ---- Step 1: what this is, and where its data comes from ----
+      '<div id="ob-step-welcome">' +
+        '<div class="ob-head">' +
+          '<div class="ob-logo">Palmarès</div>' +
+          '<h2 id="ob-title">' + (name ? 'Welcome, ' + escapeHTML(name) : 'Welcome') + '</h2>' +
+          '<p>Palmarès turns your training history into something you can act on: ' +
+            'your fitness and form day to day, every KOM and Top 10 you hold, and where ' +
+            'the wind favours you before you head out.</p>' +
+          '<p>It reads your rides and runs from <strong>Strava</strong>. Add ' +
+            '<strong>Apple Health</strong> and it gets deeper — your VO₂ max, resting heart rate, ' +
+            'HRV and sleep turn the training numbers into real recovery guidance.</p>' +
+        '</div>' +
+        '<div class="ob-body">' +
+          '<div class="ob-row">' +
+            '<div class="ob-label">Strava<span class="ob-chip">connected</span></div>' +
+            '<div class="ob-sub">Activities, segments, gear and clubs.</div>' +
+          '</div>' +
+          '<div class="ob-row">' +
+            '<div class="ob-label">Apple Health' +
+              (healthConnected ? '<span class="ob-chip">connected</span>' : '') + '</div>' +
+            '<div class="ob-sub">' +
+              (healthConnected
+                ? 'Reading your body metrics — nothing is ever written back.'
+                : canHealth
+                  ? 'Optional, and read-only: VO₂ max, resting heart rate, HRV, sleep and weight. Nothing is written back.'
+                  : 'Available in the iOS app.') + '</div>' +
+            (canHealth && !healthConnected
+              ? '<div class="ob-input-wrap"><button class="gold-btn" style="margin-top:0" id="ob-health-btn" onclick="connectAppleHealth()">Connect Apple Health</button></div>'
+              : '') +
+          '</div>' +
+        '</div>' +
+        '<div class="ob-foot">' +
+          '<button class="gold-btn" onclick="obGoToDetails()">Continue</button>' +
+        '</div>' +
       '</div>' +
-      '<div class="ob-body">' + rows +
-        '<div class="ob-row"><div class="ob-label">Units</div>' +
-        '<div class="ob-sub">Miles and feet, or kilometres and metres</div>' +
-        '<div class="ob-input-wrap"><select class="form-select" id="ob-units">' +
-          '<option value="imperial"' + (unitsVal === 'imperial' ? ' selected' : '') + '>Imperial</option>' +
-          '<option value="metric"' + (unitsVal === 'metric' ? ' selected' : '') + '>Metric</option>' +
-        '</select></div></div>' +
-      '</div>' +
-      '<div class="ob-foot">' +
-        '<button class="gold-btn" onclick="saveProfileSetup()">Save and continue</button>' +
-        '<button class="ob-skip" onclick="skipProfileSetup()">Skip for now</button>' +
+
+      // ---- Step 2: confirm what we imported ----
+      '<div id="ob-step-details" style="display:none">' +
+        '<div class="ob-head">' +
+          '<h2>Your profile</h2>' +
+          '<p>Filled in from your Strava profile' +
+            (healthConnected ? ', Apple Health' : '') +
+            ' and your own activities. Every number is yours to change, now or later in Settings.</p>' +
+        '</div>' +
+        '<div class="ob-body">' + rows + paceRow +
+          '<div class="ob-row"><div class="ob-label">Units</div>' +
+          '<div class="ob-sub">Miles and feet, or kilometres and metres</div>' +
+          '<div class="ob-input-wrap"><select class="form-select" id="ob-units">' +
+            '<option value="imperial"' + (unitsVal === 'imperial' ? ' selected' : '') + '>Imperial</option>' +
+            '<option value="metric"' + (unitsVal === 'metric' ? ' selected' : '') + '>Metric</option>' +
+          '</select></div></div>' +
+        '</div>' +
+        '<div class="ob-foot">' +
+          '<button class="gold-btn" onclick="saveProfileSetup()">Save and continue</button>' +
+          '<button class="ob-skip" onclick="skipProfileSetup()">Skip for now</button>' +
+        '</div>' +
       '</div>' +
     '</div>';
   document.body.appendChild(el);
   document.body.classList.add('ob-open');
+}
+
+function obGoToDetails() {
+  const a = document.getElementById('ob-step-welcome'), b = document.getElementById('ob-step-details');
+  if (a) a.style.display = 'none';
+  if (b) b.style.display = '';
+}
+
+// Ask the native app for Health access. HealthMetricsReader replies through
+// window.receiveHealthData, which re-renders the sheet so the freshly
+// imported values appear in the fields rather than after a restart.
+function connectAppleHealth() {
+  const btn = document.getElementById('ob-health-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Requesting…'; }
+  notifyNative({ type: 'requestHealth' });
+  // If Health returns nothing (declined, or an older app build with no
+  // handler), say so rather than leaving a button spinning forever.
+  setTimeout(function () {
+    const b = document.getElementById('ob-health-btn');
+    if (b && b.disabled) { b.disabled = false; b.textContent = 'Connect Apple Health'; }
+  }, 6000);
 }
 
 function saveProfileSetup() {
@@ -2199,7 +2340,17 @@ function saveProfileSetup() {
   const next = Object.assign({}, s);
   const age = num('ob-age'), weight = num('ob-weight'), ftp = num('ob-ftp');
   const rhr = num('ob-resting-hr'), mhr = num('ob-max-hr');
-  const pace = str('ob-run-pace'), city = str('ob-city'), units = str('ob-units');
+  const city = str('ob-city'), units = str('ob-units');
+  // The sheet asks for a real race pace; runPace is stored as threshold pace,
+  // so convert with the factor for whichever distance it came from.
+  let pace = null;
+  const racePaceStr = str('ob-race-pace');
+  if (racePaceStr) {
+    const raceSecs = paceToSecs(racePaceStr);
+    const fEl = document.getElementById('ob-race-pace-factor');
+    const factor = fEl ? parseFloat(fEl.value) : 1.06;
+    if (raceSecs && isFinite(factor)) pace = secsToPace(raceSecs * factor);
+  }
   if (age !== null) {
     next.age = age;
     next.ageGroup = age < 25 ? '0_24' : age < 35 ? '25_34' : age < 45 ? '35_44'
@@ -2219,6 +2370,15 @@ function saveProfileSetup() {
   const imported = importProfile();
   if (imported.values.measuredVO2Max && !next.measuredVO2Max) next.measuredVO2Max = imported.values.measuredVO2Max;
   if (imported.values.sex && !next.sex) next.sex = imported.values.sex;
+  // Start Sports matching what they actually do, rather than every box ticked.
+  if (!next.enabledSports) {
+    const doing = detectSportsFromHistory();
+    if (doing) {
+      const off = {};
+      Object.keys(SPORT_META).forEach(function (k) { if (doing.indexOf(k) < 0) off[k] = false; });
+      next.enabledSports = off;
+    }
+  }
 
   localStorage.setItem('ed_settings', JSON.stringify(next));
   window.USER_FTP = next.ftp;
@@ -7279,6 +7439,18 @@ window.receiveHealthData = function(data) {
   renderVO2Max();
   // Recovery fields feed the coaching card on Today, so refresh it too.
   try { if (allActivities.length) renderCoaching(computeMetrics(allActivities), allActivities); } catch(e) {}
+  // If the setup sheet is open, rebuild it so values that just arrived from
+  // Health (VO2 max, resting HR, weight) appear in the fields instead of the
+  // user seeing blanks they'd have to fill in by hand.
+  try {
+    if (document.getElementById('profile-setup')) {
+      const onDetails = (document.getElementById('ob-step-details') || {}).style;
+      const wasOnDetails = onDetails && onDetails.display !== 'none';
+      closeProfileSetup();
+      showProfileSetup();
+      if (wasOnDetails) obGoToDetails();
+    }
+  } catch(e) {}
 };
 
 // Best available VO2 max, in priority order: Apple Health measurement

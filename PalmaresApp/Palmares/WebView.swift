@@ -160,6 +160,7 @@ struct WebView: UIViewRepresentable {
             //   widgetData     - snapshot for the home screen widget
             //   eventReminders - upcoming rides to schedule notifications for
             //   refreshDone    - page finished the pull-to-refresh sync
+            //   requestHealth  - setup asked to connect Apple Health
             switch body["type"] as? String {
             case "widgetData":
                 WidgetBridge.handle(body)
@@ -169,6 +170,13 @@ struct WebView: UIViewRepresentable {
                 return
             case "refreshDone":
                 PullToRefresh.shared.end()
+                return
+            case "requestHealth":
+                // Triggered by the Connect Apple Health button in setup. Uses
+                // the message's own web view so the reply lands in the page
+                // that asked. HealthMetricsReader replies via
+                // window.receiveHealthData, which refreshes the open sheet.
+                if let wv = message.webView { HealthMetricsReader.push(into: wv) }
                 return
             default:
                 break
