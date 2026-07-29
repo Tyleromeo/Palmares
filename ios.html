@@ -2851,7 +2851,25 @@ const ROAD_STATUS_META = {
 // Since web and the iOS WebView both load this same hosted page, the
 // convention deploys atomically - there are no old clients to confuse.
 // Fresh tarmac additionally auto-expires: after 60 days it isn't news.
-const ROAD_FRESH_EXPIRE_DAYS = 60;
+// Fresh tarmac stays listed for 30 days after the last time anyone touched
+// it - the original report OR a confirmation. Confirming therefore keeps a
+// good road on the board rather than watching it age out silently.
+const ROAD_FRESH_KEEP_DAYS = 30;
+
+function roadKeyOf(r) {
+  return (r.road_name || '').trim().toLowerCase() + '|' + (r.town || '').trim().toLowerCase();
+}
+
+// Which roads this user has already confirmed. Confirmations are stored as
+// extra report rows, so without this one person tapping repeatedly floods
+// the feed - the live data had 29 confirmations on a single road, which is
+// what pushed the actual reports out of the API's capped result window.
+function confirmedRoads() {
+  try { return JSON.parse(localStorage.getItem('ed_road_confirmed') || '{}'); } catch (e) { return {}; }
+}
+function markRoadConfirmed(key) {
+  try { const c = confirmedRoads(); c[key] = Date.now(); localStorage.setItem('ed_road_confirmed', JSON.stringify(c)); } catch (e) {}
+}
 const ROAD_STALE_HINT_DAYS = 90;
 
 let _roadReportsRaw = [];
@@ -2892,15 +2910,32 @@ function groupRoadReports(reports) {
   const now = Date.now();
   for (const rows of byKey.values()) {
     const primaries = rows.filter(r => !roadNoteTag(r));
-    if (!primaries.length) continue; // only confirms/clears with no report: nothing to show
-    const latest = primaries[primaries.length - 1];
+    const confirmRows = rows.filter(r => roadNoteTag(r) === 'confirm');
+    // Fall back to the newest row of any kind when the original report is no
+    // longer in the feed. list_road_reports returns a capped window, and
+    // confirmations are rows too, so a heavily-confirmed road could push its
+    // own report out of that window - the group then had no primary and the
+    // road silently vanished from the board entirely.
+    const latest = primaries.length ? primaries[primaries.length - 1] : rows[rows.length - 1];
+    if (!latest) continue;
     const latestAt = new Date(latest.created_at || 0);
-    const confirms = rows.filter(r => roadNoteTag(r) === 'confirm' && new Date(r.created_at || 0) > latestAt);
-    const cleared = rows.some(r => roadNoteTag(r) === 'cleared' && new Date(r.created_at || 0) > latestAt);
+    const since = primaries.length ? latestAt : new Date(0);
+    // One confirmation per person: counting rows made a single repeated tap
+    // look like a crowd agreeing.
+    const confirmers = new Set();
+    confirmRows.forEach(r => {
+      if (new Date(r.created_at || 0) >= since) confirmers.add(String(r.athlete_id || r.reported_by || r.created_at || ''));
+    });
+    const cleared = rows.some(r => roadNoteTag(r) === 'cleared' && new Date(r.created_at || 0) >= since);
     if (cleared) continue;
     const ageDays = latest.created_at ? Math.floor((now - latestAt.getTime()) / 86400000) : 0;
-    if (latest.status === 'fresh' && ageDays > ROAD_FRESH_EXPIRE_DAYS) continue;
-    groups.push({ report: latest, confirms: confirms.length, ageDays });
+    // Expiry runs from the last time anyone touched the road, so confirming
+    // keeps it listed instead of it ageing out on the original report's date.
+    const newestConfirmAt = confirmRows.reduce((m, r) => Math.max(m, new Date(r.created_at || 0).getTime() || 0), 0);
+    const lastTouch = Math.max(latestAt.getTime() || 0, newestConfirmAt);
+    const sinceTouchDays = Math.floor((now - lastTouch) / 86400000);
+    if (latest.status === 'fresh' && sinceTouchDays > ROAD_FRESH_KEEP_DAYS) continue;
+    groups.push({ report: latest, confirms: confirmers.size, ageDays, key: roadKeyOf(latest) });
   }
   groups.sort((a, b) => new Date(b.report.created_at || 0) - new Date(a.report.created_at || 0));
   return groups;
@@ -2968,7 +3003,9 @@ async function renderRoadReports() {
       '<div class="row-right" style="text-align:right">' +
         '<span style="font-size:10px;font-weight:600;color:' + meta.color + ';border:1px solid ' + meta.color + ';border-radius:4px;padding:2px 7px;white-space:nowrap">' + meta.label + '</span>' +
         '<div style="margin-top:5px;display:flex;gap:6px;justify-content:flex-end">' +
-          '<button onclick="confirmRoadStatus(' + i + ')" title="Confirm this is still the road\'s condition" style="background:transparent;border:1px solid #30363d;border-radius:5px;color:#7d8590;cursor:pointer;font-size:10px;padding:2px 7px">👍 Confirm</button>' +
+          (confirmedRoads()[g.key]
+            ? '<span title="You confirmed this" style="border:1px solid #3fb950;border-radius:5px;color:#3fb950;font-size:10px;padding:2px 7px">👍 Confirmed</span>'
+            : '<button onclick="confirmRoadStatus(' + i + ')" title="Confirm this is still the road\'s condition" style="background:transparent;border:1px solid #30363d;border-radius:5px;color:#7d8590;cursor:pointer;font-size:10px;padding:2px 7px">👍 Confirm</button>') +
           '<button onclick="clearRoadStatus(' + i + ')" title="Mark this road back to normal" style="background:transparent;border:1px solid #30363d;border-radius:5px;color:#7d8590;cursor:pointer;font-size:10px;padding:2px 7px">✔️ Cleared</button>' +
         '</div>' +
       '</div>' +
@@ -3009,7 +3046,10 @@ async function postRoadLifecycle(group, tag, msgText) {
 
 function confirmRoadStatus(i) {
   const g = _roadGroups[i];
-  if (g) postRoadLifecycle(g, '[confirm]', 'Status confirmed');
+  if (!g) return;
+  if (confirmedRoads()[g.key]) { try { showToast('You already confirmed this road.'); } catch (e) {} return; }
+  markRoadConfirmed(g.key);
+  postRoadLifecycle(g, '[confirm]', 'Status confirmed');
 }
 
 async function clearRoadStatus(i) {
