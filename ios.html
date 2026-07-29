@@ -8273,9 +8273,9 @@ async function enrichEventsWithRoutes(events) {
   if (changed && window.renderEventRows) window.renderEventRows();
 }
 
-// The route drawn as an inline SVG path rather than a live map. Six map
-// instances in a list would cost far more than six <path> elements, and this
-// needs no tiles, no network and no map API budget.
+// The route drawn as a responsive inline SVG path rather than a live map.
+// Six map instances in a list would cost far more than six <path> elements,
+// while this fills the card without tiles, network traffic or map API budget.
 function routeThumbSVG(polyline, w, h) {
   const pts = decodePolyline(polyline);
   if (!pts || pts.length < 2) return '';
@@ -8289,7 +8289,7 @@ function routeThumbSVG(polyline, w, h) {
   const lngScale = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180) || 1;
   const spanX = ((maxLng - minLng) * lngScale) || 1e-6;
   const spanY = (maxLat - minLat) || 1e-6;
-  const pad = 3;
+  const pad = Math.max(8, Math.min(w, h) * 0.05);
   const scale = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanY);
   const offX = (w - spanX * scale) / 2, offY = (h - spanY * scale) / 2;
   const d = pts.map(function (pt, i) {
@@ -8297,9 +8297,9 @@ function routeThumbSVG(polyline, w, h) {
     const y = h - (offY + (pt[0] - minLat) * scale); // SVG y grows downward
     return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
   }).join(' ');
-  return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" aria-hidden="true" ' +
-    'style="display:block;flex-shrink:0;background:#0d1117;border:1px solid #21262d;border-radius:6px">' +
-    '<path d="' + d + '" fill="none" stroke="#FC4C02" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>';
+  return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="xMidYMid meet" aria-hidden="true" ' +
+    'style="display:block;width:100%;height:auto;background:#0d1117;border:1px solid #21262d;border-radius:10px">' +
+    '<path d="' + d + '" fill="none" stroke="#FC4C02" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/></svg>';
 }
 
 // ==================== CLUB EVENTS ====================
@@ -8764,35 +8764,36 @@ async function loadClubEvents(forceFresh) {
       const desc = e.description || '';
       const descShort = desc.slice(0, 80);
 
-      return `<div class="row" style="${urgent}padding-left:${daysUntil<=1?'10px':'0'}">
-        <div>
-          <div class="row-name" style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:10px;background:${typeColor}22;color:${typeColor};border:1px solid ${typeColor};border-radius:4px;padding:1px 6px;font-weight:600">${typeLabel}</span>
-            <a href="${e.external ? escapeHTML(e.url) : stravaClubHref(e)}" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="${e.external ? 'Opens the source calendar site' : 'Opens this club\'s main page on Strava - exact event links aren\'t reliably constructable from the API, and /group_events sub-paths 404 on Strava\'s current site'}">${escapeHTML(e.title || 'Untitled event')}</a>
+      return `<div class="row" style="${urgent}display:block;padding-left:${daysUntil<=1?'10px':'0'}">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+          <div style="flex:1;min-width:0">
+            <div class="row-name" style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:10px;background:${typeColor}22;color:${typeColor};border:1px solid ${typeColor};border-radius:4px;padding:1px 6px;font-weight:600">${typeLabel}</span>
+              <a href="${e.external ? escapeHTML(e.url) : stravaClubHref(e)}" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="${e.external ? 'Opens the source calendar site' : 'Opens this club\'s main page on Strava - exact event links aren\'t reliably constructable from the API, and /group_events sub-paths 404 on Strava\'s current site'}">${escapeHTML(e.title || 'Untitled event')}</a>
+            </div>
+            <div class="row-meta">${dateStr} at ${timeStr} &middot; ${escapeHTML(e.club_name || 'Club')}${e.projected ? ' &middot; <span style="color:#d29922">expected</span>' : ''}</div>
+            ${desc ? `<div style="font-size:11px;color:#444d56;margin-top:2px">${escapeHTML(descShort)}${desc.length>80?'...':''}</div>` : ''}
           </div>
-          <div class="row-meta">${dateStr} at ${timeStr} &middot; ${escapeHTML(e.club_name || 'Club')}${e.projected ? ' &middot; <span style="color:#d29922">expected</span>' : ''}</div>
-          ${desc ? `<div style="font-size:11px;color:#444d56;margin-top:2px">${escapeHTML(descShort)}${desc.length>80?'...':''}</div>` : ''}
-          ${(() => {
-            const rt = e._route;
-            if (!rt || (!rt.distanceMi && !rt.polyline)) return '';
-            const stats = [
-              rt.distanceMi ? `<span style="color:#e6edf3;font-weight:600">${rt.distanceMi.toFixed(1)} mi</span>` : '',
-              rt.elevationFt ? `${Math.round(rt.elevationFt).toLocaleString()} ft` : ''
-            ].filter(Boolean).join(' &middot; ');
-            return `<div style="display:flex;align-items:center;gap:9px;margin-top:6px">
-              ${rt.polyline ? routeThumbSVG(rt.polyline, 62, 38) : ''}
-              <div style="font-size:11px;color:#7d8590">${stats}</div>
-            </div>`;
-          })()}
+          <div class="row-right" style="text-align:right;flex-shrink:0">
+            <div style="font-size:13px;font-weight:500;color:${daysUntil<=1?'#C9A227':'#7d8590'}">${isToday?'Today':isTomorrow?'Tomorrow':'in '+daysUntil+'d'}</div>
+            ${e.athlete_count ? `<small>${e.athlete_count} going</small>` : ''}
+            <button type="button" onclick="toggleRideRsvp('${rideKey(e).replace(/'/g, "\\'")}')"
+              style="margin-top:6px;background:${isGoing(e) ? '#1a2d1f' : 'transparent'};border:1px solid ${isGoing(e) ? '#3fb950' : '#30363d'};color:${isGoing(e) ? '#3fb950' : '#7d8590'};border-radius:999px;padding:4px 12px;font-size:11px;cursor:pointer;white-space:nowrap">
+              ${isGoing(e) ? '\u2713 Going' : "I'm going"}
+            </button>
+          </div>
         </div>
-        <div class="row-right" style="text-align:right">
-          <div style="font-size:13px;font-weight:500;color:${daysUntil<=1?'#C9A227':'#7d8590'}">${isToday?'Today':isTomorrow?'Tomorrow':'in '+daysUntil+'d'}</div>
-          ${e.athlete_count ? `<small>${e.athlete_count} going</small>` : ''}
-          <button type="button" onclick="toggleRideRsvp('${rideKey(e).replace(/'/g, "\\'")}')"
-            style="margin-top:6px;background:${isGoing(e) ? '#1a2d1f' : 'transparent'};border:1px solid ${isGoing(e) ? '#3fb950' : '#30363d'};color:${isGoing(e) ? '#3fb950' : '#7d8590'};border-radius:999px;padding:4px 12px;font-size:11px;cursor:pointer;white-space:nowrap">
-            ${isGoing(e) ? '\u2713 Going' : "I'm going"}
-          </button>
-        </div>
+        ${(() => {
+          const rt = e._route;
+          if (!rt || (!rt.distanceMi && !rt.elevationFt && !rt.polyline)) return '';
+          return `<div style="margin-top:12px">
+            <div style="display:flex;align-items:baseline;gap:20px;margin-bottom:${rt.polyline?'9px':'0'};font-size:14px;color:#7d8590">
+              ${rt.distanceMi ? `<span><strong style="font-size:18px;color:#e6edf3">${rt.distanceMi.toFixed(1)}</strong> mi</span>` : ''}
+              ${rt.elevationFt ? `<span><strong style="font-size:18px;color:#e6edf3">${Math.round(rt.elevationFt).toLocaleString()}</strong> ft climbing</span>` : ''}
+            </div>
+            ${rt.polyline ? routeThumbSVG(rt.polyline, 640, 280) : ''}
+          </div>`;
+        })()}
       </div>`;
       }).join('');
     };
