@@ -7684,16 +7684,56 @@ async function loadClubEvents(forceFresh) {
     // the ENTIRE recurring series - a weekly club ride would disappear
     // completely because its stale first entry pointed at last week.
     const now = new Date();
+    // Strava has returned occurrence dates as ISO strings and, on some
+    // endpoints, as epoch seconds. new Date(1753812600) reads a seconds value
+    // as MILLISECONDS and lands in 1970, so every occurrence would look long
+    // past and the event would vanish while still counting as "scheduled".
+    // Normalise before comparing rather than assuming one shape.
+    const parseOccurrence = function (v) {
+      if (v == null) return null;
+      if (typeof v === 'number') return new Date(v < 1e11 ? v * 1000 : v);
+      if (typeof v === 'string' && /^\d+$/.test(v.trim())) {
+        const n = parseInt(v, 10);
+        return new Date(n < 1e11 ? n * 1000 : n);
+      }
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? null : d;
+    };
     const allUpcoming = allEvents
       .map(e => {
         const future = (e.upcoming_occurrences || [])
-          .map(d => new Date(d))
-          .filter(d => !isNaN(d.getTime()) && d >= now)
+          .map(parseOccurrence)
+          .filter(d => d && !isNaN(d.getTime()) && d >= now)
           .sort((a, b) => a - b);
         return future.length ? Object.assign({}, e, { nextDate: future[0] }) : null;
       })
       .filter(Boolean)
       .sort((a,b) => a.nextDate - b.nextDate);
+
+    // Per-club breakdown of what actually survived the future filter, so a
+    // missing club ride can be diagnosed from the phone: "446 scheduled" told
+    // us the events existed but not that none of their dates were upcoming.
+    if (eventDiag && eventDiag.clubs.length) {
+      eventDiag.clubs.forEach(function (c) {
+        const mine = allEvents.filter(function (e) { return e.club_name === c.name; });
+        const futures = [];
+        mine.forEach(function (e) {
+          (e.upcoming_occurrences || []).forEach(function (o) {
+            const d = parseOccurrence(o);
+            if (d && !isNaN(d.getTime())) futures.push(d);
+          });
+        });
+        const ahead = futures.filter(function (d) { return d >= now; }).sort(function (a,b){ return a-b; });
+        const behind = futures.filter(function (d) { return d < now; }).sort(function (a,b){ return b-a; });
+        c.futureEvents = mine.filter(function (e) {
+          return (e.upcoming_occurrences || []).some(function (o) {
+            const d = parseOccurrence(o); return d && d >= now;
+          });
+        }).length;
+        c.soonest = ahead.length ? ahead[0].toLocaleDateString('en-US',{month:'short',day:'numeric'}) : null;
+        c.latestPast = behind.length ? behind[0].toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : null;
+      });
+    }
 
     // Current week boundary (Monday-Sunday) for the Livelo/WolfPack week filter
     const weekStart = new Date(now); { const d = now.getDay(); weekStart.setDate(now.getDate() - (d===0?6:d-1)); } weekStart.setHours(0,0,0,0);
@@ -7863,9 +7903,14 @@ async function loadClubEvents(forceFresh) {
             (eventDiag.skipped ? ' \u00b7 ' + eventDiag.skipped + ' skipped' : '') +
             (eventDiag.failed ? ' \u00b7 ' + eventDiag.failed + ' failed' : '') + '</summary>' +
           '<div style="font-size:11px;color:#57606a;padding:6px 0 0">' +
-            eventDiag.clubs.map(c => escapeHTML(c.name) + ' \u2014 ' +
-              (c.ok ? (c.total + ' events, ' + c.upcoming + ' scheduled') : ('failed: ' + escapeHTML(String(c.status))))
-            ).join('<br>') +
+            eventDiag.clubs.map(function (c) {
+              if (!c.ok) return escapeHTML(c.name) + ' \u2014 failed: ' + escapeHTML(String(c.status));
+              var line = escapeHTML(c.name) + ' \u2014 ' + c.total + ' events, ' +
+                (c.futureEvents != null ? c.futureEvents : '?') + ' upcoming';
+              if (c.soonest) line += ' (next ' + escapeHTML(c.soonest) + ')';
+              else if (c.latestPast) line += ', newest date ' + escapeHTML(c.latestPast) + ' \u2014 all past';
+              return line;
+            }).join('<br>') +
             (eventDiag.skipped ? '<br><span style="color:#d29922">' + eventDiag.skipped + ' club(s) not checked \u2014 deselect some under Settings \u203a Group events.</span>' : '') +
           '</div>';
         evList.appendChild(diag);
