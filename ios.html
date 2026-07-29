@@ -266,8 +266,8 @@ body.native-app .native-only { display: flex !important; }
   .section.detail-returning .widget-grid { animation: none; }
 }
 
-/* LOG SWIPE DECK - the Log page is five full-size cards you swipe between
-   horizontally (calendar, recent, totals, gear, crew) instead of a long
+/* LOG SWIPE DECK - the Log page is four full-size cards you swipe between
+   horizontally (calendar, recent, totals, gear) instead of a long
    vertical scroll. Native touch swipe via scroll-snap; dots + arrows drive it
    too. Each panel is a fixed-height pane that scrolls internally, so the dots
    and the card you're on stay put no matter how long the content is. */
@@ -281,11 +281,11 @@ body.native-app .native-only { display: flex !important; }
 .swipe-deck { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; scrollbar-width: none; gap: 0; }
 .swipe-deck::-webkit-scrollbar { display: none; }
 .swipe-deck > .card { flex: 0 0 100%; width: 100%; scroll-snap-align: start; scroll-snap-stop: always; height: 72vh; height: 72dvh; min-height: 340px; overflow-y: auto; -webkit-overflow-scrolling: touch; margin: 0 !important; }
-/* Swipe order without moving the big HTML blocks: gear second-to-last, crew
-   last. Everything else keeps DOM order (order:0). The deck's JS reads panels
+.swipe-deck > .card[hidden] { display: none !important; }
+/* Swipe order without moving the big HTML blocks: gear is last.
+   Everything else keeps DOM order (order:0). The deck's JS reads panels
    by on-screen position, so dots and the label follow this, not the DOM. */
 #collapse-gear { order: 4; }
-#collapse-crew { order: 5; }
 /* Scout: the segment-hunter map leads the deck; everything else keeps DOM order. */
 #scout-map-card { order: -1; }
 /* "Full size" means never collapsed inside the deck: carets off, bodies open
@@ -1028,7 +1028,7 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
 
 <!-- ACTIVITIES -->
 <div id="section-activities" class="section">
-  <div class="section-header"><h2>Log</h2><p>Your full history — swipe between calendar, activities, career totals, gear, and crew.</p></div>
+  <div class="section-header"><h2>Log</h2><p>Your full history — swipe between calendar, activities, career totals, and gear.</p></div>
 
   <div class="swipe-deck-wrap">
     <div class="swipe-nav">
@@ -1080,7 +1080,9 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
 
 
 
-  <div class="card" id="collapse-crew" style="margin-top:2rem" data-deck-title="Crew">
+  <!-- Kept dormant so historical labels can be restored if Strava exposes
+       reliable companion data in a future public API. -->
+  <div class="card" id="collapse-crew" style="margin-top:2rem" data-deck-title="Crew" hidden aria-hidden="true">
     <div class="card-title collapse-head" onclick="toggleCollapse('crew')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Crew</div></div>
     <div class="collapse-body">
     <p style="font-size:12px;color:#7d8590;margin-bottom:1rem">Solo vs group activities, ride crews like LiVelo and Wolfpack, and people or keywords found in your activity titles/descriptions.</p>
@@ -2788,7 +2790,7 @@ function showSection(name) {
   if (name === 'map' && !roadReportsLoaded) { roadReportsLoaded = true; loadRoadReports(); }
   if (name === 'map') { setTimeout(function(){ try { initPalmaresMap(); renderPalmaresMap(); renderTailwindSegments(currentWxDayIdx); applyCollapseState(); } catch(e) { console.error('renderMap:', e); } }, 80); }
   if (name === 'settings') { try { loadSettingsUI(); } catch(e) { console.error('loadSettingsUI:', e); } }
-  if (name === 'activities' && allActivities.length) { try { renderActivities(); renderHeatmap(); renderCollaborators(collabFilter||'all'); renderGear(); renderStreaks(); applyCollapseState(); } catch(e) { console.error('renderActivities:', e); } }
+  if (name === 'activities' && allActivities.length) { try { renderActivities(); renderHeatmap(); renderGear(); renderStreaks(); applyCollapseState(); } catch(e) { console.error('renderActivities:', e); } }
   if (name === 'activities') { setTimeout(function(){ initDeck('log-deck'); }, 60); }
   if (name === 'map') { setTimeout(function(){ initDeck('scout-deck'); }, 120); }
   if (name === 'performance') { setTimeout(function(){ initDeck('performance-deck'); }, 60); }
@@ -3241,7 +3243,6 @@ async function syncNow() {
       renderPerformance();
       renderActivities();
       renderGear();
-      renderCollaborators(collabFilter || 'all');
     }
 
     if (newOnes.length) {
@@ -3732,7 +3733,6 @@ async function loadAll(token) {
   renderPerformance();
   renderActivities();
   renderGear();
-  renderCollaborators('all');
 
   // First launch: offer the imported profile for confirmation. Deferred to
   // here so activities (for observed max HR) and any Apple Health data have
@@ -6745,13 +6745,13 @@ function markSwipeStrips() { /* intentionally a no-op - see comment above */ }
 // Generic horizontal card deck: full-size cards you swipe between (Log, Scout).
 // Native touch swipe comes free from CSS scroll-snap; this drives the dots and
 // arrow buttons and lets a tap jump to any card. Panels are read by on-screen
-// position (offsetLeft), not DOM order, so CSS `order` (e.g. gear before crew
-// on Log) is respected everywhere. Everything is keyed by the deck element's
+// position (offsetLeft), not DOM order, so CSS `order` (e.g. gear last on Log)
+// is respected everywhere. Everything is keyed by the deck element's
 // id, so any number of decks coexist. Controls are <id>-prev / <id>-next /
 // <id>-dots.
 function deckPanels(deck) {
   if (!deck) return [];
-  return Array.from(deck.querySelectorAll(':scope > .card'))
+  return Array.from(deck.querySelectorAll(':scope > .card:not([hidden])'))
     .sort((a, b) => a.offsetLeft - b.offsetLeft);
 }
 function deckIndex(deck) {
@@ -6799,7 +6799,7 @@ function deckOnScroll(deckId) {
 function initDeck(deckId) {
   if (!document.getElementById(deckId)) return;
   deckUpdate(deckId);
-  // Async renders (lists, gear, crew, the map) land after this; re-sync so the
+  // Async renders (lists, gear, the map) land after this; re-sync so the
   // dots are right even if a panel's width settled late.
   setTimeout(function () { deckUpdate(deckId); }, 300);
 }
