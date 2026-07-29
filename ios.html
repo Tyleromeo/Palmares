@@ -475,6 +475,18 @@ body.native-app .native-only { display: flex !important; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading-text { font-size: 14px; color: #7d8590; }
 .loading-sub { font-size: 12px; color: #444d56; margin-top: 4px; }
+#loading-highlights { display: none; max-width: 420px; margin: 1.75rem auto 0; text-align: left; }
+.lh-eyebrow { font-size: 11px; color: #57606a; text-transform: uppercase; letter-spacing: .06em; text-align: center; margin-bottom: 10px; }
+.lh-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 16px 18px; min-height: 118px; }
+.lh-card.lh-fade { opacity: 0; transform: translateY(6px); }
+.lh-card { transition: opacity .28s ease, transform .28s ease; }
+.lh-icon { font-size: 22px; line-height: 1; margin-bottom: 8px; }
+.lh-title { font-size: 15px; font-weight: 600; color: #e6edf3; margin-bottom: 4px; }
+.lh-body { font-size: 13px; color: #7d8590; line-height: 1.45; }
+.lh-dots { display: flex; gap: 6px; justify-content: center; margin-top: 12px; }
+.lh-dot { width: 6px; height: 6px; border-radius: 50%; background: #30363d; transition: background .2s; }
+.lh-dot.on { background: #C9A227; }
+@media (prefers-reduced-motion: reduce) { .lh-card { transition: none; } }
 .loading-progress { display:none; width:min(320px,80vw); height:8px; margin:14px auto 0; overflow:hidden; background:#21262d; border-radius:999px; }
 .loading-progress-fill { width:0; height:100%; background:#C9A227; border-radius:inherit; transition:width .2s ease; }
 
@@ -768,6 +780,18 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
   <div class="loading-sub" id="loading-sub"></div>
   <div class="loading-progress" id="loading-progress" role="progressbar" aria-label="Activity import progress" aria-valuemin="0" aria-valuemax="100">
     <div class="loading-progress-fill" id="loading-progress-fill"></div>
+  </div>
+  <!-- The first import walks many pages of Strava history and can take a
+       while. Rather than a spinner over a blank screen, show what the app
+       will do with all that data once it lands. -->
+  <div id="loading-highlights" aria-live="polite">
+    <div class="lh-eyebrow">While we import your history</div>
+    <div class="lh-card" id="lh-card">
+      <div class="lh-icon" id="lh-icon"></div>
+      <div class="lh-title" id="lh-title"></div>
+      <div class="lh-body" id="lh-body"></div>
+    </div>
+    <div class="lh-dots" id="lh-dots"></div>
   </div>
 </div>
 
@@ -9490,10 +9514,65 @@ function computeMetrics(rides) {
   return {ctl:Math.round(ctl),atl:Math.round(atl),tsb:Math.round(ctl-atl),prevCtl:Math.round(prevCtl),tsbWeek:tsbWeek};
 }
 
+// What Palmarès does with the history it's importing. Shown on the loading
+// screen so a long first sync reads as anticipation rather than dead time.
+const LOADING_HIGHLIGHTS = [
+  { icon: '🔥', title: 'Streaks',
+    body: 'Daily and weekly streaks, what they are made of by sport, and how far you are from your all-time best.' },
+  { icon: '🧭', title: "Today's coaching",
+    body: 'Fitness, fatigue and form each morning, with a straight answer on whether to push or back off - sharper still once Apple Health adds your sleep and HRV.' },
+  { icon: '🏆', title: 'Your Palmarès',
+    body: 'Every KOM and Top 10 you hold, split by ride and run, ranked by the towns you have collected them in.' },
+  { icon: '💨', title: 'Tailwind segments',
+    body: 'Which segments the wind actually favours right now, scored along the real shape of each one rather than a straight line.' },
+  { icon: '🚧', title: 'Road work reports',
+    body: 'Freshly paved roads worth seeking out and stripped ones worth avoiding, shared by riders near you.' }
+];
+
+let _lhTimer = null, _lhIndex = 0;
+
+function startLoadingHighlights() {
+  const host = document.getElementById('loading-highlights');
+  if (!host || _lhTimer) return;
+  host.style.display = 'block';
+  const dots = document.getElementById('lh-dots');
+  if (dots) dots.innerHTML = LOADING_HIGHLIGHTS.map(function (_, i) {
+    return '<div class="lh-dot' + (i === 0 ? ' on' : '') + '"></div>';
+  }).join('');
+  _lhIndex = 0;
+  paintLoadingHighlight();
+  _lhTimer = setInterval(function () {
+    _lhIndex = (_lhIndex + 1) % LOADING_HIGHLIGHTS.length;
+    const card = document.getElementById('lh-card');
+    if (!card) return;
+    // Fade out, swap, fade back in, so it reads as a deck rather than a jump.
+    card.classList.add('lh-fade');
+    setTimeout(function () { paintLoadingHighlight(); card.classList.remove('lh-fade'); }, 280);
+  }, 4200);
+}
+
+function paintLoadingHighlight() {
+  const h = LOADING_HIGHLIGHTS[_lhIndex];
+  const icon = document.getElementById('lh-icon'), title = document.getElementById('lh-title'), body = document.getElementById('lh-body');
+  if (icon) icon.textContent = h.icon;
+  if (title) title.textContent = h.title;
+  if (body) body.textContent = h.body;
+  document.querySelectorAll('#lh-dots .lh-dot').forEach(function (d, i) { d.classList.toggle('on', i === _lhIndex); });
+}
+
+function stopLoadingHighlights() {
+  if (_lhTimer) { clearInterval(_lhTimer); _lhTimer = null; }
+  const host = document.getElementById('loading-highlights');
+  if (host) host.style.display = 'none';
+}
+
 function setLoading(text, sub='', progress=null) {
   document.getElementById('connect-view').style.display='none';
   document.getElementById('loading').style.display='block';
   document.getElementById('loading-text').textContent=text;
+  // Only worth showing for the slow path: a cached load is over in a moment
+  // and a carousel would just flash past.
+  if (/activit/i.test(text) || Number.isFinite(progress)) startLoadingHighlights();
   document.getElementById('loading-sub').textContent=sub;
   const progressBar = document.getElementById('loading-progress');
   const progressFill = document.getElementById('loading-progress-fill');
@@ -9509,7 +9588,7 @@ function setLoading(text, sub='', progress=null) {
   }
 }
 
-function hideLoading() { document.getElementById('loading').style.display='none'; }
+function hideLoading() { stopLoadingHighlights(); document.getElementById('loading').style.display='none'; }
 
 function showError(msg) {
   hideLoading();
