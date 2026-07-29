@@ -4643,56 +4643,89 @@ async function checkActivityAchievements(activity) {
 function renderCoaching(metrics, allActs) {
   const area = document.getElementById('coaching-area');
   let items = [];
-  const {ctl, atl, tsb} = metrics;
+  const {ctl, atl, tsb, prevCtl} = metrics;
   const now = new Date();
 
-  // ---- Form / Fitness (existing rules) ----
-  if (tsb < -30) items.push({title:`Form ${tsb} — rest or Z1-Z2 only`, text:'Deep in overreaching. No segment hunting, no hard climbs. 2-3 easy days will drop fatigue fast.'});
-  else if (tsb < -10) items.push({title:'Carry fatigue — moderate effort', text:'Z2-Z3 is appropriate. Avoid maximal efforts. You\'re building but need patience with recovery.'});
-  else if (tsb > 10) items.push({title:`Form +${tsb} — good day to push`, text:'This is when PRs happen. Fresh legs on absorbed fitness. Consider targeting segments today.'});
-  else items.push({title:'Balanced — train normally', text:'Form near neutral. Normal training ride appropriate. Can push on climbs if feeling good.'});
+  const dayLoad = buildDayMap(allActs);
+  const loadForOffset = offset => {
+    const d = new Date(now); d.setDate(d.getDate() - offset);
+    return dayLoad[localDateKey(d)] || 0;
+  };
+  const loadWindow = (start, days) => {
+    let total = 0;
+    for (let i = start; i < start + days; i++) total += loadForOffset(i);
+    return total;
+  };
+  const load7 = loadWindow(0, 7);
+  const previous7 = loadWindow(7, 7);
+  const loadChangePct = previous7 > 0 ? Math.round(((load7 - previous7) / previous7) * 100) : null;
+  const hardDayThreshold = Math.max(60, Math.round(ctl * 1.25));
+  const hardDays4 = [0,1,2,3].filter(i => loadForOffset(i) >= hardDayThreshold).length;
 
-  if (ctl < 20) items.push({title:'Build base first', text:'Focus on consistent volume before intensity. Max 5-7 CTL points per week to avoid overload.'});
-  else if (ctl > 55) items.push({title:'Strong base — protect it', text:'You\'re in excellent shape. Smart recovery between efforts keeps you here.'});
-  else items.push({title:'Fitness building', text:`CTL ${ctl} and climbing. On track for peak shape in 4-6 weeks if consistent and healthy.`});
-
-  // ---- Consecutive training days / rest day pattern ----
   const activeDaySet = {};
   allActs.forEach(a => { activeDaySet[activityLocalDateKey(a)] = true; });
+  const oldestActivityTime = allActs.reduce((oldest, a) => {
+    const t = new Date(a.start_date).getTime();
+    return Number.isFinite(t) ? Math.min(oldest, t) : oldest;
+  }, now.getTime());
+  const maxStreakLookback = Math.min(10000, Math.ceil((now.getTime() - oldestActivityTime) / 86400000) + 2);
+  const streakStartOffset = activeDaySet[localDateKey(now)] ? 0 : 1;
   let consecutiveDays = 0;
-  for (let i = 0; i < 30; i++) {
+  for (let i = streakStartOffset; i < maxStreakLookback; i++) {
     const d = new Date(now); d.setDate(d.getDate()-i);
     const key = localDateKey(d);
     if (activeDaySet[key]) consecutiveDays++;
     else break;
   }
-  let daysSinceRest = consecutiveDays;
-  if (daysSinceRest >= 10) {
-    items.push({title:`${daysSinceRest} days without rest`, text:'Extended streaks build fitness fast but raise injury and illness risk. Consider a deliberate easy or off day in the next 48 hours, especially if Form is already negative.'});
-  } else if (daysSinceRest >= 6) {
-    items.push({title:`${daysSinceRest}-day active streak`, text:'Solid consistency. Keep an eye on how the body feels; a rest day in the next day or two would be a good proactive call rather than waiting for a forced one.'});
+
+  const sortedActs = [...allActs].sort((a,b) => new Date(b.start_date) - new Date(a.start_date));
+  const latest = sortedActs[0] || null;
+  const latestLoad = latest ? estimateTSS(latest) : 0;
+  const latestName = latest ? (latest.name || activitySportKey(latest) || 'activity') : 'activity';
+  const hk = healthKitData || {};
+  const slept = hk.sleepHours != null ? Math.round(hk.sleepHours * 10) / 10 : null;
+  const hrvRatio = hk.hrv7day && hk.hrv30day ? hk.hrv7day / hk.hrv30day : null;
+  const hrvPct = hrvRatio ? Math.round(Math.abs(1 - hrvRatio) * 100) : null;
+
+  let primary;
+  if ((hrvRatio && hrvRatio < 0.85) || (slept != null && slept < 6)) {
+    const signals = [];
+    if (hrvRatio && hrvRatio < 0.85) signals.push(`HRV ${hrvPct}% below baseline`);
+    if (slept != null && slept < 6) signals.push(`${slept}h sleep`);
+    primary = {title:'Recovery signals say keep today easy', text:`${signals.join(' and ')}${consecutiveDays ? `, after ${consecutiveDays} consecutive active days` : ''}. Keep it Z1-Z2 or take the day off; Form is ${tsb} and the last 7 days total ${load7} load points.`};
+  } else if (consecutiveDays >= 21 && (tsb < -5 || hardDays4 >= 2 || (loadChangePct != null && loadChangePct > 15))) {
+    primary = {title:`Recovery day recommended — ${consecutiveDays}-day active streak`, text:`You have trained ${consecutiveDays} consecutive days, Form is ${tsb}, and your 7-day load is ${load7}${loadChangePct != null ? ` (${loadChangePct >= 0 ? '+' : ''}${loadChangePct}% vs the prior 7 days)` : ''}. A no-training day—or genuinely easy Z1 movement—is the clearest way to absorb the block.`};
+  } else if (tsb < -30) {
+    primary = {title:`Recovery first — Form ${tsb}`, text:`Fatigue ${atl} is well above Fitness ${ctl}. Skip maximal work today; rest or Z1-Z2 gives the current training block room to become fitness.`};
+  } else if (hardDays4 >= 2 && tsb < 5) {
+    primary = {title:`Absorb the work — ${hardDays4} hard days in the last 4`, text:`Recent load is clustered and Form is ${tsb}. Choose an easy aerobic session today rather than adding a third demanding day.`};
+  } else if (loadChangePct != null && loadChangePct > 30 && load7 > 100) {
+    primary = {title:`Hold the line — 7-day load is up ${loadChangePct}%`, text:`You logged ${load7} load points versus ${previous7} in the prior 7 days. Keep today's duration or intensity modest instead of extending the jump.`};
+  } else if (tsb < -10) {
+    primary = {title:`Aerobic day — Form ${tsb}, 7-day load ${load7}`, text:`Fitness is ${ctl} with Fatigue at ${atl}. Z1-Z2 is the useful target today; avoid maximal efforts until Form starts moving back toward neutral.`};
+  } else if (tsb > 10 && hardDays4 === 0) {
+    primary = {title:`Quality window open — Form +${tsb}`, text:`You are fresh, with no high-load day in the last four. If sleep and how you feel agree, today is a reasonable day for planned intensity or a focused segment effort.`};
+  } else {
+    primary = {title:`Balanced today — Form ${tsb}`, text:`Your latest session, “${latestName},” added about ${latestLoad} load points. The last 7 days total ${load7}; normal training is appropriate, adjusted to how the warm-up feels.`};
   }
+  items.push(primary);
 
-  // ---- Weekly volume trend: this week vs last week ----
-  const thisWeekStart = new Date(now); { const d = now.getDay(); thisWeekStart.setDate(now.getDate() - (d===0?6:d-1)); } thisWeekStart.setHours(0,0,0,0);
-  const lastWeekStart = new Date(thisWeekStart); lastWeekStart.setDate(lastWeekStart.getDate()-7);
-  const twoWeeksAgoStart = new Date(thisWeekStart); twoWeeksAgoStart.setDate(twoWeeksAgoStart.getDate()-14);
+  if (consecutiveDays >= 6) {
+    items.push({title:`${consecutiveDays} consecutive active days`, text:hardDays4 ? `${hardDays4} of the last 4 days crossed your current high-load threshold of ${hardDayThreshold}. Consistency is strong; recovery quality matters more as demanding days cluster.` : `None of the last 4 days crossed your current high-load threshold of ${hardDayThreshold}. The streak is long, but the recent work has been controlled.`});
+  }
+  if (loadChangePct != null) {
+    const direction = loadChangePct > 10 ? 'up' : loadChangePct < -10 ? 'down' : 'steady';
+    items.push({title:`Rolling load ${direction}: ${load7} vs ${previous7}`, text:`Your most recent 7 days are ${Math.abs(loadChangePct)}% ${loadChangePct >= 0 ? 'above' : 'below'} the prior 7. Rolling windows compare equal-length periods, so this remains meaningful early in the week.`});
+  }
+  const ctlChange = ctl - prevCtl;
+  items.push({title:`Fitness ${ctlChange > 0 ? 'building' : ctlChange < 0 ? 'easing' : 'holding'} — CTL ${ctl}`, text:`Fitness changed ${ctlChange >= 0 ? '+' : ''}${ctlChange} over the last week while Fatigue is ${atl}. ${ctlChange > 3 ? 'That is a meaningful ramp; protect it with recovery.' : ctlChange < -2 ? 'This can be useful recovery if it is intentional.' : 'The current training load is broadly stable.'}`});
 
-  const thisWeekActs = allActs.filter(a => new Date(a.start_date) >= thisWeekStart);
-  const lastWeekActs = allActs.filter(a => new Date(a.start_date) >= lastWeekStart && new Date(a.start_date) < thisWeekStart);
-  const twoWeeksAgoActs = allActs.filter(a => new Date(a.start_date) >= twoWeeksAgoStart && new Date(a.start_date) < lastWeekStart);
-
-  const thisWeekMi = thisWeekActs.reduce((s,a)=>s+a.distance,0)/1609.34;
-  const lastWeekMi = lastWeekActs.reduce((s,a)=>s+a.distance,0)/1609.34;
-  const twoWeeksAgoMi = twoWeeksAgoActs.reduce((s,a)=>s+a.distance,0)/1609.34;
-
-  if (lastWeekMi > 5) { // only compare if there's a meaningful baseline
-    const pctChange = Math.round(((thisWeekMi - lastWeekMi) / lastWeekMi) * 100);
-    if (pctChange > 40) {
-      items.push({title:`Volume up ${pctChange}% vs last week`, text:`This week's ${Math.round(thisWeekMi)} mi vs last week's ${Math.round(lastWeekMi)} mi is a big jump. The general guidance is to avoid more than ~10% week-over-week increases to limit injury risk, large jumps like this are worth following with an easier week.`});
-    } else if (pctChange < -40 && twoWeeksAgoMi > 5) {
-      items.push({title:`Volume down ${Math.abs(pctChange)}% vs last week`, text:`A notable drop from ${Math.round(lastWeekMi)} mi to ${Math.round(thisWeekMi)} mi so far. If this is planned recovery, good. If it's from time constraints or fatigue, worth checking in on whether anything needs adjusting.`});
-    }
+  const cutoff14 = new Date(now); cutoff14.setDate(cutoff14.getDate()-13); cutoff14.setHours(0,0,0,0);
+  const recent14 = allActs.filter(a => new Date(a.start_date) >= cutoff14);
+  const rideHours = recent14.filter(a => ['road','gravel','mtb','virtualride','ebikeride','handcycle'].includes(activitySportKey(a))).reduce((s,a)=>s+(a.moving_time||0),0)/3600;
+  const runHours = recent14.filter(a => ['run','trailrun','virtualrun'].includes(activitySportKey(a))).reduce((s,a)=>s+(a.moving_time||0),0)/3600;
+  if (rideHours >= 0.5 || runHours >= 0.5) {
+    items.push({title:`14-day mix: ${rideHours.toFixed(1)}h ride · ${runHours.toFixed(1)}h run`, text:rideHours > Math.max(0.25, runHours * 3) ? 'This is a ride-dominant block. If balanced durability is the goal, the next run should stay easy rather than trying to make up intensity.' : runHours > Math.max(0.25, rideHours * 3) ? 'This is a run-dominant block. Easy cycling can add aerobic time with less impact if recovery allows.' : 'Your recent ride/run mix is reasonably balanced; choose today’s sport around recovery and the next planned quality session.'});
   }
 
   // ---- VO2 trend context (reuses the same calc as the Zones page) ----
@@ -4719,32 +4752,14 @@ function renderCoaching(metrics, allActs) {
     }
   } catch(e) { /* VO2 helper not available, skip silently */ }
 
-  // ---- Recovery signals (Apple Health, via HealthMetricsReader.swift) ----
-  // Morning-of physiology beats yesterday's training math, so these go to
-  // the TOP of the coaching list. Only present inside the iOS app; the web
-  // version simply never receives the fields and skips this block.
-  const recovery = [];
-  const hk = healthKitData || {};
-  if (hk.hrv7day && hk.hrv30day) {
-    const ratio = hk.hrv7day / hk.hrv30day;
-    const pct = Math.round(Math.abs(1 - ratio) * 100);
-    if (ratio < 0.85) {
-      recovery.push({title:`HRV suppressed ${pct}% below your baseline`, text:`7-day HRV (${Math.round(hk.hrv7day)} ms) is well under your 30-day average (${Math.round(hk.hrv30day)} ms). The nervous system is under strain - a hard workout today likely digs the hole deeper. Favor Z1-Z2 regardless of how the legs feel.`});
-    } else if (ratio > 1.05 && tsb > 0) {
-      recovery.push({title:'HRV above baseline + positive form', text:`7-day HRV (${Math.round(hk.hrv7day)} ms) is running ${pct}% above your 30-day average and Form is +${tsb}. This is as primed as it gets - a genuinely good day to target something.`});
-    }
+  if (hrvRatio && hrvRatio > 1.05 && tsb > 0) {
+    items.push({title:'HRV supports today’s positive Form', text:`7-day HRV (${Math.round(hk.hrv7day)} ms) is ${hrvPct}% above your 30-day baseline (${Math.round(hk.hrv30day)} ms). That agrees with Form +${tsb}; planned quality is reasonable if the warm-up feels normal.`});
+  } else if (slept != null && slept >= 8 && tsb > 5) {
+    items.push({title:`${slept}h sleep supports a quality day`, text:`Sleep and Form +${tsb} point in the same direction. Keep the session purposeful rather than adding intensity simply because you feel fresh.`});
   }
-  if (hk.sleepHours != null) {
-    const slept = Math.round(hk.sleepHours * 10) / 10;
-    if (slept < 6) {
-      recovery.push({title:`${slept}h sleep last night`, text:'Short sleep blunts power output and raises perceived effort before you turn a pedal. Keep today aerobic and reassess tomorrow rather than forcing planned intensity.'});
-    } else if (slept >= 8 && tsb > 5) {
-      recovery.push({title:`${slept}h sleep + fresh legs`, text:'Well rested on positive form. If there was a day to chase a segment, this is it.'});
-    }
-  }
-  items = recovery.concat(items);
+  items = items.slice(0, 6);
 
-  area.innerHTML = items.map(i=>`<div class="coach-item"><div class="coach-title">${i.title}</div><div class="coach-text">${i.text}</div></div>`).join('');
+  area.innerHTML = items.map(i=>`<div class="coach-item"><div class="coach-title">${escapeHTML(i.title)}</div><div class="coach-text">${escapeHTML(i.text)}</div></div>`).join('');
 }
 
 // FITNESS CHART
