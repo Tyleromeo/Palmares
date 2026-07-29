@@ -1405,15 +1405,21 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
     <div class="collapse-body">
       <p style="font-size:12px;color:#7d8590;margin-bottom:12px">Community-reported repaving around Long Island — know which roads to avoid while they're stripped, and where the fresh tarmac is. Reports are shared with everyone using Palmarès.</p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
-        <span style="font-size:12px;color:#7d8590">Near</span>
-        <input type="text" id="road-filter-zip" placeholder="ZIP" inputmode="numeric" maxlength="5" style="width:70px;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:13px;color:#e6edf3" onchange="setRoadFilter()" />
-        <select id="road-filter-radius" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:13px;color:#e6edf3" onchange="setRoadFilter()">
+        <span style="font-size:12px;color:#7d8590">Zipcode</span>
+        <!-- Applied on Select rather than on change: typing a zip fires
+             change events mid-entry, and the radius used to apply before a
+             zip existed, so the list rebuilt (and geocoded) against a
+             half-typed filter. Enter commits too, which is what a keyboard
+             user expects from a single text field. -->
+        <input type="text" id="road-filter-zip" placeholder="ZIP" inputmode="numeric" maxlength="5" style="width:70px;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:13px;color:#e6edf3" onkeydown="if(event.key==='Enter'){event.preventDefault();setRoadFilter();}" />
+        <select id="road-filter-radius" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:13px;color:#e6edf3">
           <option value="">Any distance</option>
           <option value="5">Within 5 mi</option>
           <option value="10">Within 10 mi</option>
           <option value="25">Within 25 mi</option>
           <option value="50">Within 50 mi</option>
         </select>
+        <button type="button" onclick="setRoadFilter()" style="background:#1a2332;border:1px solid #58a6ff;border-radius:6px;padding:6px 14px;color:#58a6ff;cursor:pointer;font-size:13px">Select</button>
         <span id="road-filter-status" style="font-size:11px;color:#57606a"></span>
       </div>
       <div id="road-reports-list" style="margin-bottom:14px;font-size:13px;color:#7d8590">Loading reports...</div>
