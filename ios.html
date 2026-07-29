@@ -7643,21 +7643,33 @@ async function loadClubEvents(forceFresh) {
       console.log('Total clubs found:', clubs.length, '| Syncing:', toFetch.map(c => c.name).join(', ') || '(none)');
       for (const club of toFetch) {
         try {
-          // per_page: Strava paginates group_events at 30 by default, so a
-          // club with a long event list could push a genuine upcoming ride
-          // off the first page and out of view entirely.
-          const evResp = await fetch('https://www.strava.com/api/v3/clubs/'+club.id+'/group_events?per_page=200', {headers});
-          if (!evResp.ok) {
-            console.log('Club "'+club.name+'" (id '+club.id+'): FAILED, status', evResp.status);
-            eventDiag.clubs.push({ name: club.name, ok: false, status: evResp.status });
+          // Paginate. A single page was NOT enough: LiVelo returned 446
+          // events whose newest date was two days in the PAST while a ride
+          // scheduled for tomorrow was missing entirely - the newer events
+          // live on later pages. Keep going until a page comes back empty or
+          // short, with a cap so a huge club can't spin forever.
+          let events = [], evStatus = 0, evFailed = false, pagesFetched = 0;
+          for (let page = 1; page <= 10; page++) {
+            pagesFetched = page;
+            const evResp = await fetch('https://www.strava.com/api/v3/clubs/'+club.id+
+              '/group_events?per_page=200&page='+page, {headers});
+            if (!evResp.ok) { evStatus = evResp.status; evFailed = true; break; }
+            const chunk = await evResp.json();
+            if (!Array.isArray(chunk) || chunk.length === 0) break;
+            events = events.concat(chunk);
+            if (chunk.length < 200) break;   // short page = end of the list
+            await new Promise(function(r){setTimeout(r,200);});
+          }
+          if (evFailed) {
+            console.log('Club "'+club.name+'" (id '+club.id+'): FAILED, status', evStatus);
+            eventDiag.clubs.push({ name: club.name, ok: false, status: evStatus });
             anyClubFailed = true; eventDiag.failed++;
             continue;
           }
-          const events = await evResp.json();
           if (Array.isArray(events)) {
             const withUpcoming = events.filter(e=>e.upcoming_occurrences&&e.upcoming_occurrences.length).length;
             console.log('Club "'+club.name+'" (id '+club.id+'): OK,', events.length, 'total events,', withUpcoming, 'with upcoming occurrences');
-            eventDiag.clubs.push({ name: club.name, ok: true, total: events.length, upcoming: withUpcoming });
+            eventDiag.clubs.push({ name: club.name, ok: true, total: events.length, upcoming: withUpcoming, pages: pagesFetched });
             events.forEach(function(e) { allEvents.push(Object.assign({}, e, {club_name: club.name, club_id: club.id, club_url: club.url || null})); });
           } else {
             console.log('Club "'+club.name+'" (id '+club.id+'): unexpected response shape', events);
@@ -7905,7 +7917,8 @@ async function loadClubEvents(forceFresh) {
           '<div style="font-size:11px;color:#57606a;padding:6px 0 0">' +
             eventDiag.clubs.map(function (c) {
               if (!c.ok) return escapeHTML(c.name) + ' \u2014 failed: ' + escapeHTML(String(c.status));
-              var line = escapeHTML(c.name) + ' \u2014 ' + c.total + ' events, ' +
+              var line = escapeHTML(c.name) + ' \u2014 ' + c.total + ' events' +
+                (c.pages ? ' over ' + c.pages + 'p' : '') + ', ' +
                 (c.futureEvents != null ? c.futureEvents : '?') + ' upcoming';
               if (c.soonest) line += ' (next ' + escapeHTML(c.soonest) + ')';
               else if (c.latestPast) line += ', newest date ' + escapeHTML(c.latestPast) + ' \u2014 all past';
