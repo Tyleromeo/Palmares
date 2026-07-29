@@ -228,7 +228,7 @@ async function listActivities(body: any): Promise<Response> {
   const { athlete_id, limit } = body;
   if (!athlete_id) return badRequest('Missing athlete_id');
 
-  const targetLimit = limit && limit > 0 ? Math.min(limit, 5000) : 500;
+  const targetLimit = limit && limit > 0 ? Math.min(limit, 10000) : 500;
   // PostgREST enforces its own row cap per-connection (default 1000) on top
   // of whatever .limit() asks for, and that cap doesn't reliably apply to
   // already-pooled connections right after raising it project-wide - some

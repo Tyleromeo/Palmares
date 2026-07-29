@@ -364,6 +364,8 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading-text { font-size: 14px; color: #7d8590; }
 .loading-sub { font-size: 12px; color: #444d56; margin-top: 4px; }
+.loading-progress { display:none; width:min(320px,80vw); height:8px; margin:14px auto 0; overflow:hidden; background:#21262d; border-radius:999px; }
+.loading-progress-fill { width:0; height:100%; background:#C9A227; border-radius:inherit; transition:width .2s ease; }
 
 /* YOY TABLE */
 .yoy-table { width: 100%; font-size: 13px; border-collapse: collapse; }
@@ -610,6 +612,9 @@ body.ob-open { overflow: hidden; }
   <div class="spinner"></div>
   <div class="loading-text" id="loading-text">Connecting to Strava...</div>
   <div class="loading-sub" id="loading-sub"></div>
+  <div class="loading-progress" id="loading-progress" role="progressbar" aria-label="Activity import progress" aria-valuemin="0" aria-valuemax="100">
+    <div class="loading-progress-fill" id="loading-progress-fill"></div>
+  </div>
 </div>
 
 <!-- ERROR -->
@@ -1770,8 +1775,14 @@ function syncActivitiesToSupabase(activities, athlete_id, pruneToSet) {
         start_date: a.start_date,
         start_date_local: a.start_date_local || a.start_date
       }));
-      for (let i = 0; i < rows.length; i += 50) {
-        const batch = rows.slice(i, i + 50);
+      // Full imports can now contain 10,000 rows. Sending only 50 at a time
+      // would require 200 background requests and makes it likely that iOS
+      // suspends the page before the cache finishes. Summary rows are small,
+      // so 500 keeps each request modest while reducing a maximum import to
+      // 20 cache writes.
+      const cacheBatchSize = 500;
+      for (let i = 0; i < rows.length; i += cacheBatchSize) {
+        const batch = rows.slice(i, i + cacheBatchSize);
         await callEdge('sync_activities', {
           athlete: {
             id: athlete_id,
@@ -2413,7 +2424,7 @@ async function disconnectStrava() {
 }
 
 async function forceFullResync() {
-  if (!await askConfirm('This re-fetches your complete activity history from Strava and removes anything you have since deleted there. It may take a moment. Continue?', 'Resync')) return;
+  if (!await askConfirm('This checks your complete Strava history (up to 10,000 activities), shows import progress, and removes anything you have since deleted there. Continue?', 'Resync')) return;
   localStorage.setItem('ed_force_full_sync', '1');
   location.reload();
 }
@@ -3132,25 +3143,30 @@ async function loadAll(token) {
   let cacheIsStale = true;
 
   try {
-    // 3000 gives headroom well above the known all-time total (~1,418) - a
-    // hardcoded 500 here previously silently truncated every normal cached
-    // load to only the most recent 500 activities, well short of full
-    // history, even though a full resync correctly fetched everything.
-    const cacheData = await callEdge('list_activities', { athlete_id: athlete.id, limit: 3000 });
+    // Keep the complete supported history available on normal cache-first
+    // launches. This must match the full-import safety cap below.
+    const cacheData = await callEdge('list_activities', { athlete_id: athlete.id, limit: 10000 });
     cachedActivities = cacheData.activities || cacheData.rows || cacheData || [];
     if (!Array.isArray(cachedActivities)) cachedActivities = [];
   } catch(e) { console.log('Cache read error:', e); }
 
   // The cache is trusted whenever it has rows. There used to be a 6-hour
   // staleness rule here that threw the whole cache away and re-fetched all
-  // 36 pages from Strava sequentially - that was the "over a minute to load
+  // every page from Strava sequentially - that was the "over a minute to load
   // after 6 hours" experience, and it bought nothing: the incremental
   // top-up below already catches everything new, and the full path remains
   // reachable via Settings > Force full resync for the rare case where old
   // history was edited on Strava. First-ever load (empty cache) still does
   // the full fetch, and the force button sets a one-shot flag.
   const forceFull = localStorage.getItem('ed_force_full_sync') === '1';
-  cacheIsStale = forceFull || cachedActivities.length === 0;
+  const historyCapVersionKey = 'ed_history_cap_v2_' + athlete.id;
+  // Anyone who previously had more than the old 1,800-row ceiling will have
+  // exactly 1,800 cached rows. Upgrade that history once, then remember the
+  // migration on this device so an athlete with exactly 1,800 real
+  // activities does not rescan on every launch.
+  const legacyHistoryWasCapped = cachedActivities.length === 1800 &&
+    localStorage.getItem(historyCapVersionKey) !== '1';
+  cacheIsStale = forceFull || cachedActivities.length === 0 || legacyHistoryWasCapped;
 
   if (!cacheIsStale) {
     // Cache-first: use it directly, then top up incrementally - keep
@@ -3226,24 +3242,99 @@ async function loadAll(token) {
       }
     } catch(e) { console.log('Incremental fetch error:', e); }
   } else {
-    // Cache is stale or empty: do the full historical fetch from Strava,
-    // then write the full result back to the cache. Capped at 36 pages
-    // (1800 activities) - covers known all-time total (1,418) with extra
-    // headroom, since some 2019-era activities were found missing even
-    // when comfortably under the 1500 cap, suggesting either growth beyond
-    // the last known count or pagination not being perfectly gapless.
-    setLoading('Loading activities...', 'Fetching full history — this takes a moment');
-    for (let page = 1; page <= 36; page++) {
-      setLoading('Loading activities...', `Page ${page} of up to 36 — ${allActivities.length} activities loaded`);
-      const batch = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=50&page=${page}`, {headers}).then(r=>r.json()).catch(()=>[]);
-      if (!Array.isArray(batch) || batch.length === 0) break; // only stop on a genuinely empty page (true end of history) -
-      allActivities = [...allActivities, ...batch];            // a partial page (e.g. 38 of 50) does NOT mean history has ended,
-    }                                                            // it can happen mid-history, so we keep fetching until truly empty
+    // Cache is stale or empty: enumerate up to 10,000 activities. Strava
+    // doesn't return a total-count header, so first locate the final page
+    // with a short binary search. Those responses are retained and reused by
+    // the import, which gives the user a real percentage without displaying
+    // an alarming or misleading "page 1 of 200" counter.
+    const historyLimit = 10000;
+    const historyPageSize = 200;
+    const historyMaxPages = Math.ceil(historyLimit / historyPageSize);
+    const historyPages = new Map();
+    let historyComplete = false;
+    let historyHitCap = false;
+
+    async function fetchHistoryPage(page) {
+      if (historyPages.has(page)) return historyPages.get(page);
+      const response = await fetch(`https://www.strava.com/api/v3/athlete/activities?per_page=${historyPageSize}&page=${page}`, {headers});
+      if (response.status === 429) {
+        const error = new Error('Strava rate limit reached');
+        error.rateLimited = true;
+        throw error;
+      }
+      if (!response.ok) throw new Error(`Strava activity history returned status ${response.status}`);
+      const batch = await response.json();
+      if (!Array.isArray(batch)) throw new Error('Strava activity history returned an unexpected response');
+      historyPages.set(page, batch);
+      return batch;
+    }
+
+    try {
+      setLoading('Preparing your activity history...', 'Finding your complete Strava history');
+      const firstBatch = await fetchHistoryPage(1);
+      let finalPage = 0;
+      let expectedTotal = 0;
+
+      if (firstBatch.length) {
+        // Page max+1 distinguishes an exactly-10,000 history from one that
+        // continues beyond the app's safety cap.
+        const beyondCap = await fetchHistoryPage(historyMaxPages + 1);
+        historyHitCap = beyondCap.length > 0;
+
+        if (historyHitCap) {
+          finalPage = historyMaxPages;
+          expectedTotal = historyLimit;
+        } else {
+          let low = 1, high = historyMaxPages;
+          while (low < high) {
+            const mid = Math.ceil((low + high) / 2);
+            const batch = await fetchHistoryPage(mid);
+            if (batch.length) low = mid;
+            else high = mid - 1;
+          }
+          finalPage = low;
+          const finalBatch = await fetchHistoryPage(finalPage);
+          expectedTotal = Math.min(historyLimit, (finalPage - 1) * historyPageSize + finalBatch.length);
+          historyComplete = true;
+        }
+
+        for (let page = 1; page <= finalPage && allActivities.length < historyLimit; page++) {
+          const batch = await fetchHistoryPage(page);
+          allActivities = allActivities.concat(batch).slice(0, historyLimit);
+          const percent = Math.min(100, Math.round((allActivities.length / expectedTotal) * 100));
+          setLoading(
+            'Importing your activity history...',
+            `${allActivities.length.toLocaleString()} of ${expectedTotal.toLocaleString()} activities · ${percent}%`,
+            percent
+          );
+        }
+      } else {
+        historyComplete = true;
+      }
+
+      if (historyHitCap) {
+        setLoading('Activity history imported', '10,000 activities · safety limit reached', 100);
+      } else {
+        setLoading('Activity history imported', `${allActivities.length.toLocaleString()} activities · 100%`, 100);
+      }
+    } catch (e) {
+      // Preserve anything already received, but never call the destructive
+      // prune path unless Strava's complete history was positively reached.
+      if (allActivities.length) syncActivitiesToSupabase(allActivities, athlete.id, false);
+      localStorage.setItem('ed_force_full_sync', '1');
+      const message = e && e.rateLimited
+        ? 'Strava paused the history import because its request limit was reached. Your partial import was saved. Try again after the next :00, :15, :30, or :45 interval.'
+        : 'The activity-history import was interrupted. Your partial import was saved; try the resync again when your connection is stable.';
+      showError(message);
+      return;
+    }
+
+    localStorage.setItem(historyCapVersionKey, '1');
     localStorage.removeItem('ed_force_full_sync'); // one-shot: next load goes back to the fast cache path
     // Strava is the source of truth here, so prune anything cached that it no
     // longer returns - otherwise activities deleted on Strava survive forever
     // and reappear on the next cached load.
-    syncActivitiesToSupabase(allActivities, athlete.id, true);
+    syncActivitiesToSupabase(allActivities, athlete.id, historyComplete);
     saveActivityGeometryCache(athlete.id, allActivities, false); // preserve polylines for the Map heatmap
     saveSportTypeCache(athlete.id, allActivities, false); // preserve gravel/MTB/trail distinctions
 
@@ -8775,11 +8866,23 @@ function computeMetrics(rides) {
   return {ctl:Math.round(ctl),atl:Math.round(atl),tsb:Math.round(ctl-atl),prevCtl:Math.round(prevCtl)};
 }
 
-function setLoading(text, sub='') {
+function setLoading(text, sub='', progress=null) {
   document.getElementById('connect-view').style.display='none';
   document.getElementById('loading').style.display='block';
   document.getElementById('loading-text').textContent=text;
   document.getElementById('loading-sub').textContent=sub;
+  const progressBar = document.getElementById('loading-progress');
+  const progressFill = document.getElementById('loading-progress-fill');
+  if (Number.isFinite(progress)) {
+    const value = Math.max(0, Math.min(100, progress));
+    progressBar.style.display='block';
+    progressBar.setAttribute('aria-valuenow', String(value));
+    progressFill.style.width=value + '%';
+  } else {
+    progressBar.style.display='none';
+    progressBar.removeAttribute('aria-valuenow');
+    progressFill.style.width='0';
+  }
 }
 
 function hideLoading() { document.getElementById('loading').style.display='none'; }
