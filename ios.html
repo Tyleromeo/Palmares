@@ -1237,8 +1237,8 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
       <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Real best-sustained-power efforts computed from your actual power-meter data streams, not estimates. Built from the power curve scan on the Train page.</div>
       <div class="filter-bar" id="power-bests-sport" style="margin-bottom:10px">
         <span class="filter-label">Sport</span>
-        <button class="map-toggle" data-pbsport="ride" onclick="setPowerBestsSport('ride')">Bike</button>
-        <button class="map-toggle" data-pbsport="run" onclick="setPowerBestsSport('run')">Run</button>
+        <button class="map-toggle" data-pbsport="ride" onclick="setPowerBestsSport('ride')">Rides</button>
+        <button class="map-toggle" data-pbsport="run" onclick="setPowerBestsSport('run')">Runs</button>
       </div>
       <div id="power-top5-list"></div>
     </div>
@@ -1836,6 +1836,16 @@ const SPORT_META = {
 };
 // The Palmarès page only ever shows these - hikes, walks, virtual and misc
 // sports never produce meaningful segment records.
+// KOM and power figures are reported as Ride vs Run rather than one row per
+// sport. Splitting road/gravel/MTB apart made the row long and buried the
+// number that actually matters: how many crowns you hold on the bike versus
+// on foot. The per-sport dropdown is still there for anyone who wants the
+// finer split.
+const PALMARES_SPORT_GROUPS = [
+  { key: 'ride', label: 'Ride', keys: ['road', 'gravel', 'mtb'] },
+  { key: 'run',  label: 'Run',  keys: ['run', 'trailrun'] }
+];
+
 const PALMARES_SPORTS = ['road', 'gravel', 'mtb', 'run', 'trailrun'];
 
 const TYPE_TO_SPORT = {
@@ -6524,21 +6534,23 @@ const WIDGET_RENDERERS = {
   'collapse-koms': function() {
     const st = window._komStats;
     if (!st) return null;
-    const label = { road: 'Road', gravel: 'Gravel', mtb: 'MTB', run: 'Run', trailrun: 'Trail' };
-    const sports = PALMARES_SPORTS.filter(function(k) {
-      return sportEnabled(k) && (st.koms[k] || st.top10s[k]);
+    const sumOf = function (bucket, keys) {
+      return keys.reduce(function (n, k) { return n + (sportEnabled(k) ? (bucket[k] || 0) : 0); }, 0);
+    };
+    const sports = PALMARES_SPORT_GROUPS.filter(function (g) {
+      return g.keys.some(sportEnabled) && (sumOf(st.koms, g.keys) || sumOf(st.top10s, g.keys));
     });
     const head = '<div style="display:flex;gap:22px;flex-wrap:wrap">' +
       '<div><div style="font-size:31px;font-weight:700;line-height:1;color:#C9A227">' + st.totalKoms + '</div><div class="w-stat-l">KOMs held</div></div>' +
       '<div><div style="font-size:31px;font-weight:700;line-height:1;color:#58a6ff">' + st.totalTop10s + '</div><div class="w-stat-l">Top 10s</div></div>' +
       '</div>';
     if (!sports.length) return head;
-    const rows = sports.map(function(k) {
+    const rows = sports.map(function(g) {
       return '<div style="display:flex;align-items:baseline;gap:10px;padding:5px 0;border-top:1px solid #21262d">' +
-        '<span style="flex:1;font-size:13px;color:#e6edf3">' + label[k] + '</span>' +
-        '<span style="font-size:15px;font-weight:600;color:#C9A227;min-width:34px;text-align:right">' + (st.koms[k] || 0) + '</span>' +
+        '<span style="flex:1;font-size:13px;color:#e6edf3">' + g.label + '</span>' +
+        '<span style="font-size:15px;font-weight:600;color:#C9A227;min-width:34px;text-align:right">' + sumOf(st.koms, g.keys) + '</span>' +
         '<span class="w-stat-l" style="min-width:30px">KOM</span>' +
-        '<span style="font-size:15px;font-weight:600;color:#58a6ff;min-width:34px;text-align:right">' + (st.top10s[k] || 0) + '</span>' +
+        '<span style="font-size:15px;font-weight:600;color:#58a6ff;min-width:34px;text-align:right">' + sumOf(st.top10s, g.keys) + '</span>' +
         '<span class="w-stat-l" style="min-width:44px">TOP 10</span>' +
       '</div>';
     }).join('');
@@ -10136,22 +10148,28 @@ async function renderFullKomList() {
   if (totalsEl) {
     // One KOM/Top-10 chip pair per Palmarès sport that's enabled in
     // Settings and has any records. Hikes/walks/misc never appear here.
-    const chipLabel = { road: 'Road', gravel: 'Gravel', mtb: 'MTB', run: 'Run', trailrun: 'Trail run' };
-    const chipSports = PALMARES_SPORTS.filter(key => sportEnabled(key) && (
-      stillHeldKoms.some(k => activitySportKey(k.activity_type) === key) ||
-      allTop10s.some(k => activitySportKey(k.activity_type) === key)
-    ));
-    const shown = chipSports.length ? chipSports : PALMARES_SPORTS.filter(k => sportEnabled(k)).slice(0, 2);
+    const countIn = function (list, keys) {
+      return list.filter(function (k) {
+        const sk = activitySportKey(k.activity_type);
+        return keys.indexOf(sk) >= 0 && sportEnabled(sk);
+      }).length;
+    };
+    const withRecords = PALMARES_SPORT_GROUPS.filter(function (g) {
+      return g.keys.some(sportEnabled) && (countIn(stillHeldKoms, g.keys) || countIn(allTop10s, g.keys));
+    });
+    // Before any scan there are no records at all; show both rather than a
+    // blank row.
+    const shown = withRecords.length ? withRecords : PALMARES_SPORT_GROUPS.filter(function (g) { return g.keys.some(sportEnabled); });
     const enrichedCount = [...new Set([...achievementSegmentIds, ...Object.keys(progress.allSegmentBests || {})])].filter(id => enrichedCache[id]).length;
     const totalSegments = new Set([...achievementSegmentIds, ...Object.keys(progress.allSegmentBests || {})]).size;
     totalsEl.innerHTML =
-      shown.map(key =>
-        '<div class="metric"><div class="metric-label">' + chipLabel[key] + ' KOMs</div><div class="metric-val" style="color:#C9A227">' +
-          stillHeldKoms.filter(k => activitySportKey(k.activity_type) === key).length +
+      shown.map(g =>
+        '<div class="metric"><div class="metric-label">' + g.label + ' KOMs</div><div class="metric-val" style="color:#C9A227">' +
+          countIn(stillHeldKoms, g.keys) +
         '</div><div class="metric-sub">currently held</div></div>').join('') +
-      shown.map(key =>
-        '<div class="metric"><div class="metric-label">' + chipLabel[key] + ' Top 10s</div><div class="metric-val" style="color:#58a6ff">' +
-          allTop10s.filter(k => activitySportKey(k.activity_type) === key).length +
+      shown.map(g =>
+        '<div class="metric"><div class="metric-label">' + g.label + ' Top 10s</div><div class="metric-val" style="color:#58a6ff">' +
+          countIn(allTop10s, g.keys) +
         '</div><div class="metric-sub">includes former KOMs</div></div>').join('');
     if (enrichedCount < totalSegments) {
       totalsEl.innerHTML += '<div style="grid-column:1/-1;font-size:12px;color:#7d8590;margin-top:4px">KOM counts above only reflect the ' + enrichedCount + ' of ' + totalSegments + ' segments enriched so far - finish enriching for fully accurate totals.</div>';
