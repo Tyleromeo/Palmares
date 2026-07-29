@@ -8248,24 +8248,45 @@ async function enrichEventsWithRoutes(events) {
   const cache = eventRouteCache();
   let token = null, changed = false;
   for (const e of events.slice(0, 6)) {
-    // Some payloads embed the whole route, which saves the call entirely.
-    const embedded = e.route && e.route.map ? e.route : null;
+    // Group-event payloads often embed only a route id and map. That is
+    // enough to draw the shape, but not enough for distance or climbing, so
+    // only treat an embedded route as complete when it includes both stats.
+    const embedded = e.route && typeof e.route === 'object' ? e.route : null;
     const id = (e.route && e.route.id) || e.route_id;
     if (!id && !embedded) continue;
-    if (id && cache[id]) { e._route = cache[id]; changed = true; continue; }
-    let r = embedded;
-    if (!r) {
+    const cached = id ? cache[id] : null;
+    const cachedHasStats = cached && cached.distanceMi != null && cached.elevationFt != null;
+    const recentlyChecked = cached && cached.detailCheckedAt &&
+      Date.now() - cached.detailCheckedAt < 24 * 60 * 60 * 1000;
+    if (cachedHasStats || recentlyChecked) {
+      e._route = cached;
+      changed = true;
+      continue;
+    }
+
+    const embeddedHasStats = embedded && embedded.distance != null &&
+      embedded.elevation_gain != null;
+    let r = embeddedHasStats ? embedded : null;
+    let detailCheckedAt = null;
+    if (!r && id) {
       if (!token) { token = await getToken(); if (!token) return; }
+      detailCheckedAt = Date.now();
       try {
         const resp = await fetch('https://www.strava.com/api/v3/routes/' + id, { headers: { Authorization: 'Bearer ' + token } });
-        if (!resp.ok) continue;   // 404s on private routes are expected, not an error
-        r = await resp.json();
-      } catch (err) { continue; }
+        if (resp.ok) r = await resp.json();
+        // A private route may return 404 even though the event supplied its
+        // shape. Keep that shape rather than removing the useful map.
+      } catch (err) {}
     }
+    if (!r) r = embedded;
+    if (!r) continue;
     const data = {
-      distanceMi: r.distance ? r.distance / 1609.34 : null,
-      elevationFt: r.elevation_gain ? r.elevation_gain * 3.281 : null,
-      polyline: (r.map && (r.map.summary_polyline || r.map.polyline)) || null
+      distanceMi: r.distance != null ? r.distance / 1609.34 : (cached && cached.distanceMi != null ? cached.distanceMi : null),
+      elevationFt: r.elevation_gain != null ? r.elevation_gain * 3.281 : (cached && cached.elevationFt != null ? cached.elevationFt : null),
+      polyline: (r.map && (r.map.summary_polyline || r.map.polyline)) ||
+        (embedded && embedded.map && (embedded.map.summary_polyline || embedded.map.polyline)) ||
+        (cached && cached.polyline) || null,
+      detailCheckedAt: detailCheckedAt || (cached && cached.detailCheckedAt) || null
     };
     if (id) cacheEventRoute(id, data);
     e._route = data; changed = true;
