@@ -7392,22 +7392,19 @@ async function loadClubEvents(forceFresh) {
       console.log('Total clubs found:', clubs.length, '| Syncing:', toFetch.map(c => c.name).join(', ') || '(none)');
       for (const club of toFetch) {
         try {
-          // Paginate. A single page was NOT enough: LiVelo returned 446
-          // events whose newest date was two days in the PAST while a ride
-          // scheduled for tomorrow was missing entirely - the newer events
-          // live on later pages. Keep going until a page comes back empty or
-          // short, with a cap so a huge club can't spin forever.
-          let events = [], evStatus = 0, evFailed = false, pagesFetched = 0;
-          for (let page = 1; page <= 10; page++) {
-            pagesFetched = page;
+          // ONE page only. Strava ignores `page` on this endpoint: requesting
+          // pages 1-10 returned the identical list ten times (446 events
+          // became "4460", and the WolfPack ride rendered four times over).
+          // Whatever this call returns is the whole list Strava will give us.
+          let events = [], evStatus = 0, evFailed = false, pagesFetched = 1;
+          {
             const evResp = await fetch('https://www.strava.com/api/v3/clubs/'+club.id+
-              '/group_events?per_page=200&page='+page, {headers});
-            if (!evResp.ok) { evStatus = evResp.status; evFailed = true; break; }
-            const chunk = await evResp.json();
-            if (!Array.isArray(chunk) || chunk.length === 0) break;
-            events = events.concat(chunk);
-            if (chunk.length < 200) break;   // short page = end of the list
-            await new Promise(function(r){setTimeout(r,200);});
+              '/group_events?per_page=200', {headers});
+            if (!evResp.ok) { evStatus = evResp.status; evFailed = true; }
+            else {
+              const chunk = await evResp.json();
+              if (Array.isArray(chunk)) events = chunk;
+            }
           }
           if (evFailed) {
             console.log('Club "'+club.name+'" (id '+club.id+'): FAILED, status', evStatus);
@@ -7461,13 +7458,59 @@ async function loadClubEvents(forceFresh) {
       const d = new Date(v);
       return isNaN(d.getTime()) ? null : d;
     };
-    const allUpcoming = allEvents
+    // Some recurring club rides come back with occurrence lists that simply
+    // stop at the most recent PAST instance - Strava doesn't always extend
+    // upcoming_occurrences forward. The LiVelo Wednesday night ride is one:
+    // the club runs it every Wednesday through the summer and Strava notifies
+    // members the day before, yet the API's newest occurrence for the whole
+    // club was two days old.
+    //
+    // If an event's own history forms a clean weekly cadence that is still
+    // running, project the next instance rather than pretending the series
+    // ended. Deliberately conservative - all on one weekday, at least three
+    // samples, week-multiple gaps, last instance within 21 days, and never
+    // more than 8 weeks ahead - so a genuinely finished series stays gone.
+    const DAY_MS = 86400000;
+    const projectNextOccurrence = function (dates, ref) {
+      if (!dates || dates.length < 3) return null;
+      const sorted = dates.slice().sort(function (a, b) { return a - b; });
+      const last = sorted[sorted.length - 1];
+      if (ref - last > 21 * DAY_MS) return null;          // series looks over
+      const weekday = last.getDay();
+      if (sorted.some(function (d) { return d.getDay() !== weekday; })) return null;
+      let weekly = 0, total = 0;
+      for (let i = 1; i < sorted.length; i++) {
+        const gap = Math.round((sorted[i] - sorted[i - 1]) / DAY_MS);
+        total++;
+        if (gap > 0 && gap % 7 === 0 && gap <= 21) weekly++;
+      }
+      if (!total || weekly / total < 0.8) return null;    // not a weekly series
+      const next = new Date(last.getTime());
+      while (next < ref) next.setDate(next.getDate() + 7);
+      return (next - ref) <= 56 * DAY_MS ? next : null;
+    };
+
+    // Dedupe by event id. Strava returned the same event repeatedly when the
+    // page parameter was (wrongly) trusted, and a duplicated ride on screen is
+    // worse than a missing one.
+    const seenEventIds = new Set();
+    const uniqueEvents = allEvents.filter(function (e) {
+      if (e.id == null) return true;
+      const k = String(e.club_id) + ':' + String(e.id);
+      if (seenEventIds.has(k)) return false;
+      seenEventIds.add(k);
+      return true;
+    });
+
+    const allUpcoming = uniqueEvents
       .map(e => {
-        const future = (e.upcoming_occurrences || [])
+        const parsed = (e.upcoming_occurrences || [])
           .map(parseOccurrence)
-          .filter(d => d && !isNaN(d.getTime()) && d >= now)
-          .sort((a, b) => a - b);
-        return future.length ? Object.assign({}, e, { nextDate: future[0] }) : null;
+          .filter(d => d && !isNaN(d.getTime()));
+        const future = parsed.filter(d => d >= now).sort((a, b) => a - b);
+        if (future.length) return Object.assign({}, e, { nextDate: future[0] });
+        const projected = projectNextOccurrence(parsed, now);
+        return projected ? Object.assign({}, e, { nextDate: projected, projected: true }) : null;
       })
       .filter(Boolean)
       .sort((a,b) => a.nextDate - b.nextDate);
@@ -7616,7 +7659,7 @@ async function loadClubEvents(forceFresh) {
             <span style="font-size:10px;background:${typeColor}22;color:${typeColor};border:1px solid ${typeColor};border-radius:4px;padding:1px 6px;font-weight:600">${typeLabel}</span>
             <a href="${e.external ? escapeHTML(e.url) : stravaClubHref(e)}" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="${e.external ? 'Opens the source calendar site' : 'Opens this club\'s main page on Strava - exact event links aren\'t reliably constructable from the API, and /group_events sub-paths 404 on Strava\'s current site'}">${escapeHTML(e.title || 'Untitled event')}</a>
           </div>
-          <div class="row-meta">${dateStr} at ${timeStr} &middot; ${escapeHTML(e.club_name || 'Club')}</div>
+          <div class="row-meta">${dateStr} at ${timeStr} &middot; ${escapeHTML(e.club_name || 'Club')}${e.projected ? ' &middot; <span style="color:#d29922">expected</span>' : ''}</div>
           ${desc ? `<div style="font-size:11px;color:#444d56;margin-top:2px">${escapeHTML(descShort)}${desc.length>80?'...':''}</div>` : ''}
         </div>
         <div class="row-right" style="text-align:right">
