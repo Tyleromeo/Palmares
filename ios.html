@@ -1203,6 +1203,7 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
             <option value="duration-desc">Longest effort</option>
             <option value="duration-asc">Shortest effort</option>
             <option value="former" id="kom-sort-former-opt">Former KOMs first</option>
+            <option value="towns">Group by town</option>
           </select>
         </div>
         <div class="filter-group filter-search-row">
@@ -1211,31 +1212,8 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
       </div>
       <div id="kom-scan-status" style="font-size:13px;color:#7d8590;padding:8px 0"></div>
       <div id="kom-scan-controls" style="margin-bottom:12px"></div>
-      <div id="full-kom-list"></div>
-    </div>
-  </div>
-
-  <!-- Towns get their own card so the Palmares page has a second substantial
-       widget instead of one tile on an otherwise empty screen. Populated by
-       renderFullKomList, which already computes the ranking. -->
-  <div class="card" id="collapse-towns" style="margin-top:1.5rem" data-deck-title="Top towns">
-    <div class="card-title collapse-head" onclick="toggleCollapse('towns')">
-      <div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>Top towns</div>
-    </div>
-    <div class="collapse-body">
       <div id="town-leaderboard"></div>
-    </div>
-  </div>
-
-  <!-- Moved here from Train: these are personal records, so they belong with
-       the KOM/Top-10 palmares rather than the (busy) training analysis page.
-       Populated by renderPowerCurve / renderDistanceRecords, which target
-       these ids wherever they live; showSection('segments') calls both. -->
-  <div class="card" id="collapse-power-bests" style="margin-top:1.5rem" data-deck-title="Power bests">
-    <div class="card-title collapse-head" onclick="toggleCollapse('power-bests')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M17 3H7v6a5 5 0 0 0 10 0V3z"/></svg>All-time power bests — top 5 per duration</div></div>
-    <div class="collapse-body">
-      <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Real best-sustained-power efforts computed from your actual power-meter data streams, not estimates. Built from the power curve scan on the Train page.</div>
-      <div id="power-top5-list"></div>
+      <div id="full-kom-list"></div>
     </div>
   </div>
 
@@ -1252,6 +1230,27 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
       <div id="distance-records-list"></div>
     </div>
   </div>
+
+  <div class="card" id="collapse-power-bests" style="margin-top:1.5rem" data-deck-title="Power bests">
+    <div class="card-title collapse-head" onclick="toggleCollapse('power-bests')"><div class="card-title-left"><span class="collapse-caret">▼</span><svg class="card-icon" viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M17 3H7v6a5 5 0 0 0 10 0V3z"/></svg>All-time power bests — top 5 per duration</div></div>
+    <div class="collapse-body">
+      <div style="font-size:12px;color:#7d8590;margin-bottom:10px">Real best-sustained-power efforts computed from your actual power-meter data streams, not estimates. Built from the power curve scan on the Train page.</div>
+      <div class="filter-bar" id="power-bests-sport" style="margin-bottom:10px">
+        <span class="filter-label">Sport</span>
+        <button class="map-toggle" data-pbsport="ride" onclick="setPowerBestsSport('ride')">Bike</button>
+        <button class="map-toggle" data-pbsport="run" onclick="setPowerBestsSport('run')">Run</button>
+      </div>
+      <div id="power-top5-list"></div>
+    </div>
+  </div>
+
+  <!-- Towns get their own card so the Palmares page has a second substantial
+       widget instead of one tile on an otherwise empty screen. Populated by
+       renderFullKomList, which already computes the ranking. -->
+  <!-- Moved here from Train: these are personal records, so they belong with
+       the KOM/Top-10 palmares rather than the (busy) training analysis page.
+       Populated by renderPowerCurve / renderDistanceRecords, which target
+       these ids wherever they live; showSection('segments') calls both. -->
 
     </div><!-- /.swipe-deck -->
     <div class="swipe-dots" id="segments-deck-dots"></div>
@@ -2795,7 +2794,7 @@ function showSection(name) {
   if (name === 'map') { setTimeout(function(){ initDeck('scout-deck'); }, 120); }
   if (name === 'performance') { setTimeout(function(){ initDeck('performance-deck'); }, 60); }
   if (name === 'segments') { setTimeout(function(){ initDeck('segments-deck'); }, 60); }
-  if (name === 'segments' && allActivities.length) { try { renderKomScanUI(); renderPowerCurve(); renderDistanceRecords(); applyCollapseState(); } catch(e) { console.error('renderKomScanUI:', e); } }
+  if (name === 'segments' && allActivities.length) { try { renderKomScanUI(); renderPowerBestsCard(); renderDistanceRecords(); applyCollapseState(); } catch(e) { console.error('renderKomScanUI:', e); } }
   if (name === 'performance' && allActivities.length) {
     setTimeout(function() {
       try {
@@ -3847,16 +3846,24 @@ async function getScanProgress(athleteId) {
   // (confirmed via a Backyard Ultra 120K run showing up twice under "50K").
   // Keeping only the fastest entry per activity_id fixes existing data
   // without requiring a rescan.
+  // Merge case-variant keys onto the canonical name FIRST, then dedup. The
+  // old version deduped each key on its own, so "50K" and "50k" both survived.
+  const mergedRecords = {};
   Object.keys(progress.distanceRecords).forEach(name => {
     let list = progress.distanceRecords[name];
     if (!Array.isArray(list)) list = [list];
+    const key = canonicalDistanceName(name);
+    mergedRecords[key] = (mergedRecords[key] || []).concat(list);
+  });
+  Object.keys(mergedRecords).forEach(name => {
     const byActivity = {};
-    list.forEach(e => {
+    mergedRecords[name].forEach(e => {
       const existing = byActivity[e.activity_id];
       if (!existing || e.elapsed < existing.elapsed) byActivity[e.activity_id] = e;
     });
-    progress.distanceRecords[name] = Object.values(byActivity).sort((a,b) => a.elapsed - b.elapsed).slice(0, 10);
+    mergedRecords[name] = Object.values(byActivity).sort((a,b) => a.elapsed - b.elapsed).slice(0, 10);
   });
+  progress.distanceRecords = mergedRecords;
 
   // One-time self-heal for data scanned before the rank-vs-category fix
   // (achievement "type" is the leaderboard category, not the position -
@@ -4048,16 +4055,17 @@ async function scanKomChunk(token, athleteId) {
         // owned exclusively by that pass so each activity contributes at
         // most one entry per distance.
         detail.best_efforts.forEach(e => {
-          if (ULTRA_DISTANCES.some(u => u.name === e.name)) return;
+          if (ULTRA_DISTANCES.some(u => u.name.toLowerCase() === String(e.name).toLowerCase())) return;
+          const dName = canonicalDistanceName(e.name);
           // Defensive dedup: replace any existing entry for this same
           // activity rather than appending a second one (e.g. on a rescan).
-          const list = (progress.distanceRecords[e.name] || []).filter(x => x.activity_id !== ride.id);
+          const list = (progress.distanceRecords[dName] || []).filter(x => x.activity_id !== ride.id);
           list.push({
             activity_id: ride.id, activity_name: ride.name,
             elapsed: e.elapsed_time, distance: e.distance, date: ride.start_date
           });
           list.sort((a,b) => a.elapsed - b.elapsed);
-          progress.distanceRecords[e.name] = list.slice(0, 10);
+          progress.distanceRecords[dName] = list.slice(0, 10);
         });
       }
 
@@ -5450,6 +5458,12 @@ const POWER_SPORTS = {
   run:  Object.assign({ types: ['Run','TrailRun'],     label: 'Runs',  cacheKey: 'power_curve_scan_progress_v1_run' }, buildDurationSet(STRAVA_STANDARD_DURATIONS, []))
 };
 let currentPowerSport = 'ride';
+// The Palmares power-bests card has its own sport selection: it lives on a
+// different page from the Train power curve, so slaving it to that toggle
+// meant it only ever showed whatever Train happened to be set to - and it
+// only rendered when Train did. null means "not chosen yet", so the default
+// can be worked out from lifetime mileage on first render.
+let currentPowerBestsSport = null;
 let currentPowerView = 'all'; // 'all' | 'year' - shared across both sports
 
 function renderPowerCurve() {
@@ -5701,7 +5715,9 @@ async function renderPowerCurveFromScan() {
     renderPowerCurveAllTime(progress, sport);
   }
 
-  renderPowerTop5List(progress, sport);
+  // The all-time top-5 card lives on Palmares and owns its own sport now;
+  // rendering it from here would silently retarget it to Train's selection.
+  renderPowerBestsCard();
 }
 
 function renderPowerCurveAllTime(progress, sport) {
@@ -5827,6 +5843,33 @@ function renderPowerCurveYearCompare(progress, sport) {
   });
 }
 
+// Default to whichever sport the athlete has actually done more of, so a
+// runner doesn't open their records to an empty bike card (and vice versa).
+// Falls back to ride only when there's nothing to compare.
+function defaultPowerBestsSport() {
+  const st = athleteStats || {};
+  const rideM = (st.all_ride_totals && st.all_ride_totals.distance) || 0;
+  const runM  = (st.all_run_totals  && st.all_run_totals.distance)  || 0;
+  return runM > rideM ? 'run' : 'ride';
+}
+
+function setPowerBestsSport(sport) {
+  currentPowerBestsSport = sport;
+  renderPowerBestsCard();
+}
+
+async function renderPowerBestsCard() {
+  const listEl = document.getElementById('power-top5-list');
+  if (!listEl || !athleteData) return;
+  if (!currentPowerBestsSport) currentPowerBestsSport = defaultPowerBestsSport();
+  const sport = currentPowerBestsSport;
+  document.querySelectorAll('#power-bests-sport [data-pbsport]').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-pbsport') === sport);
+  });
+  const progress = await getPowerScanProgress(athleteData.id, sport);
+  renderPowerTop5List(progress, sport);
+}
+
 function renderPowerTop5List(progress, sport) {
   const listEl = document.getElementById('power-top5-list');
   if (!listEl) return;
@@ -5851,6 +5894,17 @@ function renderPowerTop5List(progress, sport) {
 // derived here from raw distance/time streams on sufficiently long activities.
 const DISTANCE_RECORD_ORDER = ['400m','1/2 mile','1K','1 mile','2 mile','5K','10K','15K','10 mile','20K','Half-Marathon','30K','Marathon','50K','100K'];
 const ULTRA_DISTANCES = [{ name: '50K', meters: 50000 }, { name: '100K', meters: 100000 }];
+
+// Strava's best_efforts name ultra distances with different casing than our
+// own passes do ("50k" vs our "50K"), and a distance name is used directly as
+// the record key - so the same Backyard Ultra landed under two keys and the
+// list showed 50K twice, once at the end out of order. Every name funnels
+// through here so one distance is one key regardless of who reported it.
+function canonicalDistanceName(name) {
+  if (!name) return name;
+  const hit = DISTANCE_RECORD_ORDER.find(function (d) { return d.toLowerCase() === String(name).toLowerCase(); });
+  return hit || name;
+}
 let ultraScanAttempted = false;
 
 // Ride distance records - unlike runs, Strava's best_efforts field doesn't
@@ -9943,7 +9997,12 @@ async function renderFullKomList() {
   // rather than showing a giant "Unknown" bucket while enrichment is still
   // catching up. Respects the current sport filter so town rankings match
   // whichever sport view the user is looking at.
+  // Towns used to be their own deck card; it's a sort mode now, so the
+  // leaderboard and the record list swap places rather than both showing.
+  const byTown = komSortMode === 'towns';
   const townEl = document.getElementById('town-leaderboard');
+  if (townEl) townEl.style.display = byTown ? '' : 'none';
+  if (listEl) listEl.style.display = byTown ? 'none' : '';
   if (townEl) {
     // Normalize town names so variant spellings (user-entered on Strava,
     // never cleaned up) don't produce duplicate leaderboard entries.
