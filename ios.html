@@ -2851,9 +2851,12 @@ const ROAD_STATUS_META = {
 // Since web and the iOS WebView both load this same hosted page, the
 // convention deploys atomically - there are no old clients to confuse.
 // Fresh tarmac additionally auto-expires: after 60 days it isn't news.
-// Fresh tarmac stays listed for 30 days after the last time anyone touched
-// it - the original report OR a confirmation. Confirming therefore keeps a
-// good road on the board rather than watching it age out silently.
+// Fresh tarmac stays listed for 30 days from the FIRST confirmation - the
+// point at which a second person vouched for it, not the last time anyone
+// tapped the button. Anchoring to the newest confirmation would let a road
+// be kept alive indefinitely by repeat taps; anchoring to the first gives
+// every confirmed road the same fixed, predictable run on the board. With
+// no confirmation yet, the original report date is the anchor.
 const ROAD_FRESH_KEEP_DAYS = 30;
 
 function roadKeyOf(r) {
@@ -2929,12 +2932,15 @@ function groupRoadReports(reports) {
     const cleared = rows.some(r => roadNoteTag(r) === 'cleared' && new Date(r.created_at || 0) >= since);
     if (cleared) continue;
     const ageDays = latest.created_at ? Math.floor((now - latestAt.getTime()) / 86400000) : 0;
-    // Expiry runs from the last time anyone touched the road, so confirming
-    // keeps it listed instead of it ageing out on the original report's date.
-    const newestConfirmAt = confirmRows.reduce((m, r) => Math.max(m, new Date(r.created_at || 0).getTime() || 0), 0);
-    const lastTouch = Math.max(latestAt.getTime() || 0, newestConfirmAt);
-    const sinceTouchDays = Math.floor((now - lastTouch) / 86400000);
-    if (latest.status === 'fresh' && sinceTouchDays > ROAD_FRESH_KEEP_DAYS) continue;
+    // The clock starts at the first confirmation, falling back to the report
+    // itself when nobody has confirmed yet.
+    const firstConfirmAt = confirmRows.reduce(function (m, r) {
+      const t = new Date(r.created_at || 0).getTime();
+      return (t && (!m || t < m)) ? t : m;
+    }, 0);
+    const anchor = firstConfirmAt || latestAt.getTime() || 0;
+    const sinceAnchorDays = Math.floor((now - anchor) / 86400000);
+    if (latest.status === 'fresh' && sinceAnchorDays > ROAD_FRESH_KEEP_DAYS) continue;
     groups.push({ report: latest, confirms: confirmers.size, ageDays, key: roadKeyOf(latest) });
   }
   groups.sort((a, b) => new Date(b.report.created_at || 0) - new Date(a.report.created_at || 0));
@@ -3006,7 +3012,6 @@ async function renderRoadReports() {
           (confirmedRoads()[g.key]
             ? '<span title="You confirmed this" style="border:1px solid #3fb950;border-radius:5px;color:#3fb950;font-size:10px;padding:2px 7px">👍 Confirmed</span>'
             : '<button onclick="confirmRoadStatus(' + i + ')" title="Confirm this is still the road\'s condition" style="background:transparent;border:1px solid #30363d;border-radius:5px;color:#7d8590;cursor:pointer;font-size:10px;padding:2px 7px">👍 Confirm</button>') +
-          '<button onclick="clearRoadStatus(' + i + ')" title="Mark this road back to normal" style="background:transparent;border:1px solid #30363d;border-radius:5px;color:#7d8590;cursor:pointer;font-size:10px;padding:2px 7px">✔️ Cleared</button>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -3050,13 +3055,6 @@ function confirmRoadStatus(i) {
   if (confirmedRoads()[g.key]) { try { showToast('You already confirmed this road.'); } catch (e) {} return; }
   markRoadConfirmed(g.key);
   postRoadLifecycle(g, '[confirm]', 'Status confirmed');
-}
-
-async function clearRoadStatus(i) {
-  const g = _roadGroups[i];
-  if (!g) return;
-  if (!await askConfirm('Mark "' + g.report.road_name + '" as back to normal? It will disappear from the list for everyone.', 'Mark resolved')) return;
-  postRoadLifecycle(g, '[cleared]', 'Marked cleared');
 }
 
 // ---- Geocoding (both APIs are free, keyless, and CORS-open) ----
