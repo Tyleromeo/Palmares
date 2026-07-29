@@ -1493,10 +1493,10 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
       <div class="setting-row">
         <div><div class="setting-label">Weight</div><div class="setting-sub">Used for power-to-weight. Watts per kilo is always shown in w/kg, whichever unit you enter.</div></div>
         <div style="display:flex;align-items:center;gap:6px">
-          <input class="setting-input" id="set-weight" type="number" step="0.1" placeholder="75" onchange="saveSettings()" style="width:90px" />
+          <input class="setting-input" id="set-weight" type="number" step="0.1" placeholder="154" onchange="saveSettings()" style="width:90px" />
           <select class="form-select" id="set-weight-unit" onchange="onWeightUnitChange()" style="width:74px">
-            <option value="kg">kg</option>
             <option value="lb">lb</option>
+            <option value="kg">kg</option>
           </select>
         </div>
       </div>
@@ -1511,17 +1511,6 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
       <div class="setting-row">
         <div><div class="setting-label">Max heart rate</div><div class="setting-sub">Your true max HR (highest ever recorded, or 220-age estimate). Used for training load calculation on non-power activities</div></div>
         <input class="setting-input" id="set-max-hr" type="number" placeholder="192" onchange="saveSettings()" /> <span style="font-size:12px;color:#7d8590;margin-left:4px">bpm</span>
-      </div>
-      <div class="setting-row">
-        <div><div class="setting-label">Age group</div><div class="setting-sub">Used for segment leaderboard filtering</div></div>
-        <select class="form-select" id="set-age-group" onchange="saveSettings()" style="width:140px">
-          <option value="0_24">0-24</option>
-          <option value="25_34">25-34</option>
-          <option value="35_44" selected>35-44</option>
-          <option value="45_54">45-54</option>
-          <option value="55_64">55-64</option>
-          <option value="65_69">65+</option>
-        </select>
       </div>
       <div class="setting-row">
         <div><div class="setting-label">Sex</div><div class="setting-sub">Used to pick the VO2 max reference curve for True Age. Female medians run 10-15% lower, so the wrong curve makes the age badly wrong. Imported from Strava when set there.</div></div>
@@ -1566,21 +1555,6 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
     <div id="set-sports" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:2px 16px"></div>
   </div>
   <div class="card">
-    <div class="settings-title">Data & sync</div>
-    <div class="setting-row native-only">
-      <div><div class="setting-label">Apple Health</div><div class="setting-sub">Optionally read VO₂ max, resting heart rate, HRV, sleep, and weight for recovery guidance and profile insights. Palmarès never writes to Health.</div></div>
-      <button onclick="requestAppleHealthFromSettings(this)" style="background:#1a2332;border:1px solid #C9A227;border-radius:6px;padding:6px 14px;color:#C9A227;cursor:pointer;font-size:13px;white-space:nowrap">Connect</button>
-    </div>
-    <div class="setting-row">
-      <div><div class="setting-label">Force full resync</div><div class="setting-sub">Re-fetches your complete activity history from Strava, and removes anything you've since deleted there. Normal loads use the cache and only pull new activities, so use this if older data looks wrong — for example after deleting an activity on Strava, or merging several rides into one.</div></div>
-      <button onclick="forceFullResync()" style="background:#1a2332;border:1px solid #58a6ff;border-radius:6px;padding:6px 14px;color:#58a6ff;cursor:pointer;font-size:13px">Resync now</button>
-    </div>
-    <div class="setting-row">
-      <div><div class="setting-label">Re-import profile</div><div class="setting-sub">Rebuilds your age, weight, FTP, heart rates and town from your Strava profile, Apple Health, and your own activities. Shows them for review before anything is saved.</div></div>
-      <button onclick="showProfileSetup()" style="background:#1a2332;border:1px solid #C9A227;border-radius:6px;padding:6px 14px;color:#C9A227;cursor:pointer;font-size:13px">Re-import</button>
-    </div>
-  </div>
-  <div class="card">
     <div class="settings-title">Group events</div>
     <div class="settings-section">
       <div class="setting-label" style="margin-bottom:4px">Strava clubs</div>
@@ -1617,6 +1591,21 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
         <input class="setting-input" id="rr-until" type="date" title="Last date (optional, for a seasonal ride)" style="width:150px;text-align:left" />
         <button class="gold-btn" style="margin-top:0" onclick="addRecurringRide()">Add</button>
       </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="settings-title">Data & sync</div>
+    <div class="setting-row native-only">
+      <div><div class="setting-label">Apple Health</div><div class="setting-sub">Optionally read VO₂ max, resting heart rate, HRV, sleep, and weight for recovery guidance and profile insights. Palmarès never writes to Health.</div></div>
+      <button onclick="requestAppleHealthFromSettings(this)" style="background:#1a2332;border:1px solid #C9A227;border-radius:6px;padding:6px 14px;color:#C9A227;cursor:pointer;font-size:13px;white-space:nowrap">Connect</button>
+    </div>
+    <div class="setting-row">
+      <div><div class="setting-label">Force full resync</div><div class="setting-sub">Re-fetches your complete activity history from Strava, and removes anything you've since deleted there. Normal loads use the cache and only pull new activities, so use this if older data looks wrong — for example after deleting an activity on Strava, or merging several rides into one.</div></div>
+      <button onclick="forceFullResync()" style="background:#1a2332;border:1px solid #58a6ff;border-radius:6px;padding:6px 14px;color:#58a6ff;cursor:pointer;font-size:13px">Resync now</button>
+    </div>
+    <div class="setting-row">
+      <div><div class="setting-label">Re-import profile</div><div class="setting-sub">Rebuilds your age, weight, FTP, heart rates and town from your Strava profile, Apple Health, and your own activities. Shows them for review before anything is saved.</div></div>
+      <button onclick="showProfileSetup()" style="background:#1a2332;border:1px solid #C9A227;border-radius:6px;padding:6px 14px;color:#C9A227;cursor:pointer;font-size:13px">Re-import</button>
     </div>
   </div>
   <div class="card">
@@ -1975,7 +1964,7 @@ async function loadPowerPRsFromSupabase(athlete_id) {
 // saveSettings falls back to DEFAULTS for empty fields they couldn't clear
 // them either. Real values come from importProfile() (Strava + Apple Health +
 // the athlete's own activities) at first launch.
-const DEFAULTS = { ftp:200, weight:70, runPace:'9:00', restingHR:60, maxHR:185, ageGroup:'35_44', city:'', units:'imperial', weightUnit:'kg', sex:'', age:null, measuredVO2Max:null };
+const DEFAULTS = { ftp:200, weight:70, runPace:'9:00', restingHR:60, maxHR:185, city:'', units:'imperial', weightUnit:'lb', sex:'', age:null, measuredVO2Max:null };
 
 // Weight is ALWAYS stored in kilograms - every power-to-weight figure in the
 // app divides watts by settings.weight and would silently be 2.2x wrong if a
@@ -2013,7 +2002,6 @@ function saveSettings() {
     runPace: getVal('set-run-pace', DEFAULTS.runPace) || DEFAULTS.runPace,
     restingHR: parseInt(getVal('set-resting-hr', DEFAULTS.restingHR)) || DEFAULTS.restingHR,
     maxHR: parseInt(getVal('set-max-hr', DEFAULTS.maxHR)) || DEFAULTS.maxHR,
-    ageGroup: getVal('set-age-group', DEFAULTS.ageGroup) || DEFAULTS.ageGroup,
     city: getVal('set-city', DEFAULTS.city) || DEFAULTS.city,
     units: getVal('set-units', DEFAULTS.units) || DEFAULTS.units,
     sex: getVal('set-sex', getSettings().sex || ''),
@@ -2030,10 +2018,10 @@ function saveSettings() {
 // "75 lb". The old unit comes from stored settings, read before saveSettings
 // overwrites it with the newly selected one.
 function onWeightUnitChange() {
-  const oldUnit = getSettings().weightUnit || 'kg';
+  const oldUnit = getSettings().weightUnit || 'lb';
   const sel = document.getElementById('set-weight-unit');
   const input = document.getElementById('set-weight');
-  const newUnit = sel ? sel.value : 'kg';
+  const newUnit = sel ? sel.value : 'lb';
   if (input && newUnit !== oldUnit) {
     const kg = weightToKg(input.value, oldUnit);
     if (kg !== null) input.value = weightToDisplay(kg, newUnit);
@@ -2047,12 +2035,11 @@ function loadSettingsUI() {
   window.USER_WEIGHT = s.weight;
   const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
   setVal('set-ftp', s.ftp);
-  setVal('set-weight-unit', s.weightUnit || 'kg');
-  setVal('set-weight', weightToDisplay(s.weight, s.weightUnit || 'kg'));
+  setVal('set-weight-unit', s.weightUnit || 'lb');
+  setVal('set-weight', weightToDisplay(s.weight, s.weightUnit || 'lb'));
   setVal('set-run-pace', s.runPace);
   setVal('set-resting-hr', s.restingHR);
   setVal('set-max-hr', s.maxHR);
-  setVal('set-age-group', s.ageGroup);
   setVal('set-sex', s.sex || '');
   setVal('set-city', s.city);
   setVal('set-units', s.units);
@@ -2197,13 +2184,6 @@ function importProfile() {
     // Tanaka: 208 - 0.7*age, more accurate than 220-age. Clearly an estimate.
     put('maxHR', Math.round(208 - 0.7 * out.age), 'estimated from age');
   }
-  if (out.age && out.ageGroup === undefined) {
-    // Values must match the #set-age-group <option>s exactly.
-    const g = out.age < 25 ? '0_24' : out.age < 35 ? '25_34' : out.age < 45 ? '35_44'
-            : out.age < 55 ? '45_54' : out.age < 65 ? '55_64' : '65_69';
-    put('ageGroup', g, out.age ? (from.age || 'your age') : 'your age');
-  }
-
   return { values: out, sources: from };
 }
 
@@ -2388,12 +2368,10 @@ function saveProfileSetup() {
   }
   if (age !== null) {
     next.age = age;
-    next.ageGroup = age < 25 ? '0_24' : age < 35 ? '25_34' : age < 45 ? '35_44'
-                  : age < 55 ? '45_54' : age < 65 ? '55_64' : '65_69';
   }
   // Convert to kg before storing - settings.weight is canonical kilograms.
   const wUnitEl = document.getElementById('ob-weight-unit');
-  const wUnit = wUnitEl ? wUnitEl.value : 'kg';
+  const wUnit = wUnitEl ? wUnitEl.value : 'lb';
   next.weightUnit = wUnit;
   if (weight !== null) next.weight = weightToKg(weight, wUnit);
   if (ftp !== null) next.ftp = ftp;
