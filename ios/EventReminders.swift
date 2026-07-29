@@ -59,7 +59,7 @@ enum EventReminders {
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let isoPlain = ISO8601DateFormatter()
 
-        for (index, event) in events.prefix(10).enumerated() {
+        for (index, event) in events.prefix(20).enumerated() {
             guard
                 let dateString = event["date"] as? String,
                 let start = iso.date(from: dateString) ?? isoPlain.date(from: dateString)
@@ -67,29 +67,44 @@ enum EventReminders {
 
             let title = event["title"] as? String ?? "Group ride"
             let club = event["club"] as? String
+            let confirmed = event["confirmed"] as? Bool ?? false
 
             let timeText = start.formatted(date: .omitted, time: .shortened)
             let dayText = Calendar.current.isDateInToday(start) ? "today"
                 : Calendar.current.isDateInTomorrow(start) ? "tomorrow"
                 : start.formatted(.dateTime.weekday(.wide))
 
-            // 1 hour before the start
-            add(center: center,
-                id: "\(idPrefix)\(index)-hour",
-                title: "\(title) in 1 hour",
-                body: [club, "Rolls out at \(timeText)."].compactMap { $0 }.joined(separator: " — "),
-                fireAt: start.addingTimeInterval(-3600))
-
-            // Evening-before heads-up for morning rides
-            let hour = Calendar.current.component(.hour, from: start)
-            if hour < 12,
-               let eveBefore = Calendar.current.date(byAdding: .day, value: -1, to: start),
-               let evening = Calendar.current.date(bySettingHour: 20, minute: 0, second: 0, of: eveBefore) {
-                add(center: center,
-                    id: "\(idPrefix)\(index)-eve",
-                    title: "\(title) \(dayText == "today" ? "tomorrow" : dayText) morning",
-                    body: [club, "Starts at \(timeText) — lay out the kit tonight."].compactMap { $0 }.joined(separator: " — "),
-                    fireAt: evening)
+            if confirmed {
+                // Said yes to this one: the full run-up. Anything already in
+                // the past is skipped by add(), so confirming a ride six hours
+                // out still gets the 2-hour nudge without a burst of stale
+                // alerts firing at once.
+                let stages: [(String, TimeInterval, String)] = [
+                    ("24h", -86_400, "Tomorrow — \(timeText)."),
+                    ("12h", -43_200, "Later today — \(timeText)."),
+                    ("2h",   -7_200, "Starts in 2 hours, \(timeText).")
+                ]
+                for (tag, offset, detail) in stages {
+                    add(center: center,
+                        id: "\(idPrefix)\(index)-\(tag)",
+                        title: "\(title) — you're going",
+                        body: [club, detail].compactMap { $0 }.joined(separator: " — "),
+                        fireAt: start.addingTimeInterval(offset))
+                }
+            } else {
+                // Not confirmed: one quiet heads-up the evening before a
+                // morning ride, and nothing else. Rides you haven't opted into
+                // shouldn't be filling the lock screen.
+                let hour = Calendar.current.component(.hour, from: start)
+                if hour < 12,
+                   let eveBefore = Calendar.current.date(byAdding: .day, value: -1, to: start),
+                   let evening = Calendar.current.date(bySettingHour: 20, minute: 0, second: 0, of: eveBefore) {
+                    add(center: center,
+                        id: "\(idPrefix)\(index)-eve",
+                        title: "\(title) \(dayText == "today" ? "tomorrow" : dayText) morning",
+                        body: [club, "Starts at \(timeText) — open Palmarès to say you're going."].compactMap { $0 }.joined(separator: " — "),
+                        fireAt: evening)
+                }
             }
         }
     }

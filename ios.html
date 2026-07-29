@@ -2314,6 +2314,22 @@ function removeExtCalendar(index) {
   reloadClubEvents();
 }
 
+// Refresh events when the app comes back to the foreground. Opening the app
+// is the moment you'd expect to see a newly posted ride, and previously
+// nothing re-checked until the page was reloaded outright - so a ride posted
+// while the app sat in the background stayed invisible indefinitely. Throttled
+// so tab-switching doesn't hammer Strava.
+let _lastEventCheck = 0;
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState !== 'visible') return;
+  const now = Date.now();
+  if (now - _lastEventCheck < 5 * 60 * 1000) return;
+  _lastEventCheck = now;
+  if (!athleteData) return;
+  eventsLoaded = false;
+  loadClubEvents(true);
+});
+
 function reloadClubEvents() {
   eventsLoaded = false;
   const list = document.getElementById('events-list');
@@ -7570,6 +7586,70 @@ async function loadExternalCalendarEvents() {
 }
 
 // ==================== CLUB EVENTS ====================
+// ===== RIDE RSVP =====
+// Confirming a ride is what turns on its reminders: unconfirmed rides stay
+// quiet, a confirmed one gets a heads-up 24h, 12h and 2h before the start.
+// Keyed by club + title + start time rather than Strava's event id, because a
+// weekly series is published as a NEW event each week (and projected
+// occurrences have no id at all), so an id-based key would forget the RSVP
+// every time the list refreshed.
+const RSVP_KEY = 'ed_ride_rsvp';
+function rideKey(e) {
+  const t = String(e.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return String(e.club_id || e.club_name || 'x') + '|' + t + '|' +
+    (e.nextDate ? e.nextDate.toISOString().slice(0, 16) : '');
+}
+function getRsvps() {
+  try { return JSON.parse(localStorage.getItem(RSVP_KEY) || '{}'); } catch (e) { return {}; }
+}
+function isGoing(e) { return !!getRsvps()[rideKey(e)]; }
+function setRsvps(map) {
+  // Drop anything more than a week past so this can't grow without bound.
+  const cutoff = Date.now() - 7 * 86400000;
+  Object.keys(map).forEach(function (k) {
+    const iso = k.split('|')[2];
+    const t = iso ? Date.parse(iso) : NaN;
+    if (!isNaN(t) && t < cutoff) delete map[k];
+  });
+  localStorage.setItem(RSVP_KEY, JSON.stringify(map));
+}
+function toggleRideRsvp(key) {
+  const map = getRsvps();
+  const ev = (window._upcomingEvents || []).filter(function (e) { return rideKey(e) === key; })[0];
+  if (map[key]) {
+    delete map[key];
+    setRsvps(map);
+    try { showToast('Not going — reminders off for that ride.'); } catch (e) {}
+  } else {
+    map[key] = true;
+    setRsvps(map);
+    const when = ev && ev.nextDate
+      ? ev.nextDate.toLocaleDateString('en-US', { weekday: 'long' }) + ' at ' +
+        ev.nextDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+      : 'that ride';
+    try { showToast("You're in for " + when + ". Reminders 24h, 12h and 2h before."); } catch (e) {}
+  }
+  pushRideReminders();
+  try { renderEventRows(); } catch (e) {}
+}
+// Hand the native app the ride list plus which ones are confirmed, so it can
+// schedule the staged reminders. No-op in a browser.
+function pushRideReminders() {
+  const list = window._upcomingEvents || [];
+  notifyNative({
+    type: 'eventReminders',
+    events: list.slice(0, 20).map(function (e) {
+      return {
+        title: e.title || 'Club event',
+        club: e.club_name || null,
+        date: e.nextDate.toISOString(),
+        confirmed: isGoing(e),
+        projected: !!e.projected
+      };
+    })
+  });
+}
+
 let eventsLoaded = false;
 // Which clubs were actually queried, and what each returned. Surfaced under
 // the events list because a phone has no console: when a club ride is missing
@@ -7594,7 +7674,11 @@ async function loadClubEvents(forceFresh) {
     const excludedClubs = new Set((sEvents.eventClubExcluded || []).map(String));
     const cacheKey = 'club_events' + (excludedClubs.size ? ':x' + [...excludedClubs].sort().join(',') : '');
     const athleteId = athleteData ? athleteData.id : null;
-    const cached = forceFresh ? null : await getCached(athleteId, cacheKey, 2*60*60*1000);
+    // 20 minutes, not 2 hours. Club rides get posted the day before and the
+    // card is meant to surface them without being told to; a 2-hour window
+    // meant a ride could be up on Strava and invisible here for most of an
+    // evening. Cheap: this is two API calls on a cache miss.
+    const cached = forceFresh ? null : await getCached(athleteId, cacheKey, 20*60*1000);
     let allEvents, anyClubFailed = false;
 
     if (cached) {
@@ -7900,14 +7984,9 @@ async function loadClubEvents(forceFresh) {
     // Hand the ride list to the iOS app so it can schedule local reminder
     // notifications (EventReminders.swift). Includes external calendar
     // rides. No-op in a normal browser, like every notifyNative call.
-    notifyNative({
-      type: 'eventReminders',
-      events: upcoming.slice(0, 10).map(e => ({
-        title: e.title || 'Club event',
-        club: e.club_name || null,
-        date: e.nextDate.toISOString()
-      }))
-    });
+    // Includes which rides are confirmed, so the app can schedule the
+    // 24h/12h/2h reminders for those and stay quiet about the rest.
+    pushRideReminders();
 
     if (!upcoming.length) {
       // Say WHY it's empty. "No events" is indistinguishable from a silent
@@ -7922,7 +8001,14 @@ async function loadClubEvents(forceFresh) {
       return;
     }
 
-    document.getElementById('events-list').innerHTML = upcoming.slice(0,6).map(e => {
+    window._upcomingEvents = upcoming;
+    document.getElementById('events-list').innerHTML = '<div id="event-rows"></div>';
+    // Defined here so it closes over `now`; re-run on RSVP so the button
+    // state updates without refetching anything from Strava.
+    window.renderEventRows = function () {
+      const rowsEl = document.getElementById('event-rows');
+      if (!rowsEl) return;
+      rowsEl.innerHTML = (window._upcomingEvents || []).slice(0,6).map(e => {
       const d = e.nextDate;
       const isToday = d.toDateString() === now.toDateString();
       const tomorrow = new Date(now); tomorrow.setDate(now.getDate()+1);
@@ -7950,9 +8036,15 @@ async function loadClubEvents(forceFresh) {
         <div class="row-right" style="text-align:right">
           <div style="font-size:13px;font-weight:500;color:${daysUntil<=1?'#C9A227':'#7d8590'}">${isToday?'Today':isTomorrow?'Tomorrow':'in '+daysUntil+'d'}</div>
           ${e.athlete_count ? `<small>${e.athlete_count} going</small>` : ''}
+          <button type="button" onclick="toggleRideRsvp('${rideKey(e).replace(/'/g, "\\'")}')"
+            style="margin-top:6px;background:${isGoing(e) ? '#1a2d1f' : 'transparent'};border:1px solid ${isGoing(e) ? '#3fb950' : '#30363d'};color:${isGoing(e) ? '#3fb950' : '#7d8590'};border-radius:999px;padding:4px 12px;font-size:11px;cursor:pointer;white-space:nowrap">
+            ${isGoing(e) ? '\u2713 Going' : "I'm going"}
+          </button>
         </div>
       </div>`;
-    }).join('');
+      }).join('');
+    };
+    renderEventRows();
 
     // Footer: outbound links to the configured external calendar sites (or
     // the historical SBRA link when none are configured yet), plus a note
