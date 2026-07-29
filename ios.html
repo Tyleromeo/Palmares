@@ -2318,7 +2318,7 @@ function reloadClubEvents() {
   eventsLoaded = false;
   const list = document.getElementById('events-list');
   if (list) list.innerHTML = '<div style="font-size:12px;color:#7d8590;padding:8px 0">Refreshing events...</div>';
-  loadClubEvents();
+  loadClubEvents(true);
 }
 
 // WKWebView does NOT show window.confirm/alert/prompt unless the host app
@@ -7571,8 +7571,13 @@ async function loadExternalCalendarEvents() {
 
 // ==================== CLUB EVENTS ====================
 let eventsLoaded = false;
+// Which clubs were actually queried, and what each returned. Surfaced under
+// the events list because a phone has no console: when a club ride is missing
+// the first question is always "was that club even checked?", and previously
+// there was no way to answer it from the device.
+let eventDiag = null;
 
-async function loadClubEvents() {
+async function loadClubEvents(forceFresh) {
   if (eventsLoaded) return;
   eventsLoaded = true;
   const token = await getToken();
@@ -7589,11 +7594,12 @@ async function loadClubEvents() {
     const excludedClubs = new Set((sEvents.eventClubExcluded || []).map(String));
     const cacheKey = 'club_events' + (excludedClubs.size ? ':x' + [...excludedClubs].sort().join(',') : '');
     const athleteId = athleteData ? athleteData.id : null;
-    const cached = await getCached(athleteId, cacheKey, 2*60*60*1000);
+    const cached = forceFresh ? null : await getCached(athleteId, cacheKey, 2*60*60*1000);
     let allEvents, anyClubFailed = false;
 
     if (cached) {
       allEvents = cached;
+      eventDiag = { clubs: [], skipped: 0, failed: 0, fromCache: true };
       console.log('Club events: using cache,', allEvents.length, 'events');
     } else {
       // Get athlete clubs first
@@ -7624,26 +7630,45 @@ async function loadClubEvents() {
       const syncedClubs = clubs.filter(c => !excludedClubs.has(String(c.id)));
 
       // Fetch events for each club
+      // This used to stop after the first 8 clubs, silently. Anyone in more
+      // than eight clubs never saw events from the rest - the LiVelo
+      // Wednesday night ride was missing for exactly that reason while the
+      // WolfPack ride (earlier in the list) showed fine.
       allEvents = [];
+      eventDiag = { clubs: [], skipped: 0, failed: 0 };
+      const CLUB_LIMIT = 30;
+      const toFetch = syncedClubs.slice(0, CLUB_LIMIT);
+      eventDiag.skipped = Math.max(0, syncedClubs.length - toFetch.length);
       console.log('=== Club events debug ===');
-      console.log('Total clubs found:', clubs.length, '| Syncing:', syncedClubs.map(c => c.name).join(', ') || '(none)');
-      for (const club of syncedClubs.slice(0, 8)) {
+      console.log('Total clubs found:', clubs.length, '| Syncing:', toFetch.map(c => c.name).join(', ') || '(none)');
+      for (const club of toFetch) {
         try {
-          const evResp = await fetch('https://www.strava.com/api/v3/clubs/'+club.id+'/group_events', {headers});
+          // per_page: Strava paginates group_events at 30 by default, so a
+          // club with a long event list could push a genuine upcoming ride
+          // off the first page and out of view entirely.
+          const evResp = await fetch('https://www.strava.com/api/v3/clubs/'+club.id+'/group_events?per_page=200', {headers});
           if (!evResp.ok) {
             console.log('Club "'+club.name+'" (id '+club.id+'): FAILED, status', evResp.status);
-            anyClubFailed = true;
+            eventDiag.clubs.push({ name: club.name, ok: false, status: evResp.status });
+            anyClubFailed = true; eventDiag.failed++;
             continue;
           }
           const events = await evResp.json();
           if (Array.isArray(events)) {
-            console.log('Club "'+club.name+'" (id '+club.id+'): OK,', events.length, 'total events,', events.filter(e=>e.upcoming_occurrences&&e.upcoming_occurrences.length).length, 'with upcoming occurrences');
+            const withUpcoming = events.filter(e=>e.upcoming_occurrences&&e.upcoming_occurrences.length).length;
+            console.log('Club "'+club.name+'" (id '+club.id+'): OK,', events.length, 'total events,', withUpcoming, 'with upcoming occurrences');
+            eventDiag.clubs.push({ name: club.name, ok: true, total: events.length, upcoming: withUpcoming });
             events.forEach(function(e) { allEvents.push(Object.assign({}, e, {club_name: club.name, club_id: club.id, club_url: club.url || null})); });
           } else {
             console.log('Club "'+club.name+'" (id '+club.id+'): unexpected response shape', events);
+            eventDiag.clubs.push({ name: club.name, ok: false, status: 'bad shape' });
           }
           await new Promise(function(r){setTimeout(r,300);});
-        } catch(e) { console.log('Club "'+club.name+'" (id '+club.id+'): EXCEPTION', e.message); anyClubFailed = true; }
+        } catch(e) {
+          console.log('Club "'+club.name+'" (id '+club.id+'): EXCEPTION', e.message);
+          eventDiag.clubs.push({ name: club.name, ok: false, status: e.message });
+          anyClubFailed = true; eventDiag.failed++;
+        }
       }
 
       // Never cache an empty result: a single bad/rate-limited fetch would
@@ -7819,6 +7844,32 @@ async function loadClubEvents() {
         footer.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between"><div><div style="font-size:13px;font-weight:500;color:#e6edf3">SBRA A-rides</div><div style="font-size:11px;color:#7d8590">Suffolk Bicycle Riders Association upcoming rides — add this or any club calendar under Settings › Group events</div></div>' + linkBtn('https://www.sbraweb.org/upcoming_rides?q=upcoming_rides_a', 'View rides') + '</div>';
       }
       evList.appendChild(footer);
+
+      // Which clubs were checked, and what each returned. A phone has no
+      // console, so when a club's ride is missing this is the only way to see
+      // whether that club was queried at all, returned nothing, or failed.
+      if (eventDiag && eventDiag.fromCache) {
+        const note = document.createElement('div');
+        note.style.cssText = 'font-size:11px;color:#57606a;margin-top:8px';
+        note.innerHTML = 'Showing cached events (up to 2h old). <a href="#" onclick="reloadClubEvents();return false" style="color:#C9A227">Refresh now</a>';
+        evList.appendChild(note);
+      } else if (eventDiag && eventDiag.clubs.length) {
+        const diag = document.createElement('details');
+        diag.style.cssText = 'margin-top:8px';
+        const okCount = eventDiag.clubs.filter(c => c.ok).length;
+        diag.innerHTML =
+          '<summary style="font-size:11px;color:#57606a;cursor:pointer">Checked ' + okCount + ' of ' +
+            eventDiag.clubs.length + ' clubs' +
+            (eventDiag.skipped ? ' \u00b7 ' + eventDiag.skipped + ' skipped' : '') +
+            (eventDiag.failed ? ' \u00b7 ' + eventDiag.failed + ' failed' : '') + '</summary>' +
+          '<div style="font-size:11px;color:#57606a;padding:6px 0 0">' +
+            eventDiag.clubs.map(c => escapeHTML(c.name) + ' \u2014 ' +
+              (c.ok ? (c.total + ' events, ' + c.upcoming + ' scheduled') : ('failed: ' + escapeHTML(String(c.status))))
+            ).join('<br>') +
+            (eventDiag.skipped ? '<br><span style="color:#d29922">' + eventDiag.skipped + ' club(s) not checked \u2014 deselect some under Settings \u203a Group events.</span>' : '') +
+          '</div>';
+        evList.appendChild(diag);
+      }
     }
 
   } catch(e) {
