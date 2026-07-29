@@ -7906,6 +7906,26 @@ async function loadClubEvents(forceFresh) {
         }).length;
         c.soonest = ahead.length ? ahead[0].toLocaleDateString('en-US',{month:'short',day:'numeric'}) : null;
         c.latestPast = behind.length ? behind[0].toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : null;
+        // The five most recent events with their titles. Three theories about
+        // why a club's ride was missing have now been wrong, each time because
+        // the shape of the data was assumed rather than seen. This shows it:
+        // whether the ride is in the list at all, how its title is written
+        // week to week, and what dates it actually carries.
+        c.recent = mine
+          .map(function (e) {
+            const ds = (e.upcoming_occurrences || []).map(parseOccurrence)
+              .filter(function (d) { return d && !isNaN(d.getTime()); })
+              .sort(function (a, b) { return b - a; });
+            return ds.length ? { title: e.title || '(untitled)', when: ds[0], count: ds.length } : null;
+          })
+          .filter(Boolean)
+          .sort(function (a, b) { return b.when - a.when; })
+          .slice(0, 5)
+          .map(function (r) {
+            return r.title + ' \u2014 ' + r.when.toLocaleDateString('en-US',
+              { weekday: 'short', month: 'short', day: 'numeric' }) +
+              (r.count > 1 ? ' (+' + (r.count - 1) + ' more dates)' : '');
+          });
       });
     }
 
@@ -8092,6 +8112,10 @@ async function loadClubEvents(forceFresh) {
                 (c.futureEvents != null ? c.futureEvents : '?') + ' upcoming';
               if (c.soonest) line += ' (next ' + escapeHTML(c.soonest) + ')';
               else if (c.latestPast) line += ', newest date ' + escapeHTML(c.latestPast) + ' \u2014 all past';
+              if (c.recent && c.recent.length) {
+                line += '<div style="padding:2px 0 4px 10px;color:#484f58">' +
+                  c.recent.map(function (r) { return escapeHTML(r); }).join('<br>') + '</div>';
+              }
               return line;
             }).join('<br>') +
             (eventDiag.skipped ? '<br><span style="color:#d29922">' + eventDiag.skipped + ' club(s) not checked \u2014 deselect some under Settings \u203a Group events.</span>' : '') +
