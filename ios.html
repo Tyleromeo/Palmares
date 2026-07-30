@@ -3109,6 +3109,27 @@ const ROAD_STATUS_META = {
 // A report is useful for 30 days after people start confirming it.
 const ROAD_KEEP_DAYS = 30;
 
+const ROAD_DEFAULT_RADIUS_MI = 25;
+
+// Where "near me" means. An explicitly entered ZIP wins; otherwise fall back
+// to the home town the profile already imported from Strava, so the default
+// filter works for someone who has never opened these controls.
+async function resolveRoadCenter(s) {
+  if (s.roadZip) {
+    const c = await geocodeZip(s.roadZip);
+    return c ? { center: c, label: s.roadZip + (c.place ? ' (' + c.place + ')' : '') } : null;
+  }
+  if (s.city) {
+    const parts = String(s.city).split(',');
+    const state = (parts[1] || '').trim();
+    const c = await geocodeTown(parts[0].trim(), state);
+    // Pass the state on: report towns are geocoded against this centre, and
+    // without it a same-named town in another state slips through.
+    if (c) return { center: Object.assign({ state: state }, c), label: s.city };
+  }
+  return null;
+}
+
 function roadKeyOf(r) {
   return (r.road_name || '').trim().toLowerCase() + '|' + (r.town || '').trim().toLowerCase();
 }
@@ -3136,7 +3157,9 @@ async function loadRoadReports() {
   const zipEl = document.getElementById('road-filter-zip');
   const radEl = document.getElementById('road-filter-radius');
   if (zipEl && !zipEl.value && sf.roadZip) zipEl.value = sf.roadZip;
-  if (radEl && !radEl.value && sf.roadRadius) radEl.value = sf.roadRadius;
+  if (radEl && !radEl.value) {
+    radEl.value = sf.roadRadius === 'any' ? '' : (sf.roadRadius || String(ROAD_DEFAULT_RADIUS_MI));
+  }
   try {
     const data = await callEdge('list_road_reports', {});
     _roadReportsRaw = data.reports || [];
@@ -3200,7 +3223,21 @@ function groupRoadReports(reports) {
     // Historical rows still carry names, and a value that never reaches the
     // page cannot be leaked by a later edit that forgets why it was hidden.
     const safe = Object.assign({}, latest); delete safe.reported_by;
-    groups.push({ report: safe, confirms: confirmers.size, ageDays, key: roadKeyOf(latest) });
+    // A road's status can be revised: a stripped road gets repaved and
+    // someone files a new report saying so. Surface when that happened, what
+    // it was before, and when anyone last agreed with the current call, so a
+    // week-old "avoid" and a fresh "repaved" are never confused.
+    const priorPrimary = primaries.length > 1 ? primaries[primaries.length - 2] : null;
+    const lastConfirmAt = confirmRows.reduce(function (m, r) {
+      const t = new Date(r.created_at || 0).getTime();
+      return (t && t >= since.getTime() && t > m) ? t : m;
+    }, 0);
+    groups.push({
+      report: safe, confirms: confirmers.size, ageDays, key: roadKeyOf(latest),
+      statusSince: latestAt.getTime() || 0,
+      lastConfirmAt: lastConfirmAt || 0,
+      prevStatus: (priorPrimary && priorPrimary.status !== latest.status) ? priorPrimary.status : null
+    });
   }
   groups.sort((a, b) => new Date(b.report.created_at || 0) - new Date(a.report.created_at || 0));
   return groups;
@@ -3217,8 +3254,16 @@ async function renderRoadReports() {
   // than showing one report from a town over.
   const s = getSettings();
   const statusEl = document.getElementById('road-filter-status');
-  if (s.roadZip && s.roadRadius) {
-    const center = await geocodeZip(s.roadZip);
+  // 25 miles around home by default. An unconfigured filter used to show
+  // every report in the database, most of them nowhere near the rider - and
+  // the home town already comes from Strava during setup, so there is no
+  // reason to make them type anything before the list is useful. 'any' is
+  // the explicit opt-out and is distinct from simply not having chosen.
+  const radius = s.roadRadius === 'any' ? null
+    : (s.roadRadius ? Number(s.roadRadius) : ROAD_DEFAULT_RADIUS_MI);
+  const home = await resolveRoadCenter(s);
+  if (radius && home) {
+    const center = home.center;
     if (center) {
       const kept = [];
       for (const g of groups) {
@@ -3227,12 +3272,12 @@ async function renderRoadReports() {
         const loc = await geocodeTown(town, center.state);
         if (!loc) { g.unplaced = true; kept.push(g); continue; }
         g.distanceMi = haversineMi(center, loc);
-        if (g.distanceMi <= Number(s.roadRadius)) kept.push(g);
+        if (g.distanceMi <= radius) kept.push(g);
       }
       groups = kept;
-      if (statusEl) statusEl.textContent = 'within ' + s.roadRadius + ' mi of ' + s.roadZip + (center.place ? ' (' + center.place + ')' : '');
+      if (statusEl) statusEl.textContent = 'within ' + radius + ' mi of ' + home.label;
     } else if (statusEl) {
-      statusEl.textContent = 'ZIP ' + s.roadZip + ' not found — showing everything';
+      statusEl.textContent = s.roadZip ? ('ZIP ' + s.roadZip + ' not found — showing everything') : '';
     }
   } else if (statusEl) {
     statusEl.textContent = '';
@@ -3252,6 +3297,17 @@ async function renderRoadReports() {
     // should read "1d ago", never "Jul 20 (today)".
     const calDays = r.created_at ? Math.round((new Date().setHours(0,0,0,0) - new Date(r.created_at).setHours(0,0,0,0)) / 86400000) : 0;
     const age = calDays >= 1 ? calDays + 'd ago' : 'today';
+    const relDay = function (ms) {
+      if (!ms) return '';
+      const d = Math.round((new Date().setHours(0,0,0,0) - new Date(ms).setHours(0,0,0,0)) / 86400000);
+      return d <= 0 ? 'today' : d === 1 ? 'yesterday' : d + 'd ago';
+    };
+    const changedBit = g.prevStatus
+      ? 'changed from ' + (ROAD_STATUS_META[g.prevStatus] || {}).label + ' ' + relDay(g.statusSince)
+      : '';
+    const confirmedBit = g.lastConfirmAt
+      ? 'last confirmed ' + relDay(g.lastConfirmAt)
+      : 'not confirmed yet';
     const metaBits = [
       when ? when + ' (' + age + ')' : '',
       // Reporter name deliberately not shown. It is another athlete's identity
@@ -3260,13 +3316,17 @@ async function renderRoadReports() {
 
       g.distanceMi != null ? g.distanceMi.toFixed(0) + ' mi away' : (g.unplaced && getSettings().roadZip ? 'location unknown' : ''),
       g.confirms ? '👍 ' + g.confirms + ' confirm' + (g.confirms === 1 ? '' : 's') : '',
+      confirmedBit,
       r.note ? escapeHTML(r.note) : ''
     ].filter(Boolean).join(' · ');
+    const changedLine = changedBit
+      ? '<div style="font-size:11px;color:#d29922;margin-top:2px">↻ ' + escapeHTML(changedBit) + '</div>'
+      : '';
     const staleHint = g.ageDays > ROAD_STALE_HINT_DAYS ? '<div style="font-size:11px;color:#d29922;margin-top:2px">Posted ' + g.ageDays + ' days ago — still accurate?</div>' : '';
     return '<div class="row">' +
       '<div>' +
         '<div class="row-name">' + meta.icon + ' ' + escapeHTML(r.road_name) + (r.town ? '<span style="color:#7d8590;font-weight:400"> · ' + escapeHTML(r.town) + '</span>' : '') + '</div>' +
-        '<div class="row-meta">' + metaBits + '</div>' + staleHint +
+        '<div class="row-meta">' + metaBits + '</div>' + changedLine + staleHint +
       '</div>' +
       '<div class="row-right" style="text-align:right">' +
         '<span style="font-size:10px;font-weight:600;color:' + meta.color + ';border:1px solid ' + meta.color + ';border-radius:4px;padding:2px 7px;white-space:nowrap">' + meta.label + '</span>' +
@@ -3274,6 +3334,13 @@ async function renderRoadReports() {
           (confirmedRoads()[g.key]
             ? '<span title="You confirmed this" style="border:1px solid #3fb950;border-radius:5px;color:#3fb950;font-size:10px;padding:2px 7px">👍 Confirmed</span>'
             : '<button onclick="confirmRoadStatus(' + i + ')" title="Confirm this is still the road\'s condition" style="background:transparent;border:1px solid #30363d;border-radius:5px;color:#7d8590;cursor:pointer;font-size:10px;padding:2px 7px">👍 Confirm</button>') +
+          '<select onchange="changeRoadStatus(' + i + ', this.value)" title="The road has changed since this report" ' +
+            'style="background:transparent;border:1px solid #30363d;border-radius:5px;color:#7d8590;font-size:10px;padding:2px 5px;cursor:pointer">' +
+            '<option value="">↻ Update</option>' +
+            Object.keys(ROAD_STATUS_META).filter(function(k){ return k !== r.status; }).map(function(k){
+              return '<option value="' + k + '">' + ROAD_STATUS_META[k].label + '</option>';
+            }).join('') +
+          '</select>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -3285,7 +3352,7 @@ function setRoadFilter() {
   const radius = document.getElementById('road-filter-radius').value;
   const s = getSettings();
   s.roadZip = /^\d{5}$/.test(zip) ? zip : null;
-  s.roadRadius = radius || null;
+  s.roadRadius = radius || 'any';
   localStorage.setItem('ed_settings', JSON.stringify(s));
   renderRoadReports();
 }
@@ -3313,6 +3380,38 @@ async function postRoadLifecycle(group, tag, msgText) {
   }
 }
 
+// A road's condition genuinely changes - stripped tarmac gets repaved. This
+// files a NEW report rather than a confirmation, which is what makes the
+// grouping treat it as the current status and start the confirmation count
+// over: agreement with the old status must not carry across to the new one.
+async function changeRoadStatus(i, status) {
+  const sel = event && event.target;
+  const g = _roadGroups[i];
+  if (!g || !status || !ROAD_STATUS_META[status]) { if (sel) sel.value = ''; return; }
+  const label = ROAD_STATUS_META[status].label;
+  const ok = await askConfirm('Change "' + g.report.road_name + '" to ' + label +
+    '? This becomes the road\'s current status for everyone, and resets its confirmations.', 'Update status');
+  if (!ok) { renderRoadReports(); return; }
+  try {
+    await callEdge('add_road_report', {
+      road_name: g.report.road_name,
+      town: g.report.town || null,
+      status: status,
+      note: null,                     // a primary report, not a lifecycle row
+      reported_by: null,
+      athlete_id: athleteData ? athleteData.id : null
+    });
+    // Their previous confirmation referred to the status that just changed,
+    // so clear it - otherwise they could never confirm the new one.
+    try { const c = confirmedRoads(); delete c[g.key]; localStorage.setItem('ed_road_confirmed', JSON.stringify(c)); } catch (e) {}
+    showToast('✅', 'Status updated', escapeHTML(g.report.road_name) + ' — ' + label);
+    loadRoadReports();
+  } catch (e) {
+    showToast('⚠️', 'Could not update', e && e.message ? e.message : 'Unknown error');
+    renderRoadReports();
+  }
+}
+
 function confirmRoadStatus(i) {
   const g = _roadGroups[i];
   if (!g) return;
@@ -3337,8 +3436,30 @@ function setGeoCache(key, val) {
 // shared by that feature and the road report filter - it was duplicated
 // here once and the two definitions silently collided).
 
+// Open-Meteo reports admin1 as a full state name while profiles and ZIP
+// lookups variously carry "NY" or "New York". Comparing them raw meant the
+// bias silently never matched, so a report in Huntington NY could resolve to
+// Huntington WV and fall outside the radius.
+const US_STATE_NAMES = { al:'alabama', ak:'alaska', az:'arizona', ar:'arkansas', ca:'california',
+  co:'colorado', ct:'connecticut', de:'delaware', fl:'florida', ga:'georgia', hi:'hawaii', id:'idaho',
+  il:'illinois', in:'indiana', ia:'iowa', ks:'kansas', ky:'kentucky', la:'louisiana', me:'maine',
+  md:'maryland', ma:'massachusetts', mi:'michigan', mn:'minnesota', ms:'mississippi', mo:'missouri',
+  mt:'montana', ne:'nebraska', nv:'nevada', nh:'new hampshire', nj:'new jersey', nm:'new mexico',
+  ny:'new york', nc:'north carolina', nd:'north dakota', oh:'ohio', ok:'oklahoma', or:'oregon',
+  pa:'pennsylvania', ri:'rhode island', sc:'south carolina', sd:'south dakota', tn:'tennessee',
+  tx:'texas', ut:'utah', vt:'vermont', va:'virginia', wa:'washington', wv:'west virginia',
+  wi:'wisconsin', wy:'wyoming', dc:'district of columbia' };
+
+function normalizeStateName(v) {
+  const t = String(v || '').trim().toLowerCase().replace(/\./g, '');
+  return US_STATE_NAMES[t] || t;
+}
+
 async function geocodeTown(town, biasState) {
-  const key = 'town:' + town.toLowerCase();
+  // The bias belongs in the cache key: without it the first lookup's answer
+  // was reused for every state thereafter.
+  const want = normalizeStateName(biasState);
+  const key = 'town:' + town.toLowerCase() + (want ? '|' + want : '');
   const cached = getGeoCache()[key];
   if (cached !== undefined) return cached;
   try {
@@ -3348,7 +3469,7 @@ async function geocodeTown(town, biasState) {
     const results = data.results || [];
     // Prefer the match in the same state as the ZIP - "Kings Park" exists
     // in several states and the wrong one would silently mis-filter.
-    const best = results.find(r => biasState && r.admin1 === biasState) || results[0];
+    const best = results.find(r => want && normalizeStateName(r.admin1) === want) || results[0];
     const val = best ? { lat: best.latitude, lon: best.longitude } : null;
     setGeoCache(key, val);
     return val;
