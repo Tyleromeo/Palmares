@@ -670,7 +670,8 @@ body.map-fs #map-fs-exit { display: flex; }
 /* The expand button is pointless once already full screen. */
 body.map-fs #map-fs-enter { display: none; }
 body.map-fs #route-fs-bar { display: flex !important; }
-body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0; bottom: 0; z-index: 10002; margin: 0; border-radius: 14px 14px 0 0; max-height: 48vh; overflow-y: auto; padding-bottom: calc(env(safe-area-inset-bottom) + 14px); box-shadow: 0 -8px 24px rgba(0,0,0,.5); }
+body.map-fs #route-builder-panel,
+body.map-fs #segment-hunter-panel { position: fixed !important; left: 0; right: 0; bottom: 0; z-index: 10002; margin: 0; border-radius: 14px 14px 0 0; max-height: 48vh; overflow-y: auto; padding-bottom: calc(env(safe-area-inset-bottom) + 14px); box-shadow: 0 -8px 24px rgba(0,0,0,.5); }
 .map-fs-btn { background:#161b22; border:1px solid #30363d; color:#e6edf3; border-radius:999px; padding:9px 15px; font-size:13px; cursor:pointer; display:flex; align-items:center; gap:6px; box-shadow: 0 2px 10px rgba(0,0,0,.4); }
 .map-fs-btn.exit { background:#e0691a; color:#0d1117; border-color:#e0691a; font-weight:600; }
 
@@ -1454,9 +1455,9 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
             <option value="0" selected>Today</option>
           </select>
         </div>
-        <button class="map-toggle active" id="hunt-scan-btn" onclick="huntSegmentsInView()" disabled style="font-size:11px;background:#C9A227;color:#0d1117;border-color:#C9A227">Scan this view</button>
+        <button class="map-toggle active" id="hunt-scan-btn" onclick="huntSegmentsInView()" disabled style="font-size:11px;background:#C9A227;color:#0d1117;border-color:#C9A227">Scan this area</button>
       </div>
-      <div id="hunt-status" style="font-size:11px;color:#7d8590;margin-top:8px">Move the map over the area you want to ride and zoom in — the scan turns on once the view is small enough to search completely.</div>
+      <div id="hunt-status" style="font-size:11px;color:#7d8590;margin-top:8px">Move the map over the area you want to ride and zoom in — Scan this area turns on once it is small enough to search completely.</div>
       <div id="hunt-list" class="rtw-wrap"></div>
     </div>
     <div id="route-builder-panel" style="display:none;background:#161b22;border:1px solid #e0691a;border-radius:6px;padding:12px 14px;margin-bottom:8px">
@@ -12985,12 +12986,12 @@ function updateHuntButton() {
   btn.disabled = !v.ready;
   if (v.reason === 'loading') { setHuntStatus('Waiting for the map…'); return; }
   if (!v.ready) {
-    setHuntStatus('Zoom in about ' + (Math.round(v.zoomFactor * 10) / 10) + '\u00d7 to scan — this view is about ' +
+    setHuntStatus('Zoom in about ' + (Math.round(v.zoomFactor * 10) / 10) + '\u00d7 to scan — this area is about ' +
       Math.round(v.widthMi) + ' mi across, which is more of Strava than one sweep can cover.');
     return;
   }
   if (!huntResults) {
-    setHuntStatus('Ready to scan — about ' + Math.round(v.widthMi) + ' mi across, ' + v.tiles.length + ' areas to check.');
+    setHuntStatus('Ready to scan — about ' + Math.round(v.widthMi) + ' mi across, ' + v.tiles.length + ' sections to check.');
   }
 }
 
@@ -13012,9 +13013,9 @@ async function huntSegmentsInView() {
   }
 
   clearHuntLayers();
-  setHuntStatus('Scanning this view… 0/' + v.tiles.length + ' areas');
+  setHuntStatus('Scanning this area… 0/' + v.tiles.length + ' sections');
   const res = await exploreSegmentsInTiles(v.tiles, huntSport, function (done, total, hits) {
-    setHuntStatus('Scanning this view… ' + done + '/' + total + ' areas · ' + hits + ' found');
+    setHuntStatus('Scanning this area… ' + done + '/' + total + ' sections · ' + hits + ' found');
   });
   if (res.error === 'no-token') { setHuntStatus('Connect to Strava to hunt for segments.'); return; }
 
@@ -13108,7 +13109,7 @@ function renderHuntList() {
       setHuntStatus('No forecast for that day yet.');
       return;
     }
-    el.innerHTML = '<div class="rtw-empty">No segments found in this view. Pan somewhere busier, or zoom in — the scan only covers what is on screen.</div>';
+    el.innerHTML = '<div class="rtw-empty">No segments found in this area. Pan somewhere busier, or zoom in — the scan only covers what is on screen.</div>';
     setHuntStatus('Nothing found here.');
     return;
   }
@@ -13146,12 +13147,12 @@ function renderHuntList() {
 
   el.innerHTML = '<div class="rtw-head">' +
       escapeHTML('Best tailwind here ' + huntDayPhrase() + ' · ' + windDirName(w.direction) + ' wind at ' + Math.round(w.speed) + ' mph · ' +
-      huntResults.totalFound + (huntResults.totalFound === 1 ? ' segment' : ' segments') + ' in view' +
+      huntResults.totalFound + (huntResults.totalFound === 1 ? ' segment' : ' segments') + ' in this area' +
       (caveats.length ? ' · ' + caveats.join(' · ') : '')) +
     '</div>' + rows +
     '<div class="rtw-foot">+ Route drops both ends of a segment into the route builder, so the course actually runs it. Starring pushes it to your Garmin as a Live Segment.</div>';
   setHuntStatus(huntResults.totalFound + (huntResults.totalFound === 1 ? ' segment' : ' segments') +
-    ' in view, best ' + huntResults.picks.length + ' by tailwind listed below.');
+    ' in this area, best ' + huntResults.picks.length + ' by tailwind listed below.');
 }
 window.renderHuntList = renderHuntList;
 
