@@ -1066,6 +1066,16 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
     <div class="card">
       <div class="card-title"><div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>VO2 max estimate</div></div>
       <div id="vo2max-display"></div>
+      <div style="margin-top:1.25rem;border-top:1px solid #21262d;padding-top:1rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          <div style="font-size:13px;font-weight:600;color:#e6edf3">Output by heart-rate zone</div>
+          <div id="zone-output-toggle" style="display:flex;gap:4px">
+            <button class="nav-btn active" data-sport="ride" onclick="setZoneOutputSport('ride')">Rides</button>
+            <button class="nav-btn" data-sport="run" onclick="setZoneOutputSport('run')">Runs</button>
+          </div>
+        </div>
+        <div id="zone-output"></div>
+      </div>
       <div class="zone-trend-controls">
         <div style="font-size:13px;font-weight:600;color:#e6edf3">Trend over time</div>
         <div id="vo2-filters" style="display:flex;gap:4px">
@@ -7801,26 +7811,16 @@ function calcVO2Max() {
   const vo2AtPace = -4.60 + 0.182258 * velocityMPerMin + 0.000104 * Math.pow(velocityMPerMin, 2);
   const vdotEstimate = vo2AtPace / 0.85;
 
-  // HR-based cross-check: use observed max HR from recent hard runs and average HR
-  // at a known hard effort, via the Uth-Sorensen-Pedersen approximation:
-  // VO2max ≈ 15.3 × (HRmax / HRrest)
-  const runs = allActivities.filter(a => a.type === 'Run' && a.max_heartrate > 0).slice(0, 30);
-  let observedMaxHR = 0;
-  runs.forEach(r => { if (r.max_heartrate > observedMaxHR) observedMaxHR = r.max_heartrate; });
-
-  let hrEstimate = null;
-  if (observedMaxHR > 0) {
-    // Prefer the Apple Health 30-day resting HR average when the iOS app
-    // has provided one - it's measured, not manually entered.
-    const restingHR = (healthKitData && healthKitData.restingHR) || s.restingHR || 58;
-    hrEstimate = Math.round(15.3 * (observedMaxHR / restingHR));
-  }
-
-  return {
-    vdot: Math.round(vdotEstimate * 10) / 10,
-    hrBased: hrEstimate,
-    observedMaxHR: observedMaxHR || null
-  };
+  // The HR-based cross-check (Uth-Sorensen-Pedersen, 15.3 x HRmax/HRrest) has
+  // been removed. It took the highest max_heartrate in recent runs with no
+  // upper bound, so a single corrupt strap reading around 550 bpm produced a
+  // VO2 max of 168 - roughly twice the human record - and it was shown on the
+  // card as if it meant something. The formula is weak even with clean data.
+  //
+  // The Daniels VDOT figure survives only as a silent last-resort input to
+  // True Age, for someone with no measured VO2 max from Apple Health or
+  // Settings. It is no longer displayed as a number in its own right.
+  return { vdot: Math.round(vdotEstimate * 10) / 10 };
 }
 
 function renderZones() {
@@ -8038,7 +8038,6 @@ function getEffectiveVO2Max() {
   if (s.measuredVO2Max) return { value: s.measuredVO2Max, source: 'Settings (manual)' };
   const v = calcVO2Max();
   if (v && v.vdot) return { value: v.vdot, source: 'Estimated from threshold pace' };
-  if (v && v.hrBased) return { value: v.hrBased, source: 'Estimated from heart rate' };
   return null;
 }
 
@@ -8179,18 +8178,12 @@ function renderTrueAge() {
 }
 
 function renderVO2Max() {
+  try { renderZoneOutput(zoneOutputSport); } catch (e) {}
   const el = document.getElementById('vo2max-display');
   if (!el) return;
   const s = getSettings();
   const v = calcVO2Max();
   if (!v && !s.measuredVO2Max && !(healthKitData && healthKitData.vo2max)) { el.innerHTML = '<p style="font-size:13px;color:#7d8590">Set a threshold run pace in Settings to see an estimate.</p>'; renderTrueAge(); return; }
-
-  let hrRow = '';
-  if (v && v.hrBased) {
-    hrRow = '<div class="metric" style="margin-top:0"><div class="metric-label">HR-based estimate</div><div class="metric-val">'+v.hrBased+'</div><div class="metric-sub">From max HR of '+v.observedMaxHR+' bpm</div></div>';
-  } else {
-    hrRow = '<div class="metric" style="margin-top:0"><div class="metric-label">HR-based estimate</div><div class="metric-val">--</div><div class="metric-sub">No max HR data found in recent runs</div></div>';
-  }
 
   // Measured value gets its own card, since it's a direct reading rather
   // than a formula-derived estimate. Apple Health (device-measured, pushed
@@ -8221,8 +8214,7 @@ function renderVO2Max() {
   el.innerHTML = '<div class="g2">'+
     measuredRow+
     fitnessAgeRow+
-    (v ? '<div class="metric" style="margin-top:0"><div class="metric-label">Daniels VDOT estimate</div><div class="metric-val">'+v.vdot+'</div><div class="metric-sub">From '+s.runPace+' /mi threshold pace</div></div>' : '')+
-    hrRow+
+
     '</div>';
 
   renderVO2Trend(90);
@@ -8310,6 +8302,150 @@ function renderVO2Trend(range) {
   const change = Math.round((last-first)*10)/10;
   const dir = change > 0 ? 'up' : change < 0 ? 'down' : 'flat';
   if (insightEl) insightEl.textContent = 'VDOT estimate is ' + dir + ' ' + Math.abs(change) + ' over this period (from ' + first + ' to ' + last + '), based on your fastest sustained run pace each week. This tracks relative change, not an absolute lab value.';
+}
+
+// ===== WHAT YOU ACTUALLY PRODUCE IN EACH HR ZONE =====
+// "How many watts am I averaging at zone 2?" - answered from your own rides
+// rather than a formula. Each activity is placed in the zone its AVERAGE heart
+// rate falls in, then the watts (rides) or pace (runs) of the activities in
+// that zone are averaged.
+//
+// That is an activity-level answer, not a within-ride one: a ride whose
+// average HR is Z2 will contain Z1 and Z4 minutes too. Doing it properly needs
+// per-second HR and power streams for every activity, which is one API call
+// each and far past the rate limit. Averaging whole rides answers the question
+// that was actually asked - what a typical Z2 ride of yours looks like - and
+// the card says so rather than implying stream-level precision.
+//
+// Replaces the Daniels VDOT and HR-based VO2 estimates, one of which was
+// reporting 168 from a corrupt heart-rate sample.
+const HR_ZONE_DEFS = [
+  { key: 'Z1', label: 'Z1 Recovery',  lo: 0.00, hi: 0.60, color: '#3fb950' },
+  { key: 'Z2', label: 'Z2 Endurance', lo: 0.60, hi: 0.70, color: '#58a6ff' },
+  { key: 'Z3', label: 'Z3 Tempo',     lo: 0.70, hi: 0.80, color: '#C9A227' },
+  { key: 'Z4', label: 'Z4 Threshold', lo: 0.80, hi: 0.90, color: '#FC4C02' },
+  { key: 'Z5', label: 'Z5 VO2 max',   lo: 0.90, hi: 9.99, color: '#f85149' }
+];
+
+// Max HR: prefer what the athlete has actually hit, ignoring impossible strap
+// spikes - the unbounded version of this is exactly what produced a VO2 max of
+// 168. Falls back to the Settings value, then to Tanaka from age.
+function effectiveMaxHR() {
+  const s = getSettings();
+  let observed = 0;
+  (allActivities || []).forEach(function (a) {
+    const hr = a.max_heartrate;
+    if (typeof hr === 'number' && hr > observed && hr <= 225) observed = hr;
+  });
+  if (observed >= 120) return { value: Math.round(observed), source: 'highest recorded' };
+  if (s.maxHR) return { value: s.maxHR, source: 'Settings' };
+  const age = (healthKitData && healthKitData.age) || s.age;
+  if (age) return { value: Math.round(208 - 0.7 * age), source: 'estimated from age' };
+  return null;
+}
+
+function zoneOutputStats(sport) {
+  const mhr = effectiveMaxHR();
+  if (!mhr) return null;
+  const isRide = sport === 'ride';
+  const acts = (allActivities || []).filter(function (a) {
+    if (!a.average_heartrate || a.average_heartrate <= 0) return false;
+    if (isRide) return (a.type === 'Ride' || a.type === 'VirtualRide') && a.average_watts > 0;
+    return (a.type === 'Run' || a.type === 'TrailRun') && a.average_speed > 0;
+  });
+  if (!acts.length) return { maxHR: mhr, zones: [], count: 0 };
+
+  const buckets = HR_ZONE_DEFS.map(function (z) { return { def: z, vals: [], hrs: [], secs: 0 }; });
+  acts.forEach(function (a) {
+    const frac = a.average_heartrate / mhr.value;
+    let bi = buckets.findIndex(function (b) { return frac >= b.def.lo && frac < b.def.hi; });
+    if (bi < 0) bi = frac >= 0.9 ? buckets.length - 1 : 0;
+    // Rides: watts. Runs: seconds per mile, so lower is faster.
+    buckets[bi].vals.push(isRide ? a.average_watts : (1609.34 / a.average_speed));
+    buckets[bi].hrs.push(a.average_heartrate);
+    buckets[bi].secs += a.moving_time || 0;
+  });
+
+  const mean = function (arr) { return arr.reduce(function (x, y) { return x + y; }, 0) / arr.length; };
+  const zones = buckets.map(function (b) {
+    if (!b.vals.length) return { def: b.def, n: 0 };
+    return {
+      def: b.def, n: b.vals.length,
+      value: mean(b.vals),
+      avgHR: Math.round(mean(b.hrs)),
+      hours: b.secs / 3600
+    };
+  });
+  return { maxHR: mhr, zones: zones, count: acts.length, isRide: isRide };
+}
+
+function renderZoneOutput(sport) {
+  const el = document.getElementById('zone-output');
+  if (!el) return;
+  const stats = zoneOutputStats(sport);
+  if (!stats) {
+    el.innerHTML = '<p style="font-size:13px;color:#7d8590">Set a max heart rate in Settings, or record a ride with heart rate, to see this.</p>';
+    return;
+  }
+  const withData = stats.zones.filter(function (z) { return z.n > 0; });
+  if (!withData.length) {
+    el.innerHTML = '<p style="font-size:13px;color:#7d8590">No ' +
+      (sport === 'ride' ? 'rides with both heart rate and power' : 'runs with heart rate') +
+      ' found yet.</p>';
+    return;
+  }
+  const fmt = function (z) {
+    if (!z.n) return '--';
+    return stats.isRide ? Math.round(z.value) + ' w' : secsToMmSs(Math.round(z.value)) + ' /mi';
+  };
+  // Bars scale against the best value, so the shape is comparable across zones.
+  // For runs, faster is better, so the scale inverts.
+  const vals = withData.map(function (z) { return z.value; });
+  const maxV = Math.max.apply(null, vals), minV = Math.min.apply(null, vals);
+  const widthFor = function (z) {
+    if (!z.n) return 0;
+    if (stats.isRide) return maxV > 0 ? Math.max(6, (z.value / maxV) * 100) : 0;
+    if (maxV === minV) return 100;
+    return Math.max(6, 100 - ((z.value - minV) / (maxV - minV)) * 70);
+  };
+
+  el.innerHTML =
+    '<div style="font-size:12px;color:#7d8590;margin-bottom:10px">' +
+      (stats.isRide ? 'Average power' : 'Average pace') + ' on rides whose overall heart rate sits in each zone \u00b7 ' +
+      'max HR ' + stats.maxHR.value + ' (' + escapeHTML(stats.maxHR.source) + ')' +
+    '</div>' +
+    stats.zones.map(function (z) {
+      const lo = Math.round(z.def.lo * stats.maxHR.value);
+      const hi = z.def.hi > 9 ? stats.maxHR.value : Math.round(z.def.hi * stats.maxHR.value);
+      return '<div style="margin-bottom:10px;opacity:' + (z.n ? '1' : '0.4') + '">' +
+        '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-size:12px">' +
+          '<span style="color:#e6edf3">' + z.def.label +
+            '<span style="color:#57606a"> ' + lo + '\u2013' + hi + ' bpm</span></span>' +
+          '<span style="font-weight:600;color:' + z.def.color + '">' + fmt(z) + '</span>' +
+        '</div>' +
+        '<div style="height:8px;background:#161b22;border-radius:4px;overflow:hidden;margin-top:4px">' +
+          '<div style="height:100%;width:' + widthFor(z).toFixed(0) + '%;background:' + z.def.color + '"></div>' +
+        '</div>' +
+        '<div style="font-size:11px;color:#57606a;margin-top:3px">' +
+          (z.n ? z.n + (z.n === 1 ? ' activity' : ' activities') + ' \u00b7 avg ' + z.avgHR + ' bpm \u00b7 ' +
+                 z.hours.toFixed(1) + ' h' : 'no activities in this zone yet') +
+        '</div>' +
+      '</div>';
+    }).join('') +
+    '<div style="font-size:11px;color:#484f58;margin-top:8px;line-height:1.5">' +
+      'Each activity is counted in the zone its <em>average</em> heart rate falls in, so a ' +
+      'zone 2 ride still contains harder and easier minutes. This is what a typical ride at ' +
+      'that effort produces, not a second-by-second breakdown.' +
+    '</div>';
+}
+
+let zoneOutputSport = 'ride';
+function setZoneOutputSport(sport) {
+  zoneOutputSport = sport;
+  document.querySelectorAll('#zone-output-toggle .nav-btn').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-sport') === sport);
+  });
+  renderZoneOutput(sport);
 }
 
 function renderZoneBreakdown() {
