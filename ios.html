@@ -588,7 +588,19 @@ body.native-app .native-only { display: flex !important; }
 
 /* MAP */
 .map-shell { position: relative; }
-#palmares-map { height: 72vh; min-height: 520px; border-radius: 12px; overflow: hidden; background: #0d1117; border: 1px solid #30363d; }
+#palmares-map { position: relative; height: 72vh; min-height: 520px; border-radius: 12px; overflow: hidden; background: #0d1117; border: 1px solid #30363d; }
+/* Hover readout on the hunter map. pointer-events:none so it can never sit
+   between the cursor and the line it is describing. */
+#hunt-hover { position: absolute; z-index: 30; pointer-events: none; max-width: 250px;
+  background: rgba(13,17,23,.96); border: 1px solid #30363d; border-left: 3px solid #58a6ff;
+  border-radius: 8px; padding: 8px 11px; box-shadow: 0 8px 22px rgba(0,0,0,.55);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+.hh-top { display: flex; align-items: center; gap: 7px; }
+.hh-rank { width: 17px; height: 17px; border-radius: 50%; color: #0d1117; font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.hh-name { font-size: 13px; font-weight: 600; color: #e6edf3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hh-wind { font-size: 12px; font-weight: 600; margin-top: 3px; }
+.hh-meta { font-size: 11px; color: #7d8590; margin-top: 1px; }
 /* Tailwind picks under the route builder. Its own classes rather than the
    event popup's .rd-tw-* rules, which are sized for a full-screen sheet. */
 #hunt-scan-btn:disabled { background: #21262d !important; border-color: #30363d !important; color: #57606a !important; cursor: not-allowed; }
@@ -11885,7 +11897,8 @@ function setMapMode(mode) {
   if (mapEl) mapEl.style.cursor = (mode === 'route') ? 'crosshair' : '';
   syncMapToolbar();
   if (mode === 'route') { updateRouteStats(); renderSavedRoutes(); }
-  if (mode === 'hunt') { renderHuntList(); updateHuntButton(); }
+  if (mode === 'hunt') { renderHuntList(); updateHuntButton(); initHuntHover(); }
+  else hideHuntHover();
   // Both of these show star buttons, so reconcile with Strava on the way in.
   if (mode === 'route' || mode === 'hunt') refreshStarredFromStrava();
   // Route building wants the whole screen, Strava-style - drop straight into
@@ -12707,6 +12720,139 @@ function rankHuntResults() {
   huntResults.totalFound = (huntResults.found || []).length;
 }
 
+// ===== HOVER READOUT ON THE HUNTER MAP =====
+// MapKit fires select/deselect on an overlay but nothing for hover, so this
+// hit-tests the drawn lines against the pointer itself: page point back to a
+// coordinate, then the nearest picked segment within a few pixels' tolerance.
+// A mouse gets it on hover; a finger has no hover, so touch reports while it
+// is pressed and the window clears on lift.
+const HUNT_HOVER_PX = 18;      // finger-sized, and forgiving for a mouse
+let _huntHoverEl = null;
+let _huntHoverIdx = -1;
+let _huntPointerDown = false;
+
+// Deliberately exact rather than reusing minDistancePointToPolylineMeters,
+// which stops early once it is within 20 m. That is fine for "is this on the
+// route" but would make two nearby segments report the same distance and pick
+// between them arbitrarily.
+function pointToPolylineMeters(p, line) {
+  if (!line || line.length < 2) return Infinity;
+  let best = Infinity;
+  for (let i = 0; i < line.length - 1; i++) {
+    const d = distancePointToSegmentMeters(p, line[i], line[i + 1]);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+function ensureHuntHover() {
+  const host = document.getElementById('palmares-map');
+  if (!host) return null;
+  if (_huntHoverEl && _huntHoverEl.parentNode === host) return _huntHoverEl;
+  const el = document.createElement('div');
+  el.id = 'hunt-hover';
+  el.style.display = 'none';
+  host.appendChild(el);
+  _huntHoverEl = el;
+  return el;
+}
+
+function hideHuntHover() {
+  _huntHoverIdx = -1;
+  if (_huntHoverEl) _huntHoverEl.style.display = 'none';
+}
+
+// Tolerance is set in pixels and converted to metres at the current zoom, so
+// the target stays the same physical size on screen however far out you are.
+function huntHoverToleranceM() {
+  const host = document.getElementById('palmares-map');
+  const b = currentMapBounds();
+  if (!host || !b || !host.clientWidth) return null;
+  const midLat = (b.swLat + b.neLat) / 2;
+  const mPerPx = haversineMeters([midLat, b.swLng], [midLat, b.neLng]) / host.clientWidth;
+  return mPerPx * HUNT_HOVER_PX;
+}
+
+function huntSegmentAtPoint(pageX, pageY) {
+  if (!huntResults || !huntResults.picks || !huntResults.picks.length || !palmaresMap) return -1;
+  const tol = huntHoverToleranceM();
+  if (!tol) return -1;
+  let coord = null;
+  try { coord = palmaresMap.convertPointOnPageToCoordinate(new DOMPoint(pageX, pageY)); } catch (e) { return -1; }
+  if (!coord) return -1;
+  const p = [coord.latitude, coord.longitude];
+  let best = -1, bestD = Infinity;
+  huntResults.picks.forEach(function (m, i) {
+    const d = pointToPolylineMeters(p, m.points);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  return bestD <= tol ? best : -1;
+}
+
+function showHuntHover(i, clientX, clientY) {
+  const el = ensureHuntHover();
+  const host = document.getElementById('palmares-map');
+  if (!el || !host) return;
+  const m = huntResults.picks[i];
+  if (!m) return;
+  if (i !== _huntHoverIdx) {
+    const c = m.adv.meanComponent;
+    const colour = c >= 8 ? '#3fb950' : c >= 2 ? '#d29922' : c >= 0 ? '#8b949e' : '#f85149';
+    const meta = [
+      m.adv.lengthMi.toFixed(2) + ' mi',
+      (m.avgGrade != null ? Number(m.avgGrade).toFixed(1) + '%' : null),
+      m.adv.pctAssisted + '% assisted',
+      m.mine === 'kom' ? 'you hold it' : (m.mine ? 'Top 10' + (m.rank ? ' #' + m.rank : '') : null)
+    ].filter(Boolean).join(' · ');
+    el.style.borderLeftColor = colour;
+    el.innerHTML =
+      '<div class="hh-top"><span class="hh-rank" style="background:' + colour + '">' + (i + 1) + '</span>' +
+        '<span class="hh-name">' + escapeHTML(m.name) + '</span></div>' +
+      '<div class="hh-wind" style="color:' + colour + '">' +
+        (c >= 0 ? 'Tailwind ' : 'Headwind ') + Math.abs(Math.round(c * 10) / 10) + ' mph</div>' +
+      '<div class="hh-meta">' + escapeHTML(meta) + '</div>';
+    _huntHoverIdx = i;
+  }
+  el.style.display = 'block';
+  // Placed against the map box, and flipped rather than clipped when it would
+  // run off an edge - the readout is useless half outside the map.
+  const r = host.getBoundingClientRect();
+  const w = el.offsetWidth, h = el.offsetHeight;
+  let left = clientX - r.left + 16;
+  let top = clientY - r.top + 16;
+  if (left + w > r.width - 6) left = clientX - r.left - w - 16;
+  if (top + h > r.height - 6) top = clientY - r.top - h - 16;
+  el.style.left = Math.max(6, Math.min(left, r.width - w - 6)) + 'px';
+  el.style.top = Math.max(6, Math.min(top, r.height - h - 6)) + 'px';
+}
+
+function onHuntPointerMove(e) {
+  if (palmaresMapState.mode !== 'hunt') { hideHuntHover(); return; }
+  if (e.type === 'pointerdown') _huntPointerDown = true;
+  // Touch and pen only know where they are while they are down.
+  if (e.pointerType !== 'mouse' && !_huntPointerDown) { hideHuntHover(); return; }
+  const i = huntSegmentAtPoint(e.pageX, e.pageY);
+  if (i < 0) { hideHuntHover(); return; }
+  showHuntHover(i, e.clientX, e.clientY);
+}
+
+function onHuntPointerEnd(e) {
+  _huntPointerDown = false;
+  // A mouse keeps hovering after a click; a finger that has lifted does not.
+  if (!e || e.pointerType !== 'mouse') hideHuntHover();
+}
+
+function initHuntHover() {
+  const host = document.getElementById('palmares-map');
+  if (!host || host._huntHoverWired) return;
+  host._huntHoverWired = true;
+  host.addEventListener('pointermove', onHuntPointerMove);
+  host.addEventListener('pointerdown', onHuntPointerMove);
+  host.addEventListener('pointerup', onHuntPointerEnd);
+  host.addEventListener('pointercancel', onHuntPointerEnd);
+  host.addEventListener('pointerleave', function () { _huntPointerDown = false; hideHuntHover(); });
+}
+
 function setHuntSport(v) {
   huntSport = v === 'running' ? 'running' : 'riding';
   if (huntResults) renderHuntList();
@@ -12846,6 +12992,7 @@ async function huntSegmentsInView() {
 }
 
 function drawHuntResults() {
+  hideHuntHover();
   clearHuntLayers();
   if (!huntResults || !palmaresMapLayers.hunt) return;
   huntResults.picks.slice().reverse().forEach(function (m) {
