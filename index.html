@@ -1269,6 +1269,7 @@ body.ob-open { overflow: hidden; }
           <button class="map-toggle" onclick="undoRouteWaypoint()" style="font-size:11px">Undo point</button>
           <button class="map-toggle" onclick="clearRoute()" style="font-size:11px">Clear</button>
           <button class="map-toggle" onclick="saveCurrentRoute()" style="font-size:11px;border-color:#C9A227">Save route</button>
+          <button class="map-toggle" onclick="goToSavedRoutes()" style="font-size:11px">Saved routes</button>
           <button class="map-toggle" onclick="findSegmentsNow()" style="font-size:11px;border-color:#C9A227;color:#C9A227">Find segments</button>
           <button class="map-toggle" onclick="downloadRouteGPX()" style="font-size:11px">Download GPX</button>
           <button class="map-toggle active" onclick="sendRouteToGarmin()" style="font-size:11px;background:#e0691a;color:#0d1117;border-color:#e0691a">Send to Garmin</button>
@@ -1277,17 +1278,26 @@ body.ob-open { overflow: hidden; }
       <div id="route-status" style="font-size:11px;color:#7d8590;margin-top:8px">Choose Bike, Run/Walk auto, or Trail/Manual. You can switch modes mid-route: existing legs stay as-is, and the next waypoint uses the currently selected mode.</div>
       <div id="route-segments-list" style="font-size:11px;color:#7d8590;margin-top:8px"></div>
       <div id="route-tailwind-picks" class="rtw-wrap"></div>
-      <div style="border-top:1px solid #30363d;margin-top:10px;padding-top:10px">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
-          <div style="font-size:12px;font-weight:600;color:#e6edf3">Saved routes</div>
-          <button class="map-toggle" onclick="renderSavedRoutes()" style="font-size:11px">Refresh</button>
-        </div>
-        <div id="saved-routes-list"><div style="font-size:11px;color:#7d8590">Saved routes will appear here.</div></div>
-      </div>
     </div>
     <button type="button" id="map-fs-exit" class="map-fs-btn exit" onclick="setMapFullscreen(false)">✕ Exit full screen</button>
     <div class="map-shell"><div id="palmares-map"></div></div>
     <div class="map-status" id="map-status">Open this after your Strava data loads. Finish the Segments scan/enrichment for the most complete KOM and Top 10 map.</div>
+  </div>
+
+  <div class="card" id="saved-routes-card" data-deck-title="Saved routes">
+    <div class="card-title">
+      <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><circle cx="3" cy="17" r="1.6"/><circle cx="21" cy="7" r="1.6"/></svg>Saved routes</div>
+      <span id="saved-routes-count" style="font-size:12px;color:#7d8590"></span>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+      <button class="map-toggle" onclick="goToRouteBuilder()" style="font-size:11px;border-color:#e0691a;color:#e0691a">Build a route</button>
+      <label class="map-toggle" style="font-size:11px;cursor:pointer;border-color:#C9A227;color:#C9A227">Import GPX
+        <input type="file" accept=".gpx,application/gpx+xml,application/octet-stream" onchange="importRouteGPX(this)" style="display:none">
+      </label>
+      <button class="map-toggle" onclick="renderSavedRoutes()" style="font-size:11px">Refresh</button>
+    </div>
+    <div id="saved-routes-status" style="font-size:11px;color:#7d8590;margin-bottom:8px;line-height:1.5">Routes you save on the map appear here. You can also import a GPX course from another planner.</div>
+    <div id="saved-routes-list"></div>
   </div>
 
   <div class="card" id="card-dashboard-events" style="margin-bottom:1.5rem" data-deck-title="Upcoming events">
@@ -11735,6 +11745,172 @@ function resetRouteDiscovery() {
   clearRouteDiscoveryLayers();
   renderRouteTailwindPicks();
 }
+// ===== SAVED ROUTES CARD, AND IMPORTING A GPX =====
+// Saved routes used to live inside the route-builder panel, which meant they
+// were only reachable while building - and in full screen the list sat under
+// the map controls. They get their own card now, with the builder linking to
+// it and back.
+function deckToCard(deckId, cardId) {
+  const deck = document.getElementById(deckId);
+  const el = document.getElementById(cardId);
+  if (!deck || !el) return;
+  const i = deckPanels(deck).indexOf(el);
+  if (i >= 0) deckTo(deckId, i);
+}
+
+function goToSavedRoutes() {
+  // Full screen hides the deck entirely, so leaving it is part of going there.
+  setMapFullscreen(false);
+  renderSavedRoutes();
+  setTimeout(function () { deckToCard('scout-deck', 'saved-routes-card'); }, 60);
+}
+
+function goToRouteBuilder() {
+  deckToCard('scout-deck', 'scout-map-card');
+  setTimeout(function () { setMapMode('route'); }, 80);
+}
+
+function setSavedRoutesStatus(t) {
+  const el = document.getElementById('saved-routes-status');
+  if (el) el.textContent = t;
+}
+
+// Opening one puts it on the map ready to work on, rather than leaving the
+// rider to switch modes themselves.
+async function openSavedRouteOnMap(id) {
+  deckToCard('scout-deck', 'scout-map-card');
+  if (palmaresMapState.mode !== 'route') setMapMode('route');
+  await loadSavedRoute(id);
+}
+
+// A century exported from another planner can carry tens of thousands of
+// points. The file's own points are used for distance and climbing, then the
+// line is thinned for storage and drawing - the shape survives, the payload
+// does not have to.
+const GPX_MAX_POINTS = 2500;
+
+function parseGPXTrack(text) {
+  let doc = null;
+  try { doc = new DOMParser().parseFromString(text, 'application/xml'); } catch (e) { return null; }
+  if (!doc || doc.getElementsByTagName('parsererror').length) return null;
+  // Courses normally come as a track; some planners export a route instead,
+  // and a few hand-built files are only a list of waypoints.
+  let nodes = doc.getElementsByTagName('trkpt');
+  if (!nodes.length) nodes = doc.getElementsByTagName('rtept');
+  if (!nodes.length) nodes = doc.getElementsByTagName('wpt');
+  const pts = [], eles = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const lat = parseFloat(nodes[i].getAttribute('lat'));
+    const lon = parseFloat(nodes[i].getAttribute('lon'));
+    if (!isFinite(lat) || !isFinite(lon)) continue;
+    pts.push([lat, lon]);
+    const e = nodes[i].getElementsByTagName('ele')[0];
+    const v = e ? parseFloat(e.textContent) : NaN;
+    eles.push(isFinite(v) ? v : null);
+  }
+  if (pts.length < 2) return null;
+  let name = '';
+  const nameEl = doc.getElementsByTagName('name')[0];
+  if (nameEl && nameEl.textContent) name = nameEl.textContent.trim();
+  return { points: pts, elevations: eles, name: name };
+}
+
+function gpxDistanceMeters(pts) {
+  let d = 0;
+  for (let i = 1; i < pts.length; i++) d += haversineMeters(pts[i - 1], pts[i]);
+  return d;
+}
+
+// Elevation gain by hysteresis, not by summing positive deltas. GPS elevation
+// jitters a metre or two on every single point, and on an 18,000-point century
+// a plain sum turns that noise into tens of thousands of feet of climbing that
+// was never ridden. Smoothing alone only scales the problem down - the
+// residual oscillation still compounds once per point - so a rise has to be
+// unambiguous before it counts: 4 m above the lowest point since the last one
+// did. This is how a head unit reports it, and it is why a flat century reads
+// flat instead of alpine.
+const GPX_ASCENT_THRESHOLD_M = 4;
+
+function gpxAscentMeters(eles) {
+  const vals = [];
+  for (let i = 0; i < eles.length; i++) if (eles[i] != null) vals.push(eles[i]);
+  if (vals.length < 2) return null;              // the file carries no elevation
+  // A light smooth first, to take the worst spikes off before the threshold.
+  const win = 2, smooth = [];
+  for (let i = 0; i < vals.length; i++) {
+    let sum = 0, n = 0;
+    for (let k = Math.max(0, i - win); k <= Math.min(vals.length - 1, i + win); k++) { sum += vals[k]; n++; }
+    smooth.push(sum / n);
+  }
+  let gain = 0, ref = smooth[0];
+  for (let i = 1; i < smooth.length; i++) {
+    const v = smooth[i];
+    if (v > ref + GPX_ASCENT_THRESHOLD_M) { gain += v - ref; ref = v; }
+    else if (v < ref) { ref = v; }               // new low to measure the next rise from
+  }
+  return gain;
+}
+
+function thinTrack(pts, max) {
+  if (pts.length <= max) return pts;
+  const out = [], stride = pts.length / max;
+  for (let i = 0; i < max; i++) out.push(pts[Math.floor(i * stride)]);
+  const last = pts[pts.length - 1];
+  if (out[out.length - 1] !== last) out.push(last);
+  return out;
+}
+
+async function importRouteGPX(input) {
+  const file = input && input.files && input.files[0];
+  // Cleared straight away, so picking the same file twice still fires.
+  if (input) input.value = '';
+  if (!file) return;
+  setSavedRoutesStatus('Reading ' + file.name + '…');
+  let text = null;
+  try { text = await file.text(); }
+  catch (e) { setSavedRoutesStatus('Could not read that file.'); return; }
+
+  const track = parseGPXTrack(text);
+  if (!track) {
+    setSavedRoutesStatus('No track found in ' + file.name + '. A GPX course needs trkpt, rtept or wpt points with lat/lon.');
+    return;
+  }
+  const distanceM = gpxDistanceMeters(track.points);
+  const ascentM = gpxAscentMeters(track.elevations);
+  const pts = thinTrack(track.points, GPX_MAX_POINTS);
+
+  const name = await askPrompt('Name this route:', track.name || file.name.replace(/\.gpx$/i, ''));
+  if (!name) { setSavedRoutesStatus('Import cancelled.'); return; }
+
+  const routes = await loadSavedRouteCollection();
+  const route = {
+    id: 'rt_' + Date.now(),
+    name: name,
+    // Manual: the file's own line is the course. Re-routing it through OSRM
+    // would quietly redraw somebody else's ride.
+    mode: 'manual',
+    imported: true,
+    waypoints: [{ lat: pts[0][0], lng: pts[0][1] },
+                { lat: pts[pts.length - 1][0], lng: pts[pts.length - 1][1] }],
+    legs: [{ points: pts, distanceM: distanceM, ascentM: ascentM || 0, mode: 'manual' }],
+    distanceM: distanceM,
+    ascentM: ascentM || 0,
+    hasElevation: ascentM != null,
+    sourcePoints: track.points.length,
+    created_at: new Date().toISOString()
+  };
+  routes.push(route);
+  await saveRouteCollection(routes);
+  renderSavedRoutes();
+  setSavedRoutesStatus('Imported "' + name + '" — ' + (distanceM / 1609.34).toFixed(1) + ' mi' +
+    (ascentM != null ? ', ' + Math.round(ascentM * 3.281).toLocaleString() + ' ft climbing'
+                     : ', no elevation in the file') +
+    (track.points.length > pts.length
+      ? ' · ' + track.points.length.toLocaleString() + ' points thinned to ' + pts.length.toLocaleString() + ' for the map'
+      : '') +
+    '. Open it to find the segments along it.');
+}
+
 async function saveRouteCollection(routes) {
   savedRoutesCache = routes || [];
   const payload = savedRoutesCache;
@@ -11763,20 +11939,27 @@ async function renderSavedRoutes() {
   const el = document.getElementById('saved-routes-list');
   if (!el) return;
   const routes = await loadSavedRouteCollection();
+  const count = document.getElementById('saved-routes-count');
+  if (count) count.textContent = routes.length ? routes.length + (routes.length === 1 ? ' route' : ' routes') : '';
   if (!routes.length) {
-    el.innerHTML = '<div style="font-size:11px;color:#7d8590">No saved routes yet. Build a route, then click Save route.</div>';
+    el.innerHTML = '<div style="font-size:11px;color:#7d8590">No saved routes yet. Build one on the map, or import a GPX course from another planner.</div>';
     return;
   }
   el.innerHTML = routes.slice().reverse().map(function(r) {
     const mi = ((r.distanceM || 0) / 1609.34).toFixed(2);
     const ft = Math.round((r.ascentM || 0) * 3.281).toLocaleString();
     const created = r.created_at ? new Date(r.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '';
-    const modeLabel = r.mode === 'bike' ? 'Bike' : (r.mode === 'manual' ? 'Trail/Manual' : 'Run/Walk');
+    const modeLabel = r.imported ? 'Imported GPX' : (r.mode === 'bike' ? 'Bike' : (r.mode === 'manual' ? 'Trail/Manual' : 'Run/Walk'));
+    const scanned = r.discoveredCount != null
+      ? r.discoveredCount + ' Strava segments'
+      : (r.segmentCount ? r.segmentCount + ' KOM/Top 10 segments' : 'not scanned yet');
     return '<div class="saved-route-card">' +
       '<div class="saved-route-name">' + escapeHTML(r.name || 'Saved route') + '</div>' +
-      '<div class="saved-route-meta">' + modeLabel + ' · ' + mi + ' mi · ' + ft + ' ft gain · ' + (r.segmentCount || 0) + ' KOM/Top 10 segments' + (created ? ' · ' + created : '') + '</div>' +
+      '<div class="saved-route-meta">' + modeLabel + ' · ' + mi + ' mi · ' +
+        (r.imported && !r.hasElevation ? 'no elevation data' : ft + ' ft gain') +
+        ' · ' + scanned + (created ? ' · ' + created : '') + '</div>' +
       '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">' +
-        '<button class="map-toggle" onclick="loadSavedRoute(\'' + r.id + '\')" style="font-size:11px">Load</button>' +
+        '<button class="map-toggle" onclick="openSavedRouteOnMap(\'' + r.id + '\')" style="font-size:11px;border-color:#e0691a;color:#e0691a">Open on map</button>' +
         '<button class="map-toggle" onclick="downloadSavedRouteGPX(\'' + r.id + '\')" style="font-size:11px">GPX</button>' +
         '<button class="map-toggle" onclick="sendSavedRouteToGarmin(\'' + r.id + '\')" style="font-size:11px;border-color:#e0691a;color:#e0691a">Garmin</button>' +
         '<button class="map-toggle" onclick="deleteSavedRoute(\'' + r.id + '\')" style="font-size:11px;color:#f85149;border-color:#f85149">Delete</button>' +
