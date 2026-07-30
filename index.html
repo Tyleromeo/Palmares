@@ -257,7 +257,7 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
    72vh panel is a gesture trap: MapKit eats drags, so you can't swipe or
    scroll off it. Shrink it so the toolbar above it stays put and there's room
    to breathe; the arrows and dots are the reliable way off the map panel. */
-.swipe-deck #palmares-map { height: 50vh; height: 50dvh; min-height: 320px; }
+.swipe-deck #palmares-map { height: 58vh; height: 58dvh; min-height: 340px; }
 /* Sync lives on the tile grid, not inside a drilled-in card - the back bar
    already occupies that corner and a second control there reads as clutter.
    Pull-to-refresh still works in the detail view. */
@@ -1149,10 +1149,6 @@ body.ob-open { overflow: hidden; }
   <div class="section-header"><h2>Scout</h2><p>Where to ride — swipe between tailwind segments, the segment-hunter map, events, road reports, and the forecast.</p></div>
 
   <div class="swipe-deck-wrap">
-    <div class="swipe-nav">
-      <button type="button" id="scout-deck-prev" onclick="deckGo('scout-deck',-1)" aria-label="Previous card">‹</button>
-      <button type="button" id="scout-deck-next" onclick="deckGo('scout-deck',1)" aria-label="Next card">›</button>
-    </div>
     <div class="swipe-deck" id="scout-deck" onscroll="deckOnScroll('scout-deck')">
 
   <div class="card" id="collapse-tailwind" data-deck-title="Tailwind segments">
@@ -1289,7 +1285,7 @@ body.ob-open { overflow: hidden; }
     </div>
     <button type="button" id="map-fs-exit" class="map-fs-btn exit" onclick="setMapFullscreen(false)">✕ Exit full screen</button>
     <div class="map-shell"><div id="palmares-map"></div></div>
-    <div class="map-status" id="map-status">Open this after your Strava data loads. Finish the Segments scan/enrichment for the most complete KOM and Top 10 map.</div>
+    <div class="map-status" id="map-status" style="display:none"></div>
   </div>
 
   <div class="card" id="saved-routes-card" data-deck-title="Saved routes">
@@ -10185,7 +10181,9 @@ function locatePalmaresUser() {
 
 function setMapStatus(msg) {
   const el = document.getElementById('map-status');
-  if (el) el.textContent = msg;
+  if (!el) return;
+  el.textContent = msg || '';
+  el.style.display = msg ? '' : 'none';   // no empty line eating map height
 }
 
 // Mode picks the view: segments (KOM/Top-10 lines), heat (heatmap), or route
@@ -12734,29 +12732,13 @@ async function renderPalmaresMap() {
     }
   }
 
-  let status = '';
-  const hasWindData = !!window._wxData;
-  if (!athleteData) status = 'Connect Strava first, then this map will draw from your loaded activity and segment data.';
-  else if (palmaresMapState.mode === 'route') {
-    status = 'Route builder: tap the map to drop waypoints and legs snap to roads. Pick Bike, Run/Walk, or Trail/Manual above, then download the GPX when done.';
-  } else if (palmaresMapState.mode === 'heat') {
-    status = heatStats.activityCount
-      ? ('Road heatmap of ' + heatStats.activityCount + ' ' + (palmaresMapState.sport === 'run' ? 'runs' : 'rides') + ': darker roads mean more times on them; light traces are places you went once.')
-      : 'No ' + (palmaresMapState.sport === 'run' ? 'runs' : 'rides') + ' with map data yet for the heatmap.';
-  }
-  else if (!result || !result.entries.length) status = 'No KOM or Top 10 scan data found yet. Go to Segments and run the full scan to populate this map.';
-  else if (drawn === 0) status = 'No ' + (palmaresMapState.achievement === 'kom' ? 'KOM/CR' : 'Top 10') + ' ' + sportWord + ' segments with geometry for this filter. Enrich segments in the Segments tab, or try the other type/sport.';
-  else {
-    let mode;
-    if (palmaresMapState.wind !== 'off' && hasWindData) mode = (palmaresMapState.wind === 'tomorrow' ? "tomorrow's" : "today's") + ' wind advantage';
-    else if (palmaresMapState.wind !== 'off' && !hasWindData) mode = 'achievement type (wind forecast unavailable — visit the Weather tab and reload)';
-    else mode = 'achievement type';
-    const kindWord = palmaresMapState.achievement === 'kom' ? 'KOM/CR' : 'Top 10';
-    status = 'Showing ' + drawn + ' ' + kindWord + ' ' + sportWord + ' segment' + (drawn === 1 ? '' : 's') + ' colored by ' + mode + '.';
-    if (hiddenByDistance) status += ' ' + hiddenByDistance + ' segment' + (hiddenByDistance === 1 ? ' is' : 's are') + ' hidden by the length filter (' + currentMapSegmentDistanceLabel() + ').';
-    if (missingGeometry) status += ' ' + missingGeometry + ' segment' + (missingGeometry === 1 ? ' is' : 's are') + ' missing geometry entirely - enrich in the Segments tab to add exact full-length lines.';
-  }
-  setMapStatus(status);
+  // The map's standing status line is gone. Each mode's panel already says what
+  // it is doing, and the one message left from the retired Segments view -
+  // "run the full scan to populate this map" - was appearing under the hunter,
+  // where result is always null and the advice meant nothing. Only a genuine
+  // blocker surfaces here now, and the line collapses when there is nothing to
+  // say so it costs the map no height.
+  setMapStatus(athleteData ? '' : 'Connect Strava first, then this map will draw from your activity data.');
 }
 
 // INIT
