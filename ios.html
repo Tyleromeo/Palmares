@@ -1386,16 +1386,15 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
     </div>
   </div>
 
-  <div class="card" id="scout-map-card" data-deck-title="Segment hunter map">
-    <div class="card-title">
-      <div class="card-title-left"><svg class="card-icon" viewBox="0 0 24 24"><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21 1 6"/><line x1="8" y1="3" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="21"/></svg>Segment hunter map</div>
-      <span id="map-counts" style="font-size:12px;color:#7d8590"></span>
-    </div>
+  <div class="card" id="scout-map-card" data-deck-title="Map">
+    <!-- No title row: the mode buttons below name the view better than a
+         heading could, and the map is what the card is for. #map-counts stays
+         so the code that writes to it has somewhere to write. -->
+    <span id="map-counts" style="display:none"></span>
     <div class="map-toolbar" id="map-mode-bar">
-      <button class="map-toggle active" id="map-mode-segments" onclick="setMapMode('segments')">Segments</button>
-      <button class="map-toggle" id="map-mode-heat" onclick="setMapMode('heat')">Heatmap</button>
+      <button class="map-toggle active" id="map-mode-hunt" onclick="setMapMode('hunt')" style="border-color:#C9A227">Segment Hunter</button>
       <button class="map-toggle" id="map-mode-route" onclick="setMapMode('route')" style="border-color:#e0691a">Route builder</button>
-      <button class="map-toggle" id="map-mode-hunt" onclick="setMapMode('hunt')" style="border-color:#C9A227">Segment Hunter</button>
+      <button class="map-toggle" id="map-mode-heat" onclick="setMapMode('heat')">Heatmap</button>
       <button class="map-toggle" id="map-fs-enter" onclick="setMapFullscreen(true)" style="margin-left:auto" title="Full screen">⛶ Full screen</button>
     </div>
     <div class="map-toolbar map-subbar" id="map-group-type">
@@ -1435,6 +1434,12 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
           <select id="hunt-sport" class="route-mode-pill" onchange="setHuntSport(this.value)">
             <option value="riding" selected>Ride</option>
             <option value="running">Run</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px">Wind</div>
+          <select id="hunt-day" class="route-mode-pill" onchange="setHuntDay(this.value)">
+            <option value="0" selected>Today</option>
           </select>
         </div>
         <button class="map-toggle active" id="hunt-scan-btn" onclick="huntSegmentsInView()" disabled style="font-size:11px;background:#C9A227;color:#0d1117;border-color:#C9A227">Scan this view</button>
@@ -11518,7 +11523,7 @@ let palmaresMapLayers = { achievements: null, heat: null, route: null, hunt: nul
 // One view at a time (mode), and each of the three segment filters is a single
 // choice - you can't stack KOMs+Top10s or Bike+Run any more. wind is
 // 'off'|'today'|'tomorrow'. Heatmap and Route builder are their own modes.
-let palmaresMapState = { mode:'segments', achievement:'kom', sport:'bike', wind:'today', segmentDistanceIndex:0 };
+let palmaresMapState = { mode:'hunt', achievement:'kom', sport:'bike', wind:'today', segmentDistanceIndex:0 };
 let palmaresMapBoundsFit = false; // only auto-fit map bounds once; subsequent renders preserve the user's zoom/pan
 
 // =========== APPLE MAPKIT JS ==========================================
@@ -11910,7 +11915,6 @@ function setMapWind(w) { palmaresMapState.wind = w; syncMapToolbar(); renderPalm
 function syncMapToolbar() {
   const st = palmaresMapState;
   const setActive = function(id, on) { const b = document.getElementById(id); if (b) b.classList.toggle('active', !!on); };
-  setActive('map-mode-segments', st.mode === 'segments');
   setActive('map-mode-heat', st.mode === 'heat');
   setActive('map-mode-route', st.mode === 'route');
   setActive('map-mode-hunt', st.mode === 'hunt');
@@ -12623,6 +12627,86 @@ let huntResults = null;
 let huntLayers = [];
 let huntSport = 'riding';
 
+// Which day's wind the ranking uses. The forecast reaches 7 days, so the whole
+// week is offerable; the daily dominant direction and max speed are the right
+// figures here because a hunt has no start time attached to it the way a
+// scheduled group ride does.
+let huntDayIndex = 0;
+
+function huntDayLabel(i) {
+  const d = window._wxData && window._wxData.daily;
+  if (!d || !d.time || !d.time[i]) return null;
+  if (i === 0) return 'Today';
+  if (i === 1) return 'Tomorrow';
+  // Noon, so a timezone offset cannot roll the date onto the wrong weekday.
+  return new Date(d.time[i] + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' });
+}
+
+function huntDayPhrase() {
+  const l = huntDayLabel(huntDayIndex);
+  if (!l) return '';
+  return huntDayIndex <= 1 ? l.toLowerCase() : 'on ' + l;
+}
+
+function populateHuntDays() {
+  const sel = document.getElementById('hunt-day');
+  const d = window._wxData && window._wxData.daily;
+  if (!sel || !d || !d.time) return;
+  const days = d.time.length;
+  if (sel.options.length === days) return;   // already built for this forecast
+  let html = '';
+  for (let i = 0; i < days; i++) {
+    const label = huntDayLabel(i);
+    if (label) html += '<option value="' + i + '">' + escapeHTML(label) + '</option>';
+  }
+  sel.innerHTML = html;
+  if (huntDayIndex >= days) huntDayIndex = 0;
+  sel.value = String(huntDayIndex);
+}
+
+function huntWind() {
+  const d = window._wxData && window._wxData.daily;
+  if (!d || !d.time || !d.time.length) return null;
+  const i = Math.min(huntDayIndex, d.time.length - 1);
+  if (d.winddirection_10m_dominant[i] == null || d.windspeed_10m_max[i] == null) return null;
+  return { direction: d.winddirection_10m_dominant[i], speed: msToMph(d.windspeed_10m_max[i]) };
+}
+
+function setHuntDay(v) {
+  huntDayIndex = Math.max(0, Number(v) || 0);
+  // Re-rank what is already on screen rather than scanning again. The roads do
+  // not move between now and Thursday; only the wind over them does, and the
+  // geometry needed to score it is already held.
+  if (huntResults) { rankHuntResults(); drawHuntResults(); renderHuntList(); }
+  else updateHuntButton();
+}
+
+// Scoring and ordering, split out so a change of day can redo it on its own.
+function rankHuntResults() {
+  if (!huntResults) return;
+  const wind = huntWind();
+  huntResults.wind = wind;
+  huntResults.dayIndex = huntDayIndex;
+  const scored = [];
+  (huntResults.found || []).forEach(function (m) {
+    const adv = wind ? windAdvantageForPath(m.points, wind.direction, wind.speed) : null;
+    if (!adv) return;
+    const row = {};
+    Object.keys(m).forEach(function (k) { row[k] = m[k]; });
+    row.adv = adv;
+    scored.push(row);
+  });
+  // Best net tailwind first; ties go to the longer segment, where the same mph
+  // of help buys more time.
+  scored.sort(function (a, b) {
+    const d = b.adv.meanComponent - a.adv.meanComponent;
+    return Math.abs(d) > 0.05 ? d : (b.adv.lengthMi - a.adv.lengthMi);
+  });
+  huntResults.ranked = scored;
+  huntResults.picks = scored.slice(0, HUNT_PICKS);
+  huntResults.totalFound = (huntResults.found || []).length;
+}
+
 function setHuntSport(v) {
   huntSport = v === 'running' ? 'running' : 'riding';
   if (huntResults) renderHuntList();
@@ -12680,6 +12764,7 @@ function huntViewState() {
 function updateHuntButton() {
   const btn = document.getElementById('hunt-scan-btn');
   if (!btn || palmaresMapState.mode !== 'hunt') return;
+  populateHuntDays();
   const v = huntViewState();
   btn.disabled = !v.ready;
   if (v.reason === 'loading') { setHuntStatus('Waiting for the map…'); return; }
@@ -12705,8 +12790,7 @@ async function huntSegmentsInView() {
   if (!v.ready) { updateHuntButton(); return; }
   const b = v.bounds;
 
-  const wind = getMapWind('today');
-  if (!wind) {
+  if (!huntWind()) {
     setHuntStatus('No wind forecast yet, so there is nothing to rank by. It loads with the rest of the dashboard.');
     return;
   }
@@ -12740,30 +12824,23 @@ async function huntSegmentsInView() {
     let pts = null;
     try { pts = decodePolyline(sg.points); } catch (e) {}
     if (!pts || pts.length < 2 || !inView(pts)) return;
-    const adv = windAdvantageForPath(pts, wind.direction, wind.speed);
-    if (!adv) return;
     const own = mine[sg.id];
     found.push({
       id: sg.id, name: sg.name || 'Segment', points: pts,
       distanceM: sg.distance || 0, avgGrade: sg.avg_grade,
       climbCategory: sg.climb_category || 0,
-      mine: own ? own.kind : null, rank: own ? own.rank : null,
-      adv: adv
+      mine: own ? own.kind : null, rank: own ? own.rank : null
     });
   });
 
-  // Best net tailwind first; ties go to the longer segment, where the same mph
-  // of help buys more time.
-  found.sort(function (a, b2) {
-    const d = b2.adv.meanComponent - a.adv.meanComponent;
-    return Math.abs(d) > 0.05 ? d : (b2.adv.lengthMi - a.adv.lengthMi);
-  });
-
+  // Geometry is kept unscored: the day picker re-ranks this same set without
+  // going back to Strava.
   huntResults = {
-    ranked: found, picks: found.slice(0, HUNT_PICKS), wind: wind,
+    found: found, ranked: [], picks: [], wind: null,
     totalFound: found.length, rateLimited: res.rateLimited,
     scannedTiles: res.calls, widthMi: v.widthMi
   };
+  rankHuntResults();
   drawHuntResults();
   renderHuntList();
 }
@@ -12802,6 +12879,18 @@ function renderHuntList() {
   if (!el) return;
   if (!huntResults) { el.innerHTML = ''; return; }
   if (!huntResults.picks.length) {
+    // Nothing to rank is not the same as nothing to find. If the scan did turn
+    // up segments, it is the chosen day's forecast that is missing, and saying
+    // "no segments here" would send the rider off to pan somewhere else for no
+    // reason.
+    const scanned = (huntResults.found || []).length;
+    if (scanned) {
+      el.innerHTML = '<div class="rtw-empty">' + scanned + (scanned === 1 ? ' segment' : ' segments') +
+        ' found here, but there is no wind forecast for ' + escapeHTML(huntDayLabel(huntDayIndex) || 'that day') +
+        ' yet — the outlook only reaches 7 days. Pick a nearer day to rank them.</div>';
+      setHuntStatus('No forecast for that day yet.');
+      return;
+    }
     el.innerHTML = '<div class="rtw-empty">No segments found in this view. Pan somewhere busier, or zoom in — the scan only covers what is on screen.</div>';
     setHuntStatus('Nothing found here.');
     return;
@@ -12839,7 +12928,7 @@ function renderHuntList() {
   }).join('');
 
   el.innerHTML = '<div class="rtw-head">' +
-      escapeHTML('Best tailwind here today · ' + windDirName(w.direction) + ' wind at ' + Math.round(w.speed) + ' mph · ' +
+      escapeHTML('Best tailwind here ' + huntDayPhrase() + ' · ' + windDirName(w.direction) + ' wind at ' + Math.round(w.speed) + ' mph · ' +
       huntResults.totalFound + (huntResults.totalFound === 1 ? ' segment' : ' segments') + ' in view' +
       (caveats.length ? ' · ' + caveats.join(' · ') : '')) +
     '</div>' + rows +
