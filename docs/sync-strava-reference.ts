@@ -228,7 +228,7 @@ async function listActivities(body: any): Promise<Response> {
   const { athlete_id, limit } = body;
   if (!athlete_id) return badRequest('Missing athlete_id');
 
-  const targetLimit = limit && limit > 0 ? Math.min(limit, 10000) : 500;
+  const targetLimit = limit && limit > 0 ? Math.min(limit, 5000) : 500;
   // PostgREST enforces its own row cap per-connection (default 1000) on top
   // of whatever .limit() asks for, and that cap doesn't reliably apply to
   // already-pooled connections right after raising it project-wide - some
@@ -581,11 +581,17 @@ async function getMapsToken(): Promise<Response> {
 // feed. No per-athlete filtering by design.
 
 async function listRoadReports(): Promise<Response> {
+  // Was 30. Confirmations are rows too, so a single road could consume the
+  // whole window: one rider tapped confirm 27 times on Kohr Road, which with
+  // three other rows filled the limit exactly and pushed every original report
+  // out of the feed. The client has a fallback for a group with no primary
+  // report, but the real fix is a window that a busy road cannot exhaust.
+  // These rows are tiny and infrequent; 500 is not a meaningful payload.
   const { data, error } = await supabase
     .from('road_reports')
     .select('*')
     .order('created_at', { ascending: false })
-    .limit(30);
+    .limit(500);
   if (error) throw error;
   return json({ reports: data || [] });
 }
@@ -595,11 +601,48 @@ async function addRoadReport(body: any): Promise<Response> {
   if (!road_name || typeof road_name !== 'string' || !road_name.trim()) return badRequest('Missing road_name');
   if (!['milled', 'repaving', 'fresh'].includes(status)) return badRequest('status must be milled, repaving, or fresh');
 
+  const cleanName = String(road_name).trim().slice(0, 120);
+  const cleanNote = note ? String(note).trim().slice(0, 300) : null;
+
+  // One confirmation per athlete per road, enforced here rather than trusting
+  // the client. The board already de-duplicates confirmers for display, but the
+  // ROWS still accumulated: 27 identical taps from one rider were all stored,
+  // and rows are what the feed window is spent on.
+  //
+  // Scoped to confirmations made since the road's newest original report, so a
+  // rider can confirm again after someone re-reports the road - that is a new
+  // statement about a new report, not a repeat of the old one.
+  if (cleanNote === '[confirm]' && typeof athlete_id === 'number') {
+    // An original report is one WITHOUT a [tag] note - not one with a null
+    // note. The seeded reports carry real text ("Just repaved - new tarmac."),
+    // so matching on null found nothing, pinned `since` to 1970, and would have
+    // blocked a rider from ever confirming a road again once they had confirmed
+    // it a single time - including after someone re-reported it.
+    const { data: recent } = await supabase
+      .from('road_reports')
+      .select('created_at, note')
+      .eq('road_name', cleanName)
+      .order('created_at', { ascending: false })
+      .limit(200);
+    const isTag = (n: string | null) => !!n && /^\[(confirm|cleared)\]$/i.test(n.trim());
+    const newestPrimary = (recent || []).find((r: any) => !isTag(r.note));
+    const since = newestPrimary ? newestPrimary.created_at : '1970-01-01T00:00:00Z';
+    const { data: mine } = await supabase
+      .from('road_reports')
+      .select('id, created_at')
+      .eq('road_name', cleanName)
+      .eq('athlete_id', athlete_id)
+      .eq('note', '[confirm]')
+      .gte('created_at', since)
+      .limit(1);
+    if (mine && mine.length) return json({ report: mine[0], duplicate: true });
+  }
+
   const { data, error } = await supabase.from('road_reports').insert({
-    road_name: String(road_name).trim().slice(0, 120),
+    road_name: cleanName,
     town: town ? String(town).trim().slice(0, 80) : null,
     status,
-    note: note ? String(note).trim().slice(0, 300) : null,
+    note: cleanNote,
     reported_by: reported_by ? String(reported_by).trim().slice(0, 80) : null,
     athlete_id: typeof athlete_id === 'number' ? athlete_id : null,
   }).select().single();
