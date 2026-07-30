@@ -675,6 +675,17 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
 .toast-body { font-size:12px; color:#7d8590; }
 .toast-icon { font-size:18px; margin-right:8px; float:left; }
 
+/* TAILWIND SEGMENT LIST on the events card - the same ranking the course view
+   shows, surfaced without needing to open the map. */
+.tw-block { margin-top: 10px; border-top: 1px solid #21262d; padding-top: 9px; }
+.tw-head { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: #7d8590; margin-bottom: 6px; }
+.tw-row { display: flex; align-items: center; gap: 9px; padding: 5px 0; }
+.tw-rank { width: 18px; height: 18px; border-radius: 50%; color: #0d1117; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.tw-name { flex: 1; min-width: 0; font-size: 13px; color: #e6edf3; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tw-star { color: #FC4C02; font-size: 11px; margin-left: 7px; white-space: nowrap; }
+.tw-val { font-size: 13px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+.tw-foot { font-size: 10px; color: #484f58; margin-top: 5px; line-height: 1.45; }
+
 /* ROUTE DETAIL - the course on real Apple Maps tiles, opened by tapping a
    ride's outline. Full screen because a route is the one thing worth the
    whole display. Sits above the map's own full-screen layer. */
@@ -8338,6 +8349,55 @@ async function enrichEventsWithRoutes(events) {
     e._route = data; changed = true;
   }
   if (changed && window.renderEventRows) window.renderEventRows();
+  enrichEventsWithTailwind(events);
+}
+
+// Rank each ride's tailwind segments up front so the card can list them
+// without being opened. Runs after the routes land (it needs their geometry)
+// and re-renders when done, so the card fills in rather than blocking.
+async function enrichEventsWithTailwind(events) {
+  if (!events || !events.length) return;
+  let changed = false;
+  for (const e of events.slice(0, 6)) {
+    if (!e._route || !e._route.polyline || e._tailwind) continue;
+    const pts = decodePolyline(e._route.polyline);
+    if (!pts || pts.length < 2) continue;
+    try {
+      e._tailwind = await tailwindSegmentsForRoute(pts, e.nextDate, 5);
+      changed = true;
+    } catch (err) { /* leave it unset; the card simply omits the list */ }
+  }
+  if (changed && window.renderEventRows) window.renderEventRows();
+}
+
+// Compact ranked list for the events card. Same ordering and scoring as the
+// full-screen course view - this is the same data, not a second opinion.
+function tailwindListHTML(res) {
+  if (!res || res.error || !res.ranked || !res.ranked.length) return '';
+  const at = res.when
+    ? res.when.toLocaleDateString('en-US', { weekday: 'short' }) + ' ' +
+      res.when.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+    : null;
+  const rows = res.ranked.map(function (m, i) {
+    const c = m.adv.meanComponent;
+    const helped = c >= 0;
+    const colour = c >= 8 ? '#3fb950' : c >= 2 ? '#d29922' : c >= 0 ? '#8b949e' : '#f85149';
+    return '<div class="tw-row">' +
+      '<span class="tw-rank" style="background:' + (helped ? '#3fb950' : '#f85149') + '">' + (i + 1) + '</span>' +
+      '<a class="tw-name" href="' + stravaSegmentHref(m.entry.segment_id) + '" target="_blank" rel="noopener noreferrer" title="View on Strava">' +
+        escapeHTML(m.entry.segment_name || 'Segment') +
+        '<span class="tw-star">View on Strava &rsaquo;</span>' +
+      '</a>' +
+      '<span class="tw-val" style="color:' + colour + '">' +
+        (helped ? '+' : '\u2212') + Math.abs(Math.round(c * 10) / 10) + '</span>' +
+    '</div>';
+  }).join('');
+  return '<div class="tw-block">' +
+    '<div class="tw-head">Best tailwind segments' +
+      (at ? ' \u00b7 ' + escapeHTML(windDirName(res.windDir)) + ' ' + Math.round(res.windSpeed) + ' mph at ' + escapeHTML(at) : '') +
+    '</div>' + rows +
+    '<div class="tw-foot">mph of wind help along each segment \u00b7 tap a name to open it on Strava and star it</div>' +
+  '</div>';
 }
 
 // Tapping a route thumbnail opens the course on real Apple Maps tiles, with
@@ -9116,6 +9176,7 @@ async function loadClubEvents(forceFresh) {
               ${routeThumbSVG(rt.polyline, 640, 280)}
               <div style="position:absolute;right:8px;bottom:8px;background:rgba(13,17,23,.85);border:1px solid #30363d;border-radius:999px;padding:4px 10px;font-size:11px;color:#e6edf3;pointer-events:none">Tap for the course &rsaquo;</div>
             </div>` : ''}
+            ${tailwindListHTML(e._tailwind)}
           </div>`;
         })()}
       </div>`;
