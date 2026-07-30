@@ -601,7 +601,10 @@ body.native-app .native-only { display: flex !important; }
   border-radius: 10px 0 0 10px; background: linear-gradient(to right, rgba(1,4,9,0), rgba(1,4,9,.34)); }
 #map-swipe-edge::after { content: '\203A'; color: #8b949e; font-size: 19px; line-height: 1; }
 #map-swipe-edge:active { cursor: grabbing; background: linear-gradient(to right, rgba(1,4,9,0), rgba(1,4,9,.55)); }
-body.map-fs #map-swipe-edge { display: none; }   /* no deck to swipe in full screen */
+/* In full screen there is no deck to swipe, so the same handle means the same
+   thing one level up: drag it to leave the map. */
+body.map-fs #map-swipe-edge { top: 60px; bottom: 60px; }
+body.map-fs #map-swipe-edge::after { content: '\2715'; font-size: 15px; }
 .map-icon-btn { width: 34px; padding: 0; text-align: center; font-size: 15px; }
 #hunt-hover { position: absolute; z-index: 30; pointer-events: none; max-width: 250px;
   background: rgba(13,17,23,.96); border: 1px solid #30363d; border-left: 3px solid #58a6ff;
@@ -681,7 +684,14 @@ body.map-fs #palmares-map { position: fixed !important; inset: 0 !important; wid
 body.map-fs #map-fs-exit { display: flex; }
 /* The expand button is pointless once already full screen. */
 body.map-fs #map-fs-enter { display: none; }
-body.map-fs #route-fs-bar { display: flex !important; }
+body.map-fs #route-fs-bar,
+/* The hunter's Done bar used to be shown only by syncMapToolbar, which
+   setMapFullscreen reached only through a delayed repaint guarded by
+   `if (palmaresMap)`. With no map object there was no repaint, no Done bar,
+   and the bottom-centre exit button sits under the panel - so full screen had
+   no way out at all. Both bars are CSS-driven now; each lives inside a panel
+   that is already hidden outside its own mode. */
+body.map-fs #hunt-fs-bar { display: flex !important; }
 body.map-fs #route-builder-panel,
 body.map-fs #segment-hunter-panel { position: fixed !important; left: 0; right: 0; bottom: 0; z-index: 10002; margin: 0; border-radius: 14px 14px 0 0; max-height: 48vh; overflow-y: auto; padding-bottom: calc(env(safe-area-inset-bottom) + 14px); box-shadow: 0 -8px 24px rgba(0,0,0,.5); }
 .map-fs-btn { background:#161b22; border:1px solid #30363d; color:#e6edf3; border-radius:999px; padding:9px 15px; font-size:13px; cursor:pointer; display:flex; align-items:center; gap:6px; box-shadow: 0 2px 10px rgba(0,0,0,.4); }
@@ -11969,10 +11979,17 @@ function setMapMode(mode) {
 // tiles render into the old, smaller box.
 function setMapFullscreen(on) {
   document.body.classList.toggle('map-fs', !!on);
+  // Straight away, not on the delayed repaint below: the exit affordances are
+  // part of entering full screen, not part of drawing the map.
+  try { syncMapToolbar(); } catch (e) {}
   // MapKit tracks its container size on its own; a repaint after the resize
   // settles is enough (and it has no Leaflet-style invalidateSize()).
   setTimeout(function() { try { if (palmaresMap) renderPalmaresMap(); } catch (e) {} }, 80);
 }
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape' && document.body.classList.contains('map-fs')) setMapFullscreen(false);
+});
+
 function setMapAchievement(a) { palmaresMapState.achievement = a; syncMapToolbar(); renderPalmaresMap(); }
 function setMapSport(s) { palmaresMapState.sport = s; syncMapToolbar(); renderPalmaresMap(); }
 function setMapWind(w) { palmaresMapState.wind = w; syncMapToolbar(); renderPalmaresMap(); }
@@ -13493,11 +13510,13 @@ function initMapEdgeSwipe(deckId) {
   strip.title = 'Drag to the next card';
   host.appendChild(strip);
 
-  let startX = 0, startScroll = 0, dragging = false, snapWas = '';
+  let startX = 0, startScroll = 0, dragging = false, snapWas = '', fsDrag = false;
   strip.addEventListener('pointerdown', function (e) {
-    if (document.body.classList.contains('map-fs')) return;
     dragging = true;
     startX = e.clientX;
+    // In full screen the drag leaves the map instead of moving the deck.
+    fsDrag = document.body.classList.contains('map-fs');
+    if (fsDrag) { try { strip.setPointerCapture(e.pointerId); } catch (err) {} e.preventDefault(); return; }
     startScroll = deck.scrollLeft;
     // Scroll snapping fights a scrollLeft written mid-drag, pulling the deck
     // back to the current card on every move. Off while dragging, on to land.
@@ -13507,13 +13526,20 @@ function initMapEdgeSwipe(deckId) {
     e.preventDefault();
   });
   strip.addEventListener('pointermove', function (e) {
-    if (!dragging) return;
+    if (!dragging || fsDrag) return;
     deck.scrollLeft = startScroll - (e.clientX - startX);
     e.preventDefault();
   });
   const finish = function (e) {
     if (!dragging) return;
     dragging = false;
+    if (fsDrag) {
+      fsDrag = false;
+      try { strip.releasePointerCapture(e.pointerId); } catch (err) {}
+      // A deliberate drag, not a stray tap on the edge of the map.
+      if (Math.abs(e.clientX - startX) > 40) setMapFullscreen(false);
+      return;
+    }
     deck.style.scrollSnapType = snapWas || '';
     const w = deck.clientWidth || 1;
     deckTo(deckId, Math.round(deck.scrollLeft / w));
