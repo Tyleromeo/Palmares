@@ -675,6 +675,24 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
 .toast-body { font-size:12px; color:#7d8590; }
 .toast-icon { font-size:18px; margin-right:8px; float:left; }
 
+/* ROUTE DETAIL - the course on real Apple Maps tiles, opened by tapping a
+   ride's outline. Full screen because a route is the one thing worth the
+   whole display. Sits above the map's own full-screen layer. */
+body.rd-open { overflow: hidden; }
+#route-detail { position: fixed; inset: 0; z-index: 21000; background: #0d1117; display: flex; flex-direction: column; }
+.rd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: calc(env(safe-area-inset-top) + 12px) 16px 12px; border-bottom: 1px solid #21262d; }
+.rd-title { font-size: 17px; font-weight: 600; color: #e6edf3; }
+.rd-sub { font-size: 12px; color: #7d8590; margin-top: 3px; }
+.rd-close { background: transparent; border: 1px solid #30363d; color: #7d8590; border-radius: 999px; width: 34px; height: 34px; font-size: 15px; cursor: pointer; flex-shrink: 0; }
+#route-detail-map { flex: 1; min-height: 0; }
+.rd-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px calc(env(safe-area-inset-bottom) + 14px); border-top: 1px solid #21262d; }
+.rd-legend { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #7d8590; flex-wrap: wrap; }
+.rd-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-left: 6px; }
+.rd-dot.rd-start { background: #3fb950; }
+.rd-dot.rd-finish { background: #f85149; }
+.rd-arrow { color: #FC4C02; margin-left: 8px; }
+.rd-foot .gold-btn { margin-top: 0; padding: 10px 16px; font-size: 13px; }
+
 /* IN-PAGE CONFIRM / PROMPT. Replaces window.confirm and window.prompt, which
    WKWebView refuses to display unless the host app implements WKUIDelegate -
    so in the iOS app they returned false/null instantly and every action gated
@@ -8283,18 +8301,118 @@ async function enrichEventsWithRoutes(events) {
     }
     if (!r) r = embedded;
     if (!r) continue;
+    const poly = (r.map && (r.map.summary_polyline || r.map.polyline)) ||
+      (embedded && embedded.map && (embedded.map.summary_polyline || embedded.map.polyline)) ||
+      (cached && cached.polyline) || null;
+    let distanceMi = r.distance != null ? r.distance / 1609.34
+      : (cached && cached.distanceMi != null ? cached.distanceMi : null);
+    let distanceApprox = false;
+    // A private route answers 404 even when the event embeds its shape, so
+    // Strava gives us the line but no stats - which is why one ride showed a
+    // map with no distance beside it. The polyline is enough to measure:
+    // summary polylines are simplified, so this runs a touch short and is
+    // labelled approximate rather than presented as Strava's own figure.
+    if (distanceMi == null && poly) {
+      const pts = decodePolyline(poly);
+      const measured = lineDistanceMiles(pts);
+      if (measured != null && measured > 0) { distanceMi = measured; distanceApprox = true; }
+    }
     const data = {
-      distanceMi: r.distance != null ? r.distance / 1609.34 : (cached && cached.distanceMi != null ? cached.distanceMi : null),
+      distanceMi: distanceMi,
+      distanceApprox: distanceApprox || (cached && cached.distanceApprox) || false,
       elevationFt: r.elevation_gain != null ? r.elevation_gain * 3.281 : (cached && cached.elevationFt != null ? cached.elevationFt : null),
-      polyline: (r.map && (r.map.summary_polyline || r.map.polyline)) ||
-        (embedded && embedded.map && (embedded.map.summary_polyline || embedded.map.polyline)) ||
-        (cached && cached.polyline) || null,
+      polyline: poly,
       detailCheckedAt: detailCheckedAt || (cached && cached.detailCheckedAt) || null
     };
     if (id) cacheEventRoute(id, data);
     e._route = data; changed = true;
   }
   if (changed && window.renderEventRows) window.renderEventRows();
+}
+
+// Tapping a route thumbnail opens the course on real Apple Maps tiles, with
+// the direction of travel marked. The thumbnail is a bare SVG outline - fine
+// as a shape at a glance, useless for "which way does this go and what roads
+// is it on".
+//
+// A note on Apple Maps proper: its URL scheme cannot draw an arbitrary route.
+// It accepts a destination and a handful of stops, so an 86-mile loop with
+// hundreds of points simply cannot be handed to it. MapKit IS Apple Maps
+// rendering though, so the course is drawn here on the same tiles, and the
+// "Directions to start" button hands Apple Maps the one thing it does well -
+// navigating you to where the ride begins.
+let _routeDetailMap = null;
+function openRouteDetail(key) {
+  const ev = (window._upcomingEvents || []).filter(function (e) { return rideKey(e) === key; })[0];
+  const rt = ev && ev._route;
+  if (!rt || !rt.polyline) return;
+  const pts = decodePolyline(rt.polyline);
+  if (!pts || pts.length < 2) return;
+
+  const start = pts[0], finish = pts[pts.length - 1];
+  const stats = [
+    rt.distanceMi ? rt.distanceMi.toFixed(1) + ' mi' + (rt.distanceApprox ? ' approx' : '') : null,
+    rt.elevationFt ? Math.round(rt.elevationFt).toLocaleString() + ' ft climbing' : null
+  ].filter(Boolean).join('  \u00b7  ');
+
+  const el = document.createElement('div');
+  el.id = 'route-detail';
+  el.innerHTML =
+    '<div class="rd-head">' +
+      '<div><div class="rd-title"></div><div class="rd-sub"></div></div>' +
+      '<button type="button" class="rd-close" onclick="closeRouteDetail()">\u2715</button>' +
+    '</div>' +
+    '<div id="route-detail-map"></div>' +
+    '<div class="rd-foot">' +
+      '<div class="rd-legend"><span class="rd-dot rd-start"></span>Start' +
+        '<span class="rd-dot rd-finish"></span>Finish' +
+        '<span class="rd-arrow">\u27a4</span>Direction</div>' +
+      '<button type="button" class="gold-btn rd-nav">Directions to start</button>' +
+    '</div>';
+  el.querySelector('.rd-title').textContent = ev.title || 'Route';
+  el.querySelector('.rd-sub').textContent = [ev.club_name, stats].filter(Boolean).join('  \u00b7  ');
+  el.querySelector('.rd-nav').onclick = function () {
+    // Apple Maps can navigate to a point; it cannot render the loop.
+    window.open('https://maps.apple.com/?daddr=' + start[0] + ',' + start[1], '_blank');
+  };
+  document.body.appendChild(el);
+  document.body.classList.add('rd-open');
+
+  ensureMapKit().then(function () {
+    const host = document.getElementById('route-detail-map');
+    if (!host) return;
+    _routeDetailMap = new mapkit.Map(host, palmaresMapOptions({}));
+    const group = mkLayerGroup(_routeDetailMap);
+    mkAddPolyline(group, pts, { color: '#FC4C02', weight: 5, opacity: 0.95 });
+
+    // Direction arrows spaced along the line, each rotated to the local
+    // bearing, so which way round the loop goes is unambiguous.
+    const wanted = 14;
+    const step = Math.max(1, Math.floor(pts.length / wanted));
+    for (let i = step; i < pts.length - 1; i += step) {
+      const brg = bearingBetween(pts[i - 1], pts[i]);
+      group.addAnnotation(mkDomAnnotation(mkCoord(pts[i]),
+        '<div style="font-size:15px;line-height:1;color:#FC4C02;text-shadow:0 0 3px #0d1117,0 0 3px #0d1117;' +
+        'transform:rotate(' + (brg - 90).toFixed(0) + 'deg)">\u27a4</div>', {}));
+    }
+    group.addAnnotation(mkDomAnnotation(mkCoord(start),
+      '<div style="width:15px;height:15px;border-radius:50%;background:#3fb950;border:2px solid #0d1117"></div>', {}));
+    group.addAnnotation(mkDomAnnotation(mkCoord(finish),
+      '<div style="width:15px;height:15px;border-radius:50%;background:#f85149;border:2px solid #0d1117"></div>', {}));
+
+    const region = mkRegionForPoints(pts, 1.15);
+    if (region) mkSetRegion(_routeDetailMap, region, host);
+  }).catch(function (e) {
+    const host = document.getElementById('route-detail-map');
+    if (host) host.innerHTML = '<div style="padding:20px;color:#7d8590;font-size:13px">Map unavailable right now.</div>';
+  });
+}
+
+function closeRouteDetail() {
+  if (_routeDetailMap) { try { _routeDetailMap.destroy(); } catch (e) {} _routeDetailMap = null; }
+  const el = document.getElementById('route-detail');
+  if (el) el.remove();
+  document.body.classList.remove('rd-open');
 }
 
 // The route drawn as a responsive inline SVG path rather than a live map.
@@ -8810,12 +8928,16 @@ async function loadClubEvents(forceFresh) {
         ${(() => {
           const rt = e._route;
           if (!rt || (!rt.distanceMi && !rt.elevationFt && !rt.polyline)) return '';
+          const key = rideKey(e).replace(/'/g, "\\'");
           return `<div style="margin-top:12px">
             <div style="display:flex;align-items:baseline;gap:20px;margin-bottom:${rt.polyline?'9px':'0'};font-size:14px;color:#7d8590">
-              ${rt.distanceMi ? `<span><strong style="font-size:18px;color:#e6edf3">${rt.distanceMi.toFixed(1)}</strong> mi</span>` : ''}
+              ${rt.distanceMi ? `<span><strong style="font-size:18px;color:#e6edf3">${rt.distanceMi.toFixed(1)}</strong> mi${rt.distanceApprox ? '<small style="color:#57606a"> approx</small>' : ''}</span>` : ''}
               ${rt.elevationFt ? `<span><strong style="font-size:18px;color:#e6edf3">${Math.round(rt.elevationFt).toLocaleString()}</strong> ft climbing</span>` : ''}
             </div>
-            ${rt.polyline ? routeThumbSVG(rt.polyline, 640, 280) : ''}
+            ${rt.polyline ? `<div onclick="openRouteDetail('${key}')" style="cursor:pointer;position:relative">
+              ${routeThumbSVG(rt.polyline, 640, 280)}
+              <div style="position:absolute;right:8px;bottom:8px;background:rgba(13,17,23,.85);border:1px solid #30363d;border-radius:999px;padding:4px 10px;font-size:11px;color:#e6edf3;pointer-events:none">Tap for the course &rsaquo;</div>
+            </div>` : ''}
           </div>`;
         })()}
       </div>`;
