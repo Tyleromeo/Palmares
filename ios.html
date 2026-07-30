@@ -8588,9 +8588,13 @@ function setZoneOutputSport(sport) {
 
 function renderZoneBreakdown() {
   const s = getSettings();
-  const rides = allActivities.filter(a=>(a.type==='Ride'||a.type==='VirtualRide')&&a.average_watts>0).slice(0,10);
-  const runs = allActivities.filter(a=>(a.type==='Run'||a.type==='TrailRun')&&a.average_speed>0).slice(0,10);
-  const swims = allActivities.filter(a=>a.type==='Swim').slice(0,5);
+  // Honour Settings > Sports here the way the activity list does. A swim has
+  // no FTP and no threshold pace, so it never had a zone to report - it was
+  // only ever a distance tally sitting inside a zones card - and it arrived
+  // under "Everything else" whatever the rider had actually selected.
+  const inSelectedSports = a => sportEnabled(activitySportKey(a));
+  const rides = allActivities.filter(a=>(a.type==='Ride'||a.type==='VirtualRide')&&a.average_watts>0&&inSelectedSports(a)).slice(0,10);
+  const runs = allActivities.filter(a=>(a.type==='Run'||a.type==='TrailRun')&&a.average_speed>0&&inSelectedSports(a)).slice(0,10);
   const zbEl = document.getElementById('zone-breakdown');
   if (!zbEl) return;
   let html = '';
@@ -8606,9 +8610,6 @@ function renderZoneBreakdown() {
     const ratio = avgPaceSecs/threshold;
     const zone = ratio>1.25?'Z1':ratio>1.15?'Z2':ratio>1.05?'Z3':ratio>0.97?'Z4':'Z5+';
     html += '<div class="coach-item"><div class="coach-title">Recent runs avg '+secsToMmSs(Math.round(avgPaceSecs))+' min/mi ('+zone+')</div><div class="coach-text">Based on your last '+runs.length+' runs.</div></div>';
-  }
-  if (swims.length) {
-    html += '<div class="coach-item" style="border-left-color:#58a6ff"><div class="coach-title">Swimming - '+swims.length+' recent sessions</div><div class="coach-text">'+Math.round(swims.reduce((s,r)=>s+r.distance,0))+'m total distance.</div></div>';
   }
   if (!html) html = '<p style="font-size:13px;color:#7d8590">Not enough data for zone breakdown.</p>';
   zbEl.innerHTML = html;
