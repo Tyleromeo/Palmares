@@ -443,6 +443,9 @@ body.native-app .container { margin-left: 0; padding-top: 1.5rem; }
 #palmares-map { height: 72vh; min-height: 520px; border-radius: 12px; overflow: hidden; background: #0d1117; border: 1px solid #30363d; }
 /* Tailwind picks under the route builder. Its own classes rather than the
    event popup's .rd-tw-* rules, which are sized for a full-screen sheet. */
+.tw-starbtn { background: transparent; border: none; color: #57606a; font-size: 17px; line-height: 1; cursor: pointer; padding: 2px 4px; flex-shrink: 0; }
+.tw-starbtn.on { color: #FC4C02; }
+.tw-starbtn:disabled { cursor: default; }
 #hunt-scan-btn:disabled { background: #21262d !important; border-color: #30363d !important; color: #57606a !important; cursor: not-allowed; }
 .hunt-addbtn { background: transparent; border: 1px solid #30363d; color: #7d8590; font-size: 11px; border-radius: 999px; padding: 3px 9px; cursor: pointer; flex-shrink: 0; white-space: nowrap; }
 .hunt-addbtn:hover { border-color: #e0691a; color: #e0691a; }
@@ -10144,6 +10147,8 @@ function setMapMode(mode) {
   syncMapToolbar();
   if (mode === 'route') { updateRouteStats(); renderSavedRoutes(); }
   if (mode === 'hunt') { renderHuntList(); updateHuntButton(); }
+  // Both of these show star buttons, so reconcile with Strava on the way in.
+  if (mode === 'route' || mode === 'hunt') refreshStarredFromStrava();
   // Route building wants the whole screen, Strava-style - drop straight into
   // full screen so there's room to place points and watch the line grow.
   // Both builders want the whole screen: one to place points, the other to
@@ -10761,6 +10766,41 @@ function setStarredLocal(id, on) {
   if (on) m[String(id)] = 1; else delete m[String(id)];
   try { localStorage.setItem(STARRED_KEY, JSON.stringify(m)); } catch (e) {}
 }
+
+// Strava is where a star actually lives, so it is also where the app has to
+// read it back from. The local map is only a mirror for instant button
+// feedback - and it is per-store, so the iOS web view and a desktop browser
+// each kept their own. Starring on one genuinely reached Strava but was
+// invisible on the other. This pulls the athlete's real starred list and
+// replaces the mirror with it, which also drops stars removed elsewhere.
+let _starredSyncedAt = 0;
+async function refreshStarredFromStrava(force) {
+  if (!force && Date.now() - _starredSyncedAt < 5 * 60 * 1000) return;
+  const token = await getToken();
+  if (!token) return;
+  // Set the stamp up front: a failing request must not turn every re-render
+  // into another attempt.
+  _starredSyncedAt = Date.now();
+  try {
+    const map = {};
+    for (let page = 1; page <= 5; page++) {
+      const resp = await fetch('https://www.strava.com/api/v3/segments/starred?per_page=200&page=' + page,
+        { headers: { Authorization: 'Bearer ' + token } });
+      // Leave the mirror alone on failure rather than wiping stars the athlete
+      // really has.
+      if (!resp.ok) return;
+      const rows = await resp.json();
+      if (!Array.isArray(rows)) return;
+      rows.forEach(function (s) { if (s && s.id != null) map[String(s.id)] = 1; });
+      if (rows.length < 200) break;
+    }
+    localStorage.setItem(STARRED_KEY, JSON.stringify(map));
+    if (window.renderRouteTailwindPicks) window.renderRouteTailwindPicks();
+    if (window.renderHuntList) window.renderHuntList();
+    if (window.renderStarredDependentViews) window.renderStarredDependentViews();
+  } catch (e) {}
+}
+
 async function reauthoriseForStarring() {
   const ok = await askConfirm(
     'Starring a segment saves it to your Strava account, which is how it reaches your Garmin as a Live Segment. ' +

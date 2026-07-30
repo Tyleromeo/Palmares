@@ -8931,6 +8931,41 @@ function setStarredLocal(id, on) {
   try { localStorage.setItem(STARRED_KEY, JSON.stringify(m)); } catch (e) {}
 }
 
+// Strava is where a star actually lives, so it is also where the app has to
+// read it back from. The local map is only a mirror for instant button
+// feedback - and it is per-store, so the iOS web view and a desktop browser
+// each kept their own. Starring on one genuinely reached Strava but was
+// invisible on the other. This pulls the athlete's real starred list and
+// replaces the mirror with it, which also drops stars removed elsewhere.
+let _starredSyncedAt = 0;
+async function refreshStarredFromStrava(force) {
+  if (!force && Date.now() - _starredSyncedAt < 5 * 60 * 1000) return;
+  const token = await getToken();
+  if (!token) return;
+  // Set the stamp up front: a failing request must not turn every re-render
+  // into another attempt.
+  _starredSyncedAt = Date.now();
+  try {
+    const map = {};
+    for (let page = 1; page <= 5; page++) {
+      const resp = await fetch('https://www.strava.com/api/v3/segments/starred?per_page=200&page=' + page,
+        { headers: { Authorization: 'Bearer ' + token } });
+      // Leave the mirror alone on failure rather than wiping stars the athlete
+      // really has.
+      if (!resp.ok) return;
+      const rows = await resp.json();
+      if (!Array.isArray(rows)) return;
+      rows.forEach(function (s) { if (s && s.id != null) map[String(s.id)] = 1; });
+      if (rows.length < 200) break;
+    }
+    localStorage.setItem(STARRED_KEY, JSON.stringify(map));
+    if (window.renderRouteTailwindPicks) window.renderRouteTailwindPicks();
+    if (window.renderHuntList) window.renderHuntList();
+    if (window.renderStarredDependentViews) window.renderStarredDependentViews();
+  } catch (e) {}
+}
+
+
 async function toggleSegmentStar(segId, btn) {
   // No local gate on the stored scope. That record was wrong for every athlete
   // who connected before the fix above, and a stale string must not stand
@@ -9077,7 +9112,16 @@ async function tailwindSegmentsForRoute(routePoints, when, limit) {
 }
 
 let _routeDetailMap = null;
+
+// The event popup's tailwind ranking carries star buttons as well, so it has
+// to be repainted when the real starred list arrives.
+window.renderStarredDependentViews = function () {
+  const el = document.getElementById('rd-tailwind');
+  if (el && window._rdLastTailwind) renderTailwindRanking(window._rdLastTailwind, null);
+};
+
 function openRouteDetail(key) {
+  refreshStarredFromStrava();
   const ev = (window._upcomingEvents || []).filter(function (e) { return rideKey(e) === key; })[0];
   const rt = ev && ev._route;
   if (!rt || !rt.polyline) return;
@@ -11837,6 +11881,8 @@ function setMapMode(mode) {
   syncMapToolbar();
   if (mode === 'route') { updateRouteStats(); renderSavedRoutes(); }
   if (mode === 'hunt') { renderHuntList(); updateHuntButton(); }
+  // Both of these show star buttons, so reconcile with Strava on the way in.
+  if (mode === 'route' || mode === 'hunt') refreshStarredFromStrava();
   // Route building wants the whole screen, Strava-style - drop straight into
   // full screen so there's room to place points and watch the line grow.
   // Both builders want the whole screen: one to place points, the other to
