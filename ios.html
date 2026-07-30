@@ -1478,6 +1478,13 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
               <option value="manual">Trail / Manual — no snap</option>
             </select>
           </div>
+          <div>
+            <div style="font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px">Segments for</div>
+            <select id="route-sport" class="route-mode-pill" onchange="setRouteSport(this.value)">
+              <option value="ride" selected>Ride</option>
+              <option value="run">Run</option>
+            </select>
+          </div>
           <div><div style="font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px">Distance</div><div id="route-distance" style="font-size:16px;font-weight:600;color:#e0691a">0.0 mi</div></div>
           <div><div style="font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px">Elevation gain</div><div id="route-elevation" style="font-size:16px;font-weight:600;color:#e0691a">0 ft</div></div>
           <div><div style="font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px">Waypoints</div><div id="route-waypoints" style="font-size:16px;font-weight:600;color:#e0691a">0</div></div>
@@ -12073,6 +12080,10 @@ function setRouteMode(mode) {
   if (mode !== 'bike' && mode !== 'foot' && mode !== 'manual') mode = 'bike';
   const previousMode = routeMode;
   routeMode = mode;
+  // A helpful default only: Manual says nothing about the sport, so it leaves
+  // whatever is selected alone.
+  if (mode === 'bike') setRouteSport('ride');
+  else if (mode === 'foot') setRouteSport('run');
   const el = document.getElementById('route-mode');
   if (el) el.value = routeMode;
 
@@ -12403,7 +12414,14 @@ function minDistancePointToPolylineMeters(point, line, stride) {
 // within the threshold, which is what "on my route" means.
 function polylineCoverageFraction(segPoints, routePoints, thresholdM) {
   if (!segPoints || segPoints.length < 2 || !routePoints || routePoints.length < 2) return 0;
-  const routeStride = Math.max(1, Math.ceil(routePoints.length / 400));
+  // Stride 1, deliberately. minDistancePointToPolylineMeters does not sample
+  // along a line when strided - it skips whole sub-segments of it - so on a
+  // dense route the stride quietly hid most of the course. An imported century
+  // thins to ~2,500 points about 50 m apart, which gave a stride of 7 and left
+  // six stretches in every seven untested: a segment lying exactly on the road
+  // measured 58 m away and scored 28% covered. The early exit inside that
+  // function keeps this cheap for points that really are on the route.
+  const routeStride = 1;
   let total = 0, covered = 0;
   for (let i = 1; i < segPoints.length; i++) {
     const a = segPoints[i - 1], b = segPoints[i];
@@ -12421,7 +12439,10 @@ function polylineCoverageFraction(segPoints, routePoints, thresholdM) {
 function minDistancePolylineToPolylineMeters(segPoints, routePoints, thresholdM) {
   if (!segPoints || segPoints.length < 2 || !routePoints || routePoints.length < 2) return Infinity;
   const segStride = Math.max(1, Math.ceil(segPoints.length / 20));
-  const routeStride = Math.max(1, Math.ceil(routePoints.length / 200));
+  // Also 1, and for the same reason: as a pre-filter this rejects candidates
+  // outright, so striding past most of the route made it throw away segments
+  // that were on it. It returns as soon as it is within the threshold.
+  const routeStride = 1;
   let best = Infinity;
   for (let i = 0; i < segPoints.length; i += segStride) {
     const d = minDistancePointToPolylineMeters(segPoints[i], routePoints, routeStride);
@@ -12561,6 +12582,18 @@ const ROUTE_TAILWIND_PICKS = 5;
 // score under ~0.3 here, so this cleanly separates them while still allowing a
 // segment that overshoots slightly past a turn.
 const ROUTE_SEGMENT_MIN_COVERAGE = 0.85;
+// Find segments is a deliberate press, so it can afford more of the
+// 200-per-15-minute ceiling than the old 24. A 100-mile course still cannot be
+// swept whole; what it covers is reported instead.
+const ROUTE_MAX_TILES = 40;
+// Ride or run, independent of how the line was drawn or snapped.
+let routeSport = 'ride';
+
+function setRouteSport(v) {
+  routeSport = v === 'run' ? 'run' : 'ride';
+  const el = document.getElementById('route-sport');
+  if (el) el.value = routeSport;
+}
 
 function exploreTilesForRoute(routePoints, tileDeg, maxTiles) {
   const seen = {};
@@ -12728,6 +12761,7 @@ function setHuntDay(v) {
   // geometry needed to score it is already held.
   if (huntResults) { rankHuntResults(); drawHuntResults(); renderHuntList(); }
   else updateHuntButton();
+  renderWindRose();
 }
 
 // Scoring and ordering, split out so a change of day can redo it on its own.
@@ -13136,12 +13170,22 @@ async function addHuntSegmentToRoute(id) {
 async function scanRouteForSegments() {
   const routePoints = getRouteTrackPoints();
   if (routePoints.length < 2) return null;
-  const onFoot = (routeMode === 'foot' || routeMode === 'manual');
+  // Which sport to ask Strava for is a separate question from how the line was
+  // drawn. It used to be read off the snapping mode, where "Trail / Manual -
+  // no snap" counted as on foot. That is right for a traced trail run and
+  // badly wrong for an imported GPX, which is stored as manual purely so the
+  // file's own line is not re-routed - so a 103-mile bike course was searched
+  // for running segments and quite correctly found none.
+  const onFoot = routeSport === 'run';
   const activityType = onFoot ? 'running' : 'riding';
   const thresholdM = onFoot ? 35 : 45;
 
   clearRouteDiscoveryLayers();
-  const tiles = exploreTilesForRoute(routePoints, EXPLORE_TILE_DEG, EXPLORE_MAX_TILES);
+  // A century covers far more ground than a tile budget sized for an afternoon
+  // loop. Count the full sweep so the shortfall can be stated rather than
+  // passed off as a complete scan.
+  const fullTiles = exploreTilesForRoute(routePoints, EXPLORE_TILE_DEG, Number.MAX_SAFE_INTEGER);
+  const tiles = exploreTilesForRoute(routePoints, EXPLORE_TILE_DEG, ROUTE_MAX_TILES);
   setRouteStatus('Scanning Strava for segments along this route… 0/' + tiles.length + ' areas');
   const res = await exploreSegmentsInTiles(tiles, activityType, function (done, total, hits) {
     setRouteStatus('Scanning Strava for segments along this route… ' + done + '/' + total +
@@ -13209,7 +13253,9 @@ async function scanRouteForSegments() {
     tilesScanned: res.calls,
     tilesTotal: res.tiles,
     scannedAt: Date.now(),
-    activityType: activityType
+    activityType: activityType,
+    stretchesScanned: tiles.length,
+    stretchesTotal: fullTiles.length
   };
   drawRouteDiscovery();
   renderRouteTailwindPicks();
@@ -13270,7 +13316,13 @@ function renderRouteTailwindPicks() {
   if (routeDiscovery.needsScan) return msg('This route has not been scanned for segments yet — press Find segments.');
   const totalFound = routeDiscovery.totalFound || routeDiscovery.all.length;
   if (!totalFound) {
-    return msg('No Strava segments sit on this route. Roads with no segments on them are common — try a scan on a busier stretch.');
+    return msg('No ' + (routeSport === 'run' ? 'running' : 'riding') +
+      ' segments sit on this route.' +
+      (routeDiscovery.stretchesTotal > routeDiscovery.stretchesScanned
+        ? ' Only ' + routeDiscovery.stretchesScanned + ' of ' + routeDiscovery.stretchesTotal +
+          ' stretches were sampled, so a longer course can miss them — scan again to sample different ones.'
+        : ' Roads with no segments on them are common.') +
+      (routeSport === 'run' ? ' Switch Segments for to Ride if this is a bike course.' : ''));
   }
   if (!routeDiscovery.picks.length) {
     return msg('Found ' + totalFound + ' segments on this route, but there is no wind forecast to rank them by yet.');
@@ -13280,7 +13332,11 @@ function renderRouteTailwindPicks() {
   const head = 'Best tailwind on this route · ' +
     (w ? windDirName(w.direction) + ' wind at ' + Math.round(w.speed) + ' mph' : 'wind unknown') +
     ' · ' + totalFound + (totalFound === 1 ? ' segment found' : ' segments found') +
-    (routeDiscovery.rateLimited ? ' (Strava rate limit reached — partial scan)' : '') +
+    (routeDiscovery.rateLimited ? ' · Strava rate limit reached' : '') +
+    (routeDiscovery.stretchesTotal > routeDiscovery.stretchesScanned
+      ? ' · ' + routeDiscovery.stretchesScanned + ' of ' + routeDiscovery.stretchesTotal +
+        ' stretches sampled along the course'
+      : '') +
     (routeDiscovery.fromSaved ? ' · from the saved scan' : '');
 
   const rows = routeDiscovery.picks.map(function (m, i) {
@@ -13550,6 +13606,7 @@ async function importRouteGPX(input) {
     // Manual: the file's own line is the course. Re-routing it through OSRM
     // would quietly redraw somebody else's ride.
     mode: 'manual',
+    sport: 'ride',
     imported: true,
     waypoints: [{ lat: pts[0][0], lng: pts[0][1] },
                 { lat: pts[pts.length - 1][0], lng: pts[pts.length - 1][1] }],
@@ -13644,6 +13701,7 @@ async function saveCurrentRoute() {
     id: 'rt_' + Date.now(),
     name: name,
     mode: routeMode,
+    sport: routeSport,
     waypoints: routeWaypoints.map(function(w){ return { lat:w.lat, lng:w.lng }; }),
     legs: routeLegs.map(function(l){ return l ? { points:l.points, distanceM:l.distanceM || 0, ascentM:l.ascentM || 0, mode:l.mode || routeMode } : null; }),
     distanceM: totals.distanceM,
@@ -13692,6 +13750,9 @@ async function loadSavedRoute(id) {
   routeMode = r.mode || 'bike';
   const modeEl = document.getElementById('route-mode');
   if (modeEl) modeEl.value = routeMode;
+  // Routes saved before the sport was recorded fall back to the old rule,
+  // except that an import is a ride unless it says otherwise.
+  setRouteSport(r.sport || (r.imported ? 'ride' : (r.mode === 'foot' ? 'run' : 'ride')));
   routeWaypoints = (r.waypoints || []).map(function(w){ return { lat:w.lat, lng:w.lng }; });
   routeLegs = (r.legs || []).map(function(l){ return l ? { points:l.points || [], distanceM:l.distanceM || 0, ascentM:l.ascentM || 0, mode:l.mode || r.mode || 'bike' } : null; });
   routeWaypoints.forEach(function(wp, idx){ addWaypointMarker(wp, idx + 1); });
@@ -13878,8 +13939,13 @@ function renderWindRose() {
   const host = document.getElementById('palmares-map');
   if (!host) return;
   let rose = document.getElementById('wind-rose');
-  const on = palmaresMapState.mode !== 'route' && palmaresMapState.wind !== 'off';
-  const wind = on ? getMapWind(palmaresMapState.wind === 'tomorrow' ? 'tomorrow' : 'today') : null;
+  // In the hunter the compass has to agree with the ranking below it, which
+  // follows the day picker - otherwise it says "Today" beside a list headed
+  // Sunday.
+  const inHunt = palmaresMapState.mode === 'hunt';
+  const on = palmaresMapState.mode !== 'route' && (inHunt || palmaresMapState.wind !== 'off');
+  const wind = !on ? null
+    : (inHunt ? huntWind() : getMapWind(palmaresMapState.wind === 'tomorrow' ? 'tomorrow' : 'today'));
   if (!wind) { if (rose) rose.remove(); return; }
   if (!rose) {
     rose = document.createElement('div');
@@ -13894,7 +13960,8 @@ function renderWindRose() {
     host.appendChild(rose);
   }
   const blowTo = (wind.direction + 180) % 360; // arrow points where wind blows to
-  const dayLabel = palmaresMapState.wind === 'tomorrow' ? 'Tomorrow' : 'Today';
+  const dayLabel = inHunt ? (huntDayLabel(huntDayIndex) || 'Today')
+                          : (palmaresMapState.wind === 'tomorrow' ? 'Tomorrow' : 'Today');
   rose.innerHTML =
     '<svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true">' +
       '<circle cx="22" cy="22" r="19" fill="#0d1117" stroke="#30363d"/>' +
