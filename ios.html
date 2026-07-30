@@ -591,6 +591,7 @@ body.native-app .native-only { display: flex !important; }
 #palmares-map { height: 72vh; min-height: 520px; border-radius: 12px; overflow: hidden; background: #0d1117; border: 1px solid #30363d; }
 /* Tailwind picks under the route builder. Its own classes rather than the
    event popup's .rd-tw-* rules, which are sized for a full-screen sheet. */
+#hunt-scan-btn:disabled { background: #21262d !important; border-color: #30363d !important; color: #57606a !important; cursor: not-allowed; }
 .hunt-addbtn { background: transparent; border: 1px solid #30363d; color: #7d8590; font-size: 11px; border-radius: 999px; padding: 3px 9px; cursor: pointer; flex-shrink: 0; white-space: nowrap; }
 .hunt-addbtn:hover { border-color: #e0691a; color: #e0691a; }
 .rtw-wrap { margin-top: 10px; }
@@ -1436,9 +1437,9 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
             <option value="running">Run</option>
           </select>
         </div>
-        <button class="map-toggle active" onclick="huntSegmentsInView()" style="font-size:11px;background:#C9A227;color:#0d1117;border-color:#C9A227">Scan this view</button>
+        <button class="map-toggle active" id="hunt-scan-btn" onclick="huntSegmentsInView()" disabled style="font-size:11px;background:#C9A227;color:#0d1117;border-color:#C9A227">Scan this view</button>
       </div>
-      <div id="hunt-status" style="font-size:11px;color:#7d8590;margin-top:8px">Pan and zoom to the area you want to ride, then scan. Only what is on screen is searched.</div>
+      <div id="hunt-status" style="font-size:11px;color:#7d8590;margin-top:8px">Move the map over the area you want to ride and zoom in — the scan turns on once the view is small enough to search completely.</div>
       <div id="hunt-list" class="rtw-wrap"></div>
     </div>
     <div id="route-builder-panel" style="display:none;background:#161b22;border:1px solid #e0691a;border-radius:6px;padding:12px 14px;margin-bottom:8px">
@@ -11768,6 +11769,9 @@ async function initPalmaresMap() {
   // while a course is being drawn through it.
   palmaresMapLayers.hunt = mkLayerGroup(palmaresMap);
   palmaresMap.addEventListener('single-tap', onMapClickForRouteBuilder);
+  // The hunter's scan button tracks the view, so it has to hear every pan and
+  // zoom rather than only the mode switch.
+  palmaresMap.addEventListener('region-change-end', updateHuntButton);
 }
 
 function addPalmaresLocateControl() {
@@ -11832,7 +11836,7 @@ function setMapMode(mode) {
   if (mapEl) mapEl.style.cursor = (mode === 'route') ? 'crosshair' : '';
   syncMapToolbar();
   if (mode === 'route') { updateRouteStats(); renderSavedRoutes(); }
-  if (mode === 'hunt') renderHuntList();
+  if (mode === 'hunt') { renderHuntList(); updateHuntButton(); }
   // Route building wants the whole screen, Strava-style - drop straight into
   // full screen so there's room to place points and watch the line grow.
   // Both builders want the whole screen: one to place points, the other to
@@ -12594,7 +12598,7 @@ function currentMapBounds() {
   };
 }
 
-function exploreTilesForBounds(b, tileDeg, maxTiles) {
+function exploreTilesForBounds(b, tileDeg) {
   const tiles = [];
   const la0 = Math.floor(b.swLat / tileDeg), la1 = Math.floor(b.neLat / tileDeg);
   const lo0 = Math.floor(b.swLng / tileDeg), lo1 = Math.floor(b.neLng / tileDeg);
@@ -12604,13 +12608,43 @@ function exploreTilesForBounds(b, tileDeg, maxTiles) {
                    neLat: (la + 1) * tileDeg, neLng: (lo + 1) * tileDeg });
     }
   }
-  if (tiles.length <= maxTiles) return { tiles: tiles, complete: true, grid: tiles.length };
-  // Too wide a view for the rate budget. Sample evenly across the grid rather
-  // than taking the first N, which would scan one corner and leave the rest
-  // blank while looking like a finished sweep.
-  const out = [], stride = tiles.length / maxTiles;
-  for (let i = 0; i < maxTiles; i++) out.push(tiles[Math.floor(i * stride)]);
-  return { tiles: out, complete: false, grid: tiles.length };
+  return tiles;
+}
+
+// The scan is gated on the view being small enough to sweep completely. A
+// sampled sweep of a wide view is the worst of both: it spends the API budget
+// and still cannot say it looked everywhere. Framing the area first and
+// scanning second is also just how the feature is meant to be used, so the
+// button says when it is ready rather than letting a whole-county view fire.
+function huntViewState() {
+  const b = currentMapBounds();
+  if (!b) return { ready: false, reason: 'loading' };
+  const tiles = exploreTilesForBounds(b, HUNT_TILE_DEG);
+  const midLat = (b.swLat + b.neLat) / 2;
+  const widthMi = haversineMeters([midLat, b.swLng], [midLat, b.neLng]) / 1609.34;
+  if (tiles.length > HUNT_MAX_TILES) {
+    // Area scales with the square of the zoom, so this is the honest factor.
+    return { ready: false, reason: 'too-wide', tiles: tiles, widthMi: widthMi,
+             zoomFactor: Math.sqrt(tiles.length / HUNT_MAX_TILES) };
+  }
+  return { ready: true, bounds: b, tiles: tiles, widthMi: widthMi };
+}
+
+// Called whenever the map settles, so the button tracks the view.
+function updateHuntButton() {
+  const btn = document.getElementById('hunt-scan-btn');
+  if (!btn || palmaresMapState.mode !== 'hunt') return;
+  const v = huntViewState();
+  btn.disabled = !v.ready;
+  if (v.reason === 'loading') { setHuntStatus('Waiting for the map…'); return; }
+  if (!v.ready) {
+    setHuntStatus('Zoom in about ' + (Math.round(v.zoomFactor * 10) / 10) + '\u00d7 to scan — this view is about ' +
+      Math.round(v.widthMi) + ' mi across, which is more of Strava than one sweep can cover.');
+    return;
+  }
+  if (!huntResults) {
+    setHuntStatus('Ready to scan — about ' + Math.round(v.widthMi) + ' mi across, ' + v.tiles.length + ' areas to check.');
+  }
 }
 
 function clearHuntLayers() {
@@ -12621,8 +12655,9 @@ function clearHuntLayers() {
 }
 
 async function huntSegmentsInView() {
-  const b = currentMapBounds();
-  if (!b) { setHuntStatus('The map is still loading — try again in a moment.'); return; }
+  const v = huntViewState();
+  if (!v.ready) { updateHuntButton(); return; }
+  const b = v.bounds;
 
   const wind = getMapWind('today');
   if (!wind) {
@@ -12631,9 +12666,8 @@ async function huntSegmentsInView() {
   }
 
   clearHuntLayers();
-  const plan = exploreTilesForBounds(b, HUNT_TILE_DEG, HUNT_MAX_TILES);
-  setHuntStatus('Scanning this view… 0/' + plan.tiles.length + ' areas');
-  const res = await exploreSegmentsInTiles(plan.tiles, huntSport, function (done, total, hits) {
+  setHuntStatus('Scanning this view… 0/' + v.tiles.length + ' areas');
+  const res = await exploreSegmentsInTiles(v.tiles, huntSport, function (done, total, hits) {
     setHuntStatus('Scanning this view… ' + done + '/' + total + ' areas · ' + hits + ' found');
   });
   if (res.error === 'no-token') { setHuntStatus('Connect to Strava to hunt for segments.'); return; }
@@ -12682,7 +12716,7 @@ async function huntSegmentsInView() {
   huntResults = {
     ranked: found, picks: found.slice(0, HUNT_PICKS), wind: wind,
     totalFound: found.length, rateLimited: res.rateLimited,
-    partialView: !plan.complete, gridTiles: plan.grid, scannedTiles: res.calls
+    scannedTiles: res.calls, widthMi: v.widthMi
   };
   drawHuntResults();
   renderHuntList();
@@ -12728,8 +12762,7 @@ function renderHuntList() {
   }
   const w = huntResults.wind;
   const caveats = [];
-  if (huntResults.partialView) caveats.push('view too wide to sweep fully — ' + huntResults.scannedTiles + ' of ' + huntResults.gridTiles + ' areas sampled, zoom in for the rest');
-  if (huntResults.rateLimited) caveats.push('Strava rate limit reached');
+  if (huntResults.rateLimited) caveats.push('Strava rate limit reached — partial results');
 
   const rows = huntResults.picks.map(function (m, i) {
     const c = m.adv.meanComponent;
