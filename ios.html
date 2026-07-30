@@ -589,6 +589,19 @@ body.native-app .native-only { display: flex !important; }
 /* MAP */
 .map-shell { position: relative; }
 #palmares-map { height: 72vh; min-height: 520px; border-radius: 12px; overflow: hidden; background: #0d1117; border: 1px solid #30363d; }
+/* Tailwind picks under the route builder. Its own classes rather than the
+   event popup's .rd-tw-* rules, which are sized for a full-screen sheet. */
+.rtw-wrap { margin-top: 10px; }
+.rtw-head { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: #7d8590; margin-bottom: 6px; line-height: 1.5; }
+.rtw-empty { font-size: 11px; color: #7d8590; line-height: 1.5; padding: 4px 0; }
+.rtw-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid #21262d; }
+.rtw-row:last-of-type { border-bottom: none; }
+.rtw-rank { width: 20px; height: 20px; border-radius: 50%; color: #0d1117; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.rtw-main { flex: 1; min-width: 0; }
+.rtw-name { display: block; font-size: 13px; color: #e6edf3; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rtw-meta { font-size: 11px; color: #57606a; margin-top: 1px; }
+.rtw-val { font-size: 12px; font-weight: 600; text-align: right; white-space: nowrap; flex-shrink: 0; }
+.rtw-foot { font-size: 11px; color: #57606a; margin-top: 8px; line-height: 1.5; }
 .map-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
 .map-subbar { margin-bottom:8px; }
 .map-group-label { font-size:11px; color:#7d8590; text-transform:uppercase; letter-spacing:0.5px; margin-right:2px; }
@@ -601,9 +614,6 @@ body.native-app .native-only { display: flex !important; }
 .map-toggle { background:#0d1117; border:1px solid #30363d; color:#7d8590; border-radius:999px; padding:7px 11px; font-size:12px; cursor:pointer; }
 .map-toggle.active { background:#21262d; color:#e6edf3; border-color:#C9A227; }
 .map-toggle:hover { color:#e6edf3; border-color:#8b949e; }
-.map-legend { display:flex; gap:10px; flex-wrap:wrap; font-size:11px; color:#7d8590; margin-top:10px; }
-.map-legend-item { display:flex; align-items:center; gap:5px; }
-.map-swatch { width:12px; height:12px; border-radius:50%; display:inline-block; border:1px solid rgba(255,255,255,.25); }
 .map-status { font-size:12px; color:#7d8590; margin:10px 0 0; line-height:1.45; }
 .map-popup { color:#e6edf3; font-size:12px; line-height:1.45; min-width:220px; }
 .map-popup-title { font-weight:700; margin-bottom:4px; }
@@ -1438,11 +1448,13 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
           <button class="map-toggle" onclick="undoRouteWaypoint()" style="font-size:11px">Undo point</button>
           <button class="map-toggle" onclick="clearRoute()" style="font-size:11px">Clear</button>
           <button class="map-toggle" onclick="saveCurrentRoute()" style="font-size:11px;border-color:#C9A227">Save route</button>
-          <button class="map-toggle active" onclick="downloadRouteGPX()" style="font-size:11px;background:#e0691a;color:#0d1117;border-color:#e0691a">Download GPX</button>
+          <button class="map-toggle" onclick="downloadRouteGPX()" style="font-size:11px">Download GPX</button>
+          <button class="map-toggle active" onclick="sendRouteToGarmin()" style="font-size:11px;background:#e0691a;color:#0d1117;border-color:#e0691a">Send to Garmin</button>
         </div>
       </div>
       <div id="route-status" style="font-size:11px;color:#7d8590;margin-top:8px">Choose Bike, Run/Walk auto, or Trail/Manual. You can switch modes mid-route: existing legs stay as-is, and the next waypoint uses the currently selected mode.</div>
       <div id="route-segments-list" style="font-size:11px;color:#7d8590;margin-top:8px"></div>
+      <div id="route-tailwind-picks" class="rtw-wrap"></div>
       <div style="border-top:1px solid #30363d;margin-top:10px;padding-top:10px">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
           <div style="font-size:12px;font-weight:600;color:#e6edf3">Saved routes</div>
@@ -1453,16 +1465,6 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
     </div>
     <button type="button" id="map-fs-exit" class="map-fs-btn exit" onclick="setMapFullscreen(false)">✕ Exit full screen</button>
     <div class="map-shell"><div id="palmares-map"></div></div>
-    <div class="map-legend">
-      <div class="map-legend-item"><span class="map-swatch" style="background:#3fb950"></span>Tailwind 10+ mph</div>
-      <div class="map-legend-item"><span class="map-swatch" style="background:#d29922"></span>Tailwind 0-9 mph</div>
-      <div class="map-legend-item"><span class="map-swatch" style="background:#f0883e"></span>Headwind 0-9 mph</div>
-      <div class="map-legend-item"><span class="map-swatch" style="background:#f85149"></span>Headwind 10+ mph</div>
-      <div class="map-legend-item"><span class="map-swatch" style="background:#58a6ff"></span>No wind/geometry data</div>
-      <div class="map-legend-item"><span class="map-swatch" style="background:#000000"></span>Ride heatmap (darker = more rides)</div>
-      <div class="map-legend-item"><span class="map-swatch" style="background:#dc2626"></span>Run heatmap (darker = more runs)</div>
-      <div class="map-legend-item"><span class="map-swatch" style="background:#e0691a"></span>Planned route</div>
-    </div>
     <div class="map-status" id="map-status">Open this after your Strava data loads. Finish the Segments scan/enrichment for the most complete KOM and Top 10 map.</div>
   </div>
 
@@ -8937,6 +8939,9 @@ async function toggleSegmentStar(segId, btn) {
     if (window.renderEventRows) window.renderEventRows();
     const res = document.getElementById('rd-tailwind');
     if (res && window._rdLastTailwind) renderTailwindRanking(window._rdLastTailwind, null);
+    // The route builder shows the same segments, so its stars have to repaint
+    // too - otherwise starring from the picks list leaves a hollow star behind.
+    if (window.renderRouteTailwindPicks) window.renderRouteTailwindPicks();
   }
 }
 
@@ -12134,6 +12139,7 @@ function clearRoute() {
   routeLine = null;
   routeSegmentHighlights = [];
   routeSegmentsOnRoute = [];
+  resetRouteDiscovery();
   updateRouteStats();
   renderRouteSegmentsList();
   setRouteStatus('Route cleared. Click on the map to start again.');
@@ -12324,6 +12330,350 @@ function stravaClubHref(event) {
   return 'https://www.strava.com/athlete/clubs';
 }
 
+// ===== SEGMENT DISCOVERY ALONG A PLANNED ROUTE =====
+// The route builder used to flag only segments the athlete already held a KOM
+// or a Top 10 on, because those are the only ones whose geometry is cached.
+// That answers "where are my records", not "what will I ride past" - and a
+// road you have never ridden is exactly where you hold no record yet.
+//
+// /segments/explore answers the second question: it takes a bounding box and
+// returns up to ten segments WITH their polylines, so nothing extra has to be
+// fetched to score them. Strava still has no "segments along this polyline"
+// endpoint, so a course is covered by walking it and querying a tile per
+// stretch.
+//
+// This is the one place in the app that spends API budget in a burst - a
+// 40-mile loop is roughly two dozen calls against a 200-per-15-minute ceiling
+// - which is why it runs on Save rather than on every waypoint.
+const EXPLORE_TILE_DEG = 0.022;      // ~1.5 mi of latitude per tile
+const EXPLORE_TILE_MARGIN = 0.004;   // overlap, so a segment on a tile seam is still seen
+const EXPLORE_MAX_TILES = 24;
+const ROUTE_TAILWIND_PICKS = 5;
+
+function exploreTilesForRoute(routePoints, tileDeg, maxTiles) {
+  const seen = {};
+  const tiles = [];
+  routePoints.forEach(function (p) {
+    const la = Math.floor(p[0] / tileDeg), lo = Math.floor(p[1] / tileDeg);
+    const key = la + ':' + lo;
+    if (seen[key]) return;
+    seen[key] = 1;
+    tiles.push({ swLat: la * tileDeg, swLng: lo * tileDeg,
+                 neLat: (la + 1) * tileDeg, neLng: (lo + 1) * tileDeg });
+  });
+  if (tiles.length <= maxTiles) return tiles;
+  // Longer than the budget covers. Thin evenly instead of truncating, so a
+  // century still gets looked at end to end rather than stopping at mile 30.
+  const out = [], stride = tiles.length / maxTiles;
+  for (let i = 0; i < maxTiles; i++) out.push(tiles[Math.floor(i * stride)]);
+  return out;
+}
+
+async function exploreSegmentsInTiles(tiles, activityType, onProgress) {
+  const token = await getToken();
+  if (!token) return { error: 'no-token' };
+  const found = {};
+  let rateLimited = false, calls = 0;
+  for (let i = 0; i < tiles.length; i++) {
+    const t = tiles[i];
+    const bounds = [t.swLat - EXPLORE_TILE_MARGIN, t.swLng - EXPLORE_TILE_MARGIN,
+                    t.neLat + EXPLORE_TILE_MARGIN, t.neLng + EXPLORE_TILE_MARGIN].join(',');
+    let resp;
+    try {
+      resp = await fetch('https://www.strava.com/api/v3/segments/explore?bounds=' +
+        encodeURIComponent(bounds) + '&activity_type=' + encodeURIComponent(activityType),
+        { headers: { Authorization: 'Bearer ' + token } });
+    } catch (e) { break; }
+    calls++;
+    // 429 is the rate ceiling. Stop rather than keep hammering it: what has
+    // been found so far is still worth ranking, and the shortfall is reported
+    // instead of being passed off as a complete scan.
+    if (resp.status === 429) { rateLimited = true; break; }
+    if (resp.ok) {
+      let data = null;
+      try { data = await resp.json(); } catch (e) {}
+      ((data && data.segments) || []).forEach(function (sg) {
+        if (sg && sg.id != null && !found[sg.id]) found[sg.id] = sg;
+      });
+    }
+    if (onProgress) onProgress(i + 1, tiles.length, Object.keys(found).length);
+  }
+  return { segments: Object.keys(found).map(function (k) { return found[k]; }),
+           calls: calls, rateLimited: rateLimited, tiles: tiles.length };
+}
+
+let routeDiscovery = null;          // last scan result, kept for re-renders
+let routeDiscoveryLayers = [];
+
+function clearRouteDiscoveryLayers() {
+  routeDiscoveryLayers.forEach(function (l) {
+    try { palmaresMapLayers.route.removeLayer(l); } catch (e) {}
+  });
+  routeDiscoveryLayers = [];
+}
+
+// Scans the drawn course, keeps only what genuinely sits on it, and ranks the
+// keepers by how much the wind will help on the day.
+async function scanRouteForSegments() {
+  const routePoints = getRouteTrackPoints();
+  if (routePoints.length < 2) return null;
+  const onFoot = (routeMode === 'foot' || routeMode === 'manual');
+  const activityType = onFoot ? 'running' : 'riding';
+  const thresholdM = onFoot ? 35 : 45;
+
+  clearRouteDiscoveryLayers();
+  const tiles = exploreTilesForRoute(routePoints, EXPLORE_TILE_DEG, EXPLORE_MAX_TILES);
+  setRouteStatus('Scanning Strava for segments along this route… 0/' + tiles.length + ' areas');
+  const res = await exploreSegmentsInTiles(tiles, activityType, function (done, total, hits) {
+    setRouteStatus('Scanning Strava for segments along this route… ' + done + '/' + total +
+      ' areas · ' + hits + ' found');
+  });
+  if (res.error === 'no-token') {
+    routeDiscovery = { error: 'no-token' };
+    renderRouteTailwindPicks();
+    return routeDiscovery;
+  }
+
+  // A tile is a box; the route is a line through it. Most of what comes back
+  // is merely near the course, so every candidate is measured against the
+  // drawn line itself before it counts as "on the route".
+  const wind = getMapWind(palmaresMapState.wind === 'tomorrow' ? 'tomorrow' : 'today');
+  const mine = {};
+  try {
+    const own = await getMapAchievementEntries();
+    (own.entries || []).forEach(function (e) {
+      const prev = mine[e.segment_id];
+      if (!prev || (e.kind === 'kom' && prev.kind !== 'kom')) mine[e.segment_id] = e;
+    });
+  } catch (e) {}
+
+  const matched = [];
+  res.segments.forEach(function (sg) {
+    let pts = null;
+    try { pts = decodePolyline(sg.points); } catch (e) {}
+    if (!pts || pts.length < 2) return;
+    const d = minDistancePolylineToPolylineMeters(pts, routePoints, thresholdM);
+    if (d > thresholdM) return;
+    const own = mine[sg.id];
+    matched.push({
+      id: sg.id,
+      name: sg.name || 'Segment',
+      points: pts,
+      distanceM: sg.distance || 0,
+      avgGrade: sg.avg_grade,
+      climbCategory: sg.climb_category || 0,
+      distanceFromRouteM: Math.round(d),
+      mine: own ? own.kind : null,
+      rank: own ? own.rank : null,
+      adv: wind ? windAdvantageForPath(pts, wind.direction, wind.speed) : null
+    });
+  });
+
+  // Best net tailwind first. Ties break toward the longer segment, where the
+  // same mph of help buys more time.
+  const ranked = matched.filter(function (m) { return m.adv; }).sort(function (a, b) {
+    const d = b.adv.meanComponent - a.adv.meanComponent;
+    return Math.abs(d) > 0.05 ? d : (b.adv.lengthMi - a.adv.lengthMi);
+  });
+
+  routeDiscovery = {
+    all: matched,
+    ranked: ranked,
+    picks: ranked.slice(0, ROUTE_TAILWIND_PICKS),
+    totalFound: matched.length,
+    wind: wind,
+    rateLimited: res.rateLimited,
+    tilesScanned: res.calls,
+    tilesTotal: res.tiles,
+    scannedAt: Date.now(),
+    activityType: activityType
+  };
+  drawRouteDiscovery();
+  renderRouteTailwindPicks();
+  return routeDiscovery;
+}
+
+function drawRouteDiscovery() {
+  clearRouteDiscoveryLayers();
+  if (!routeDiscovery || !routeDiscovery.all || !palmaresMapLayers.route) return;
+  const pickIds = {};
+  (routeDiscovery.picks || []).forEach(function (m, i) { pickIds[m.id] = i + 1; });
+  // Everything found is flagged, but the five picks are drawn last and heavier
+  // so they read on top of the rest rather than being lost among them.
+  routeDiscovery.all.forEach(function (m) {
+    if (pickIds[m.id]) return;
+    routeDiscoveryLayers.push(mkAddPolyline(palmaresMapLayers.route, m.points, {
+      color: '#8957e5', weight: 3, opacity: 0.55, dash: [4, 4],
+      popupHtml: routeSegmentPopup(m)
+    }));
+  });
+  (routeDiscovery.picks || []).forEach(function (m) {
+    const c = m.adv ? m.adv.meanComponent : 0;
+    routeDiscoveryLayers.push(mkAddPolyline(palmaresMapLayers.route, m.points, {
+      color: c >= 8 ? '#3fb950' : c >= 2 ? '#56d364' : c >= 0 ? '#d29922' : '#f85149',
+      weight: 7, opacity: 0.95,
+      popupHtml: routeSegmentPopup(m, pickIds[m.id])
+    }));
+  });
+}
+
+function routeSegmentPopup(m, pickNo) {
+  const mi = (m.distanceM / 1609.34).toFixed(2);
+  const bits = [mi + ' mi'];
+  if (m.avgGrade != null) bits.push(Number(m.avgGrade).toFixed(1) + '% avg');
+  if (m.mine === 'kom') bits.push('you hold it');
+  else if (m.mine) bits.push('Top 10' + (m.rank ? ' #' + m.rank : ''));
+  let wind = '';
+  if (m.adv) {
+    const c = m.adv.meanComponent;
+    wind = '<div style="margin-top:4px;font-size:11px;color:' +
+      (c >= 0 ? '#3fb950' : '#f85149') + '">' +
+      (c >= 0 ? 'Tailwind ' : 'Headwind ') + Math.abs(Math.round(c * 10) / 10) + ' mph · ' +
+      m.adv.pctAssisted + '% wind-assisted</div>';
+  }
+  return '<div style="font-size:13px;font-weight:600;color:#e6edf3">' +
+      (pickNo ? '#' + pickNo + ' · ' : '') + escapeHTML(m.name) + '</div>' +
+    '<div style="margin-top:3px;font-size:11px;color:#7d8590">' + bits.join(' · ') + '</div>' + wind +
+    '<div style="margin-top:6px"><a href="' + stravaSegmentHref(m.id) +
+      '" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#58a6ff">View on Strava</a></div>';
+}
+
+function renderRouteTailwindPicks() {
+  const el = document.getElementById('route-tailwind-picks');
+  if (!el) return;
+  const msg = function (t) { el.innerHTML = '<div class="rtw-empty">' + t + '</div>'; };
+  if (!routeDiscovery) { el.innerHTML = ''; return; }
+  if (routeDiscovery.error === 'no-token') return msg('Connect to Strava to scan this route for segments.');
+  const totalFound = routeDiscovery.totalFound || routeDiscovery.all.length;
+  if (!totalFound) {
+    return msg('No Strava segments sit on this route. Roads with no segments on them are common — try a scan on a busier stretch.');
+  }
+  if (!routeDiscovery.picks.length) {
+    return msg('Found ' + totalFound + ' segments on this route, but there is no wind forecast to rank them by yet.');
+  }
+
+  const w = routeDiscovery.wind;
+  const head = 'Best tailwind on this route · ' +
+    (w ? windDirName(w.direction) + ' wind at ' + Math.round(w.speed) + ' mph' : 'wind unknown') +
+    ' · ' + totalFound + ' segments found' +
+    (routeDiscovery.rateLimited ? ' (Strava rate limit reached — partial scan)' : '') +
+    (routeDiscovery.fromSaved ? ' · from the saved scan' : '');
+
+  const rows = routeDiscovery.picks.map(function (m, i) {
+    const c = m.adv.meanComponent;
+    const helped = c >= 0;
+    const label = (helped ? 'Tailwind ' : 'Headwind ') + Math.abs(Math.round(c * 10) / 10) + ' mph';
+    const colour = c >= 8 ? '#3fb950' : c >= 2 ? '#d29922' : c >= 0 ? '#8b949e' : '#f85149';
+    const meta = [
+      m.adv.lengthMi.toFixed(2) + ' mi',
+      m.adv.pctAssisted + '% wind-assisted',
+      m.mine === 'kom' ? 'you hold it' : (m.mine ? 'Top 10' + (m.rank ? ' #' + m.rank : '') : 'new to you')
+    ].join(' · ');
+    const starred = isStarred(m.id);
+    return '<div class="rtw-row">' +
+      '<div class="rtw-rank" style="background:' + (helped ? '#3fb950' : '#f85149') + '">' + (i + 1) + '</div>' +
+      '<div class="rtw-main">' +
+        '<a href="' + stravaSegmentHref(m.id) + '" target="_blank" rel="noopener noreferrer" class="rtw-name">' +
+          escapeHTML(m.name) + '</a>' +
+        '<div class="rtw-meta">' + meta + '</div>' +
+      '</div>' +
+      '<div class="rtw-val" style="color:' + colour + '">' + label + '</div>' +
+      '<button type="button" class="tw-starbtn' + (starred ? ' on' : '') + '" ' +
+        'title="' + (starred ? 'Starred on Strava' : 'Star on Strava (syncs to your Garmin)') + '" ' +
+        'onclick="toggleSegmentStar(' + m.id + ', this)">' + (starred ? '★' : '☆') + '</button>' +
+    '</div>';
+  }).join('');
+
+  el.innerHTML = '<div class="rtw-head">' + escapeHTML(head) + '</div>' + rows +
+    '<div class="rtw-foot">Star a segment and Strava pushes it to your Garmin as a Live Segment on the next sync.</div>';
+}
+window.renderRouteTailwindPicks = renderRouteTailwindPicks;
+
+// ===== HANDING A COURSE TO A GARMIN =====
+// Garmin exposes no endpoint a web page can push a course to, so the two
+// honest paths are the ones the watch already understands: a starred segment
+// arrives as a Live Segment over the Strava sync that is already set up, and a
+// course arrives as a GPX imported into Garmin Connect. This is the second.
+// On the phone the share sheet hands the file straight to Garmin Connect; on a
+// desktop browser, which has no share sheet for files, it downloads for import
+// at connect.garmin.com.
+async function sendGPXToGarmin(gpx, filename, routeName) {
+  try {
+    const file = new File([gpx], filename, { type: 'application/gpx+xml' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: routeName || 'Palmarès route' });
+      return 'shared';
+    }
+  } catch (e) {
+    // AbortError just means the share sheet was dismissed - not a failure, and
+    // falling through to a download would be a surprise second action.
+    if (e && e.name === 'AbortError') return 'cancelled';
+  }
+  downloadGPXString(gpx, filename);
+  return 'downloaded';
+}
+
+function gpxFileName(name) {
+  // Fold accents first: stripping them blind turns "Palmarès" into
+  // "palmar-s" in the filename the rider sees in Garmin Connect.
+  const slug = String(name || 'palmares-route')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return (slug || 'palmares-route') + '.gpx';
+}
+
+function garminResultMessage(how) {
+  if (how === 'cancelled') return 'Send cancelled.';
+  if (how === 'shared') return 'Choose Garmin Connect in the share sheet to save it as a course.';
+  return 'GPX downloaded. Import it at connect.garmin.com under Training › Courses, then send it to your device.';
+}
+
+async function sendRouteToGarmin() {
+  const trackPoints = getRouteTrackPoints();
+  if (routeWaypoints.length < 2 || trackPoints.length < 2) {
+    setRouteStatus('Add at least two waypoints before sending to Garmin.');
+    return;
+  }
+  const totals = getRouteTotals();
+  const routeName = 'Palmarès ' + (routeMode === 'bike' ? 'bike' : (routeMode === 'manual' ? 'trail run' : 'run')) +
+    ' route ' + new Date().toLocaleString('en-US', { month: 'short', day: 'numeric' });
+  const route = { name: routeName, mode: routeMode, legs: routeLegs,
+                  distanceM: totals.distanceM, ascentM: totals.ascentM };
+  const how = await sendGPXToGarmin(routeToGPX(route, routeName), gpxFileName(routeName), routeName);
+  setRouteStatus(garminResultMessage(how));
+}
+
+async function sendSavedRouteToGarmin(id) {
+  const routes = await loadSavedRouteCollection();
+  const r = routes.find(function (x) { return x.id === id; });
+  if (!r) return;
+  const how = await sendGPXToGarmin(routeToGPX(r), gpxFileName(r.name), r.name);
+  setRouteStatus(garminResultMessage(how));
+}
+
+
+// A saved route carries its five picks, geometry included, so reopening one
+// shows the same ranking and the same lines on the map without spending the
+// API budget again. Everything else found by that scan is a count only.
+function restoreRouteDiscovery(r) {
+  const picks = (r && r.tailwindPicks) || [];
+  if (!picks.length) { routeDiscovery = null; clearRouteDiscoveryLayers(); renderRouteTailwindPicks(); return; }
+  routeDiscovery = {
+    all: picks, ranked: picks, picks: picks,
+    totalFound: r.discoveredCount || picks.length,
+    wind: r.scanWind || null, rateLimited: false,
+    tilesScanned: 0, tilesTotal: 0,
+    scannedAt: r.scannedAt || 0, fromSaved: true
+  };
+  drawRouteDiscovery();
+  renderRouteTailwindPicks();
+}
+
+function resetRouteDiscovery() {
+  routeDiscovery = null;
+  clearRouteDiscoveryLayers();
+  renderRouteTailwindPicks();
+}
 async function saveRouteCollection(routes) {
   savedRoutesCache = routes || [];
   const payload = savedRoutesCache;
@@ -12367,6 +12717,7 @@ async function renderSavedRoutes() {
       '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">' +
         '<button class="map-toggle" onclick="loadSavedRoute(\'' + r.id + '\')" style="font-size:11px">Load</button>' +
         '<button class="map-toggle" onclick="downloadSavedRouteGPX(\'' + r.id + '\')" style="font-size:11px">GPX</button>' +
+        '<button class="map-toggle" onclick="sendSavedRouteToGarmin(\'' + r.id + '\')" style="font-size:11px;border-color:#e0691a;color:#e0691a">Garmin</button>' +
         '<button class="map-toggle" onclick="deleteSavedRoute(\'' + r.id + '\')" style="font-size:11px;color:#f85149;border-color:#f85149">Delete</button>' +
       '</div>' +
     '</div>';
@@ -12399,7 +12750,32 @@ async function saveCurrentRoute() {
   routes.push(route);
   await saveRouteCollection(routes);
   renderSavedRoutes();
-  setRouteStatus('Saved route: ' + name);
+
+  // The Strava scan is the expensive part - roughly two dozen API calls - so it
+  // runs once here rather than on every waypoint. The route is already saved by
+  // this point on purpose: a rate limit or a dropped connection then costs the
+  // segment list, never the route the rider just drew.
+  const scan = await scanRouteForSegments();
+  if (scan && scan.all) {
+    route.discoveredCount = scan.totalFound;
+    route.scannedAt = scan.scannedAt;
+    route.scanWind = scan.wind || null;
+    // Geometry is kept for the five picks alone, so reopening the route can
+    // redraw and re-rank them without spending the budget again. Keeping it for
+    // every segment found would bloat the saved-routes blob for no benefit.
+    route.tailwindPicks = scan.picks.map(function (m) {
+      return { id: m.id, name: m.name, points: m.points, distanceM: m.distanceM,
+               avgGrade: m.avgGrade, mine: m.mine, rank: m.rank,
+               adv: { meanComponent: m.adv.meanComponent, pctAssisted: m.adv.pctAssisted,
+                      lengthMi: m.adv.lengthMi } };
+    });
+    await saveRouteCollection(routes);
+    renderSavedRoutes();
+    setRouteStatus('Saved "' + name + '" — ' + scan.totalFound + ' Strava segments on this route' +
+      (scan.picks.length ? ', best ' + scan.picks.length + ' by tailwind listed below.' : '.'));
+  } else {
+    setRouteStatus('Saved route: ' + name);
+  }
 }
 
 async function loadSavedRoute(id) {
@@ -12415,6 +12791,7 @@ async function loadSavedRoute(id) {
   routeWaypoints.forEach(function(wp, idx){ addWaypointMarker(wp, idx + 1); });
   renderRoutePolyline();
   updateRouteStats();
+  restoreRouteDiscovery(r);
   setRouteStatus('Loaded saved route: ' + (r.name || 'Saved route'));
   if (routeLine && palmaresMap) {
     const rp = getRouteTrackPoints();
