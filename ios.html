@@ -684,6 +684,9 @@ body.map-fs #route-builder-panel { position: fixed !important; left: 0; right: 0
 .tw-name { flex: 1; min-width: 0; font-size: 13px; color: #e6edf3; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tw-star { color: #FC4C02; font-size: 11px; margin-left: 7px; white-space: nowrap; }
 .tw-val { font-size: 13px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+.tw-starbtn { background: transparent; border: none; color: #57606a; font-size: 17px; line-height: 1; cursor: pointer; padding: 2px 4px; flex-shrink: 0; }
+.tw-starbtn.on { color: #FC4C02; }
+.tw-starbtn:disabled { cursor: default; }
 .tw-foot { font-size: 10px; color: #484f58; margin-top: 5px; line-height: 1.45; }
 
 /* ROUTE DETAIL - the course on real Apple Maps tiles, opened by tapping a
@@ -3196,9 +3199,31 @@ async function submitRoadReport() {
 }
 
 // AUTH
+// profile:write is here solely to star segments. Starring through the API
+// stars the segment on the athlete's real Strava account, which is what pushes
+// it to a Garmin as a Live Segment - Garmin syncs STARRED segments, so this is
+// the only route from "this segment has a tailwind" to "it's on my head unit".
+// One scope string, used both to request and to check, so the two can't drift.
+const STRAVA_SCOPE = 'read,activity:read_all,profile:write';
 function connectStrava() {
   const here = window.location.href.split('?')[0];
-  window.location.href = 'https://www.strava.com/oauth/authorize?client_id=' + CLIENT_ID + '&response_type=code&redirect_uri=' + encodeURIComponent(here) + '&approval_prompt=force&scope=read,activity:read_all';
+  window.location.href = 'https://www.strava.com/oauth/authorize?client_id=' + CLIENT_ID + '&response_type=code&redirect_uri=' + encodeURIComponent(here) + '&approval_prompt=force&scope=' + encodeURIComponent(STRAVA_SCOPE);
+}
+
+// Existing users authorised before profile:write existed, so their token can't
+// star. Detected from the scope Strava reported at login rather than assumed,
+// and only they are asked to reconnect - nobody else is logged out.
+function canStarSegments() {
+  const g = localStorage.getItem('ed_granted_scope') || '';
+  return g.indexOf('profile:write') >= 0;
+}
+async function reauthoriseForStarring() {
+  const ok = await askConfirm(
+    'Starring a segment saves it to your Strava account, which is how it reaches your Garmin as a Live Segment. ' +
+    'Strava needs one extra permission for that, so it will ask you to reconnect once. ' +
+    'Your activities, settings and scans are kept.',
+    'Reconnect');
+  if (ok) connectStrava();
 }
 
 async function handleCallback() {
@@ -8390,6 +8415,11 @@ function tailwindListHTML(res) {
       '</a>' +
       '<span class="tw-val" style="color:' + colour + '">' +
         (helped ? '+' : '\u2212') + Math.abs(Math.round(c * 10) / 10) + '</span>' +
+      '<button type="button" class="tw-starbtn' + (isStarred(m.entry.segment_id) ? ' on' : '') + '" ' +
+        'title="' + (isStarred(m.entry.segment_id) ? 'Starred on Strava' : 'Star on Strava (syncs to Garmin)') + '" ' +
+        'onclick="event.stopPropagation();toggleSegmentStar(' + m.entry.segment_id + ', this)">' +
+        (isStarred(m.entry.segment_id) ? '\u2605' : '\u2606') +
+      '</button>' +
     '</div>';
   }).join('');
   return '<div class="tw-block">' +
@@ -8411,6 +8441,60 @@ function tailwindListHTML(res) {
 // rendering though, so the course is drawn here on the same tiles, and the
 // "Directions to start" button hands Apple Maps the one thing it does well -
 // navigating you to where the ride begins.
+// ===== STARRING SEGMENTS =====
+// Strava's own star, not a local bookmark: PUT /segments/{id}/starred marks it
+// on the athlete's account, and Garmin's Strava Live Segments sync pulls
+// starred segments onto the device. Local state is mirrored only so the button
+// can respond immediately; Strava remains the source of truth.
+const STARRED_KEY = 'ed_starred_segments';
+function starredSet() {
+  try { return JSON.parse(localStorage.getItem(STARRED_KEY) || '{}'); } catch (e) { return {}; }
+}
+function isStarred(id) { return !!starredSet()[String(id)]; }
+function setStarredLocal(id, on) {
+  const m = starredSet();
+  if (on) m[String(id)] = 1; else delete m[String(id)];
+  try { localStorage.setItem(STARRED_KEY, JSON.stringify(m)); } catch (e) {}
+}
+
+async function toggleSegmentStar(segId, btn) {
+  if (!canStarSegments()) { reauthoriseForStarring(); return; }
+  const token = await getToken();
+  if (!token) { try { showToast('Not connected to Strava.'); } catch (e) {} return; }
+  const want = !isStarred(segId);
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+  try {
+    const resp = await fetch('https://www.strava.com/api/v3/segments/' + segId + '/starred', {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ starred: want })
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      // Token predates the scope, or the athlete declined it.
+      setStarredLocal(segId, !want);
+      reauthoriseForStarring();
+      return;
+    }
+    if (!resp.ok) throw new Error('Strava returned ' + resp.status);
+    // Trust Strava's echo of the state over our optimistic guess.
+    let confirmed = want;
+    try { const body = await resp.json(); if (typeof body.starred === 'boolean') confirmed = body.starred; } catch (e) {}
+    setStarredLocal(segId, confirmed);
+    try {
+      showToast(confirmed
+        ? 'Starred on Strava — it will sync to your Garmin as a Live Segment.'
+        : 'Unstarred on Strava.');
+    } catch (e) {}
+  } catch (e) {
+    try { showToast('Could not star that: ' + (e.message || 'unknown error')); } catch (err) {}
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+    if (window.renderEventRows) window.renderEventRows();
+    const res = document.getElementById('rd-tailwind');
+    if (res && window._rdLastTailwind) renderTailwindRanking(window._rdLastTailwind, null);
+  }
+}
+
 // ===== TAILWIND SEGMENTS ALONG A ROUTE =====
 // Which of your segments on this course will the wind actually help on, on the
 // day of the ride. Scored per segment with windAdvantageForPath, which walks
@@ -8599,6 +8683,7 @@ function openRouteDetail(key) {
 function renderTailwindRanking(res, ev) {
   const el = document.getElementById('rd-tailwind');
   if (!el) return;
+  if (res && res.ranked) window._rdLastTailwind = res;
   const msg = function (t) { el.innerHTML = '<div class="rd-tw-empty">' + t + '</div>'; };
   if (!res || res.error) {
     if (res && res.error === 'no-forecast') {
@@ -8629,6 +8714,11 @@ function renderTailwindRanking(res, ev) {
           (m.entry.kind === 'kom' ? 'you hold it' : 'Top 10') + '</div>' +
       '</div>' +
       '<div class="rd-tw-val" style="color:' + colour + '">' + label + '</div>' +
+      '<button type="button" class="tw-starbtn' + (isStarred(m.entry.segment_id) ? ' on' : '') + '" ' +
+        'title="' + (isStarred(m.entry.segment_id) ? 'Starred on Strava' : 'Star on Strava (syncs to Garmin)') + '" ' +
+        'onclick="toggleSegmentStar(' + m.entry.segment_id + ', this)">' +
+        (isStarred(m.entry.segment_id) ? '\u2605' : '\u2606') +
+      '</button>' +
     '</div>';
   }).join('');
   // Name the hour the wind was taken from, so the ranking can be checked
