@@ -1670,6 +1670,7 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
         </select>
         <input class="setting-input" id="rr-time" type="time" value="17:30" style="width:120px;text-align:left" />
         <input class="setting-input" id="rr-until" type="date" title="Last date (optional, for a seasonal ride)" style="width:150px;text-align:left" />
+        <input class="setting-input" id="rr-route" type="text" placeholder="Strava route link (optional)" title="Paste a strava.com/routes/... link to get the map, distance and tailwind ranking" style="width:220px;text-align:left" />
         <button class="gold-btn" style="margin-top:0" onclick="addRecurringRide()">Add</button>
       </div>
     </div>
@@ -2568,24 +2569,43 @@ function saveRecurringRides(list) {
   reloadClubEvents();
 }
 
+// Strava route ids are now 19 digits, past what a JS number can hold exactly:
+// Number('3495300163045161320') becomes ...161500 and 404s. Kept as a string
+// from input to fetch, and never run through parseInt.
+function parseStravaRouteId(input) {
+  if (!input) return null;
+  const t = String(input).trim();
+  const m = t.match(/routes\/(\d+)/);        // full URL
+  if (m) return m[1];
+  if (/^\d+$/.test(t)) return t;             // bare id
+  return null;
+}
+
 function addRecurringRide() {
   const name = (document.getElementById('rr-name') || {}).value;
   const club = (document.getElementById('rr-club') || {}).value;
   const day = (document.getElementById('rr-day') || {}).value;
   const time = (document.getElementById('rr-time') || {}).value;
   const until = (document.getElementById('rr-until') || {}).value;
+  const routeRaw = (document.getElementById('rr-route') || {}).value;
   if (!name || !name.trim()) { try { showToast('Give the ride a name.'); } catch (e) {} return; }
   if (!time) { try { showToast('Set a start time.'); } catch (e) {} return; }
+  const routeId = parseStravaRouteId(routeRaw);
+  if (routeRaw && routeRaw.trim() && !routeId) {
+    try { showToast('That does not look like a Strava route link or id.'); } catch (e) {}
+    return;
+  }
   const list = recurringRides().slice();
   list.push({
     name: name.trim(),
     club: (club || '').trim() || null,
     weekday: parseInt(day, 10) || 0,
     time: time,
-    until: until || null
+    until: until || null,
+    routeId: routeId || null
   });
   saveRecurringRides(list);
-  ['rr-name', 'rr-club', 'rr-until'].forEach(function (id) {
+  ['rr-name', 'rr-club', 'rr-until', 'rr-route'].forEach(function (id) {
     const el = document.getElementById(id); if (el) el.value = '';
   });
   try { showToast('Added. It will appear under upcoming rides.'); } catch (e) {}
@@ -2613,14 +2633,19 @@ function recurringRideEvents(now) {
       const end = new Date(r.until + 'T23:59:59');
       if (!isNaN(end.getTime()) && d > end) return;   // season is over
     }
-    out.push({
+    const ev = {
       title: r.name,
       club_name: r.club || 'Standing ride',
       nextDate: d,
       recurring: true,
       activity_type: 'Ride',
       upcoming_occurrences: [d.toISOString()]
-    });
+    };
+    // A standing ride with a Strava route attached gets the same treatment as a
+    // club event: map, distance, and the tailwind ranking. enrichEventsWithRoutes
+    // already keys off route_id, and it runs over the merged list.
+    if (r.routeId) ev.route_id = r.routeId;
+    out.push(ev);
   });
   return out;
 }
@@ -2652,7 +2677,8 @@ function renderEventSourceSettings() {
             '<div style="font-size:13px;color:#e6edf3">' + escapeHTML(r.name) +
               ' <span style="color:#57606a;font-size:11px">' + DAYS[r.weekday] + 's at ' + escapeHTML(ampm) +
               (r.club ? ' \u00b7 ' + escapeHTML(r.club) : '') +
-              (r.until ? ' \u00b7 until ' + escapeHTML(r.until) : '') + '</span></div>' +
+              (r.until ? ' \u00b7 until ' + escapeHTML(r.until) : '') +
+              (r.routeId ? ' \u00b7 route attached' : '') + '</span></div>' +
             '<button onclick="removeRecurringRide(' + i + ')" style="background:transparent;border:1px solid #f85149;border-radius:6px;color:#f85149;cursor:pointer;font-size:11px;padding:2px 8px;flex-shrink:0">Remove</button>' +
           '</div>';
         }).join('')
