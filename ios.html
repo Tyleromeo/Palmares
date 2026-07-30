@@ -934,8 +934,11 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
       </div>
       <div id="power-scan-status" style="font-size:12px;color:#7d8590;padding:2px 0 10px"></div>
       <div id="power-scan-controls" style="margin-bottom:12px"></div>
-      <div id="power-curve-bars"></div>
-      <div class="chart-wrap chart-wrap-md" style="height:180px;position:relative;margin-top:1rem"><canvas id="power-chart"></canvas></div>
+      <!-- Chart sits directly under the scan controls: it's the thing you
+           actually read, and it was previously pushed below the full bar list,
+           which on a phone meant scrolling past every duration to reach it. -->
+      <div class="chart-wrap chart-wrap-md" style="height:180px;position:relative"><canvas id="power-chart"></canvas></div>
+      <div id="power-curve-bars" style="margin-top:1rem"></div>
       </div>
     </div>
     <div class="card" id="collapse-aero" style="margin-bottom:0" data-deck-title="Aerobic efficiency">
