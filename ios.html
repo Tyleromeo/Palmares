@@ -3106,7 +3106,8 @@ const ROAD_STATUS_META = {
 // be kept alive indefinitely by repeat taps; anchoring to the first gives
 // every confirmed road the same fixed, predictable run on the board. With
 // no confirmation yet, the original report date is the anchor.
-const ROAD_FRESH_KEEP_DAYS = 30;
+// A report is useful for 30 days after people start confirming it.
+const ROAD_KEEP_DAYS = 30;
 
 function roadKeyOf(r) {
   return (r.road_name || '').trim().toLowerCase() + '|' + (r.town || '').trim().toLowerCase();
@@ -3178,8 +3179,10 @@ function groupRoadReports(reports) {
     confirmRows.forEach(r => {
       if (new Date(r.created_at || 0) >= since) confirmers.add(String(r.athlete_id || r.reported_by || r.created_at || ''));
     });
-    const cleared = rows.some(r => roadNoteTag(r) === 'cleared' && new Date(r.created_at || 0) >= since);
-    if (cleared) continue;
+    // No manual clearing. A road leaves the board only by ageing out, below.
+    // Any historical [cleared] rows are ignored: one tap used to remove a road
+    // for everybody, permanently and with no undo, which is too much power over
+    // shared data to hand a single rider.
     const ageDays = latest.created_at ? Math.floor((now - latestAt.getTime()) / 86400000) : 0;
     // The clock starts at the first confirmation, falling back to the report
     // itself when nobody has confirmed yet.
@@ -3189,8 +3192,15 @@ function groupRoadReports(reports) {
     }, 0);
     const anchor = firstConfirmAt || latestAt.getTime() || 0;
     const sinceAnchorDays = Math.floor((now - anchor) / 86400000);
-    if (latest.status === 'fresh' && sinceAnchorDays > ROAD_FRESH_KEEP_DAYS) continue;
-    groups.push({ report: latest, confirms: confirmers.size, ageDays, key: roadKeyOf(latest) });
+    // 30 days from the FIRST confirmation - or from the report itself if nobody
+    // has confirmed it yet. Applies to every status: a milled road is repaved
+    // eventually too, and stale warnings are worse than none.
+    if (sinceAnchorDays > ROAD_KEEP_DAYS) continue;
+    // Strip the reporter's name here rather than merely not rendering it.
+    // Historical rows still carry names, and a value that never reaches the
+    // page cannot be leaked by a later edit that forgets why it was hidden.
+    const safe = Object.assign({}, latest); delete safe.reported_by;
+    groups.push({ report: safe, confirms: confirmers.size, ageDays, key: roadKeyOf(latest) });
   }
   groups.sort((a, b) => new Date(b.report.created_at || 0) - new Date(a.report.created_at || 0));
   return groups;
@@ -3244,7 +3254,10 @@ async function renderRoadReports() {
     const age = calDays >= 1 ? calDays + 'd ago' : 'today';
     const metaBits = [
       when ? when + ' (' + age + ')' : '',
-      r.reported_by ? 'by ' + escapeHTML(r.reported_by) : '',
+      // Reporter name deliberately not shown. It is another athlete's identity
+      // attached to their location, displayed to strangers, and it earns
+      // nothing - the report stands on the road, date and confirmations.
+
       g.distanceMi != null ? g.distanceMi.toFixed(0) + ' mi away' : (g.unplaced && getSettings().roadZip ? 'location unknown' : ''),
       g.confirms ? '👍 ' + g.confirms + ' confirm' + (g.confirms === 1 ? '' : 's') : '',
       r.note ? escapeHTML(r.note) : ''
@@ -3288,7 +3301,9 @@ async function postRoadLifecycle(group, tag, msgText) {
       town: r.town || null,
       status: r.status,
       note: tag,
-      reported_by: athleteData ? (athleteData.firstname + ' ' + athleteData.lastname) : null,
+      // Name intentionally omitted - athlete_id alone is enough to de-duplicate
+      // confirmations, and nothing on the board displays who reported what.
+      reported_by: null,
       athlete_id: athleteData ? athleteData.id : null
     });
     showToast('✅', msgText, escapeHTML(r.road_name));
@@ -3365,7 +3380,9 @@ async function submitRoadReport() {
       town: (townEl.value || '').trim() || null,
       status: statusEl.value,
       note: (noteEl.value || '').trim() || null,
-      reported_by: athleteData ? (athleteData.firstname + ' ' + athleteData.lastname) : null,
+      // Name intentionally omitted - athlete_id alone is enough to de-duplicate
+      // confirmations, and nothing on the board displays who reported what.
+      reported_by: null,
       athlete_id: athleteData ? athleteData.id : null
     });
     nameEl.value = ''; townEl.value = ''; noteEl.value = '';

@@ -2547,7 +2547,8 @@ const ROAD_STATUS_META = {
 // Since web and the iOS WebView both load this same hosted page, the
 // convention deploys atomically - there are no old clients to confuse.
 // Fresh tarmac additionally auto-expires: after 60 days it isn't news.
-const ROAD_FRESH_EXPIRE_DAYS = 60;
+// A report is useful for 30 days after people start confirming it.
+const ROAD_KEEP_DAYS = 30;
 const ROAD_STALE_HINT_DAYS = 90;
 
 let _roadReportsRaw = [];
@@ -2588,15 +2589,30 @@ function groupRoadReports(reports) {
   const now = Date.now();
   for (const rows of byKey.values()) {
     const primaries = rows.filter(r => !roadNoteTag(r));
-    if (!primaries.length) continue; // only confirms/clears with no report: nothing to show
+    if (!primaries.length) continue; // only confirms with no report: nothing to show
     const latest = primaries[primaries.length - 1];
     const latestAt = new Date(latest.created_at || 0);
-    const confirms = rows.filter(r => roadNoteTag(r) === 'confirm' && new Date(r.created_at || 0) > latestAt);
-    const cleared = rows.some(r => roadNoteTag(r) === 'cleared' && new Date(r.created_at || 0) > latestAt);
-    if (cleared) continue;
+    const confirmRows = rows.filter(r => roadNoteTag(r) === 'confirm' && new Date(r.created_at || 0) > latestAt);
+    // One confirmation per person. Counting rows let a single rider tapping
+    // repeatedly look like a crowd - 30 taps read as 30 riders agreeing.
+    const confirmers = new Set();
+    confirmRows.forEach(r => confirmers.add(String(r.athlete_id || r.created_at || '')));
+    // No manual clearing. One tap used to remove a road for everyone,
+    // permanently and with no undo; historical [cleared] rows are now ignored.
     const ageDays = latest.created_at ? Math.floor((now - latestAt.getTime()) / 86400000) : 0;
-    if (latest.status === 'fresh' && ageDays > ROAD_FRESH_EXPIRE_DAYS) continue;
-    groups.push({ report: latest, confirms: confirms.length, ageDays });
+    // 30 days from the first confirmation, or from the report if unconfirmed.
+    // Applies to every status - a milled road gets repaved eventually too.
+    const firstConfirmAt = confirmRows.reduce(function (m, r) {
+      const t = new Date(r.created_at || 0).getTime();
+      return (t && (!m || t < m)) ? t : m;
+    }, 0);
+    const anchor = firstConfirmAt || latestAt.getTime() || 0;
+    if (Math.floor((now - anchor) / 86400000) > ROAD_KEEP_DAYS) continue;
+    // Strip the reporter's name here rather than merely not rendering it.
+    // Historical rows still carry names, and a value that never reaches the
+    // page cannot be leaked by a later edit that forgets why it was hidden.
+    const safe = Object.assign({}, latest); delete safe.reported_by;
+    groups.push({ report: safe, confirms: confirmers.size, ageDays });
   }
   groups.sort((a, b) => new Date(b.report.created_at || 0) - new Date(a.report.created_at || 0));
   return groups;
@@ -2650,7 +2666,10 @@ async function renderRoadReports() {
     const age = calDays >= 1 ? calDays + 'd ago' : 'today';
     const metaBits = [
       when ? when + ' (' + age + ')' : '',
-      r.reported_by ? 'by ' + escapeHTML(r.reported_by) : '',
+      // Reporter name deliberately not shown. It is another athlete's identity
+      // attached to their location, displayed to strangers, and it earns
+      // nothing - the report stands on the road, date and confirmations.
+
       g.distanceMi != null ? g.distanceMi.toFixed(0) + ' mi away' : (g.unplaced && getSettings().roadZip ? 'location unknown' : ''),
       g.confirms ? '👍 ' + g.confirms + ' confirm' + (g.confirms === 1 ? '' : 's') : '',
       r.note ? escapeHTML(r.note) : ''
@@ -2665,7 +2684,6 @@ async function renderRoadReports() {
         '<span style="font-size:10px;font-weight:600;color:' + meta.color + ';border:1px solid ' + meta.color + ';border-radius:4px;padding:2px 7px;white-space:nowrap">' + meta.label + '</span>' +
         '<div style="margin-top:5px;display:flex;gap:6px;justify-content:flex-end">' +
           '<button onclick="confirmRoadStatus(' + i + ')" title="Confirm this is still the road\'s condition" style="background:transparent;border:1px solid #30363d;border-radius:5px;color:#7d8590;cursor:pointer;font-size:10px;padding:2px 7px">👍 Confirm</button>' +
-          '<button onclick="clearRoadStatus(' + i + ')" title="Mark this road back to normal" style="background:transparent;border:1px solid #30363d;border-radius:5px;color:#7d8590;cursor:pointer;font-size:10px;padding:2px 7px">✔️ Cleared</button>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -2693,7 +2711,9 @@ async function postRoadLifecycle(group, tag, msgText) {
       town: r.town || null,
       status: r.status,
       note: tag,
-      reported_by: athleteData ? (athleteData.firstname + ' ' + athleteData.lastname) : null,
+      // Name intentionally omitted - athlete_id alone is enough to de-duplicate
+      // confirmations, and nothing on the board displays who reported what.
+      reported_by: null,
       athlete_id: athleteData ? athleteData.id : null
     });
     showToast('✅', msgText, escapeHTML(r.road_name));
@@ -2706,13 +2726,6 @@ async function postRoadLifecycle(group, tag, msgText) {
 function confirmRoadStatus(i) {
   const g = _roadGroups[i];
   if (g) postRoadLifecycle(g, '[confirm]', 'Status confirmed');
-}
-
-async function clearRoadStatus(i) {
-  const g = _roadGroups[i];
-  if (!g) return;
-  if (!await askConfirm('Mark "' + g.report.road_name + '" as back to normal? It will disappear from the list for everyone.', 'Mark resolved')) return;
-  postRoadLifecycle(g, '[cleared]', 'Marked cleared');
 }
 
 // ---- Geocoding (both APIs are free, keyless, and CORS-open) ----
@@ -2774,7 +2787,9 @@ async function submitRoadReport() {
       town: (townEl.value || '').trim() || null,
       status: statusEl.value,
       note: (noteEl.value || '').trim() || null,
-      reported_by: athleteData ? (athleteData.firstname + ' ' + athleteData.lastname) : null,
+      // Name intentionally omitted - athlete_id alone is enough to de-duplicate
+      // confirmations, and nothing on the board displays who reported what.
+      reported_by: null,
       athlete_id: athleteData ? athleteData.id : null
     });
     nameEl.value = ''; townEl.value = ''; noteEl.value = '';
