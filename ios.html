@@ -685,6 +685,16 @@ body.rd-open { overflow: hidden; }
 .rd-sub { font-size: 12px; color: #7d8590; margin-top: 3px; }
 .rd-close { background: transparent; border: 1px solid #30363d; color: #7d8590; border-radius: 999px; width: 34px; height: 34px; font-size: 15px; cursor: pointer; flex-shrink: 0; }
 #route-detail-map { flex: 1; min-height: 0; }
+.rd-tailwind { max-height: 34vh; overflow-y: auto; -webkit-overflow-scrolling: touch; border-top: 1px solid #21262d; padding: 10px 16px 4px; font-size: 12px; color: #7d8590; flex-shrink: 0; }
+.rd-tw-head { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: #7d8590; margin-bottom: 8px; }
+.rd-tw-empty { padding: 4px 0 10px; line-height: 1.5; }
+.rd-tw-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid #21262d; }
+.rd-tw-row:last-child { border-bottom: none; }
+.rd-tw-rank { width: 20px; height: 20px; border-radius: 50%; color: #0d1117; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.rd-tw-main { flex: 1; min-width: 0; }
+.rd-tw-name { display: block; font-size: 13px; color: #e6edf3; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rd-tw-meta { font-size: 11px; color: #57606a; margin-top: 1px; }
+.rd-tw-val { font-size: 12px; font-weight: 600; text-align: right; white-space: nowrap; flex-shrink: 0; }
 .rd-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px calc(env(safe-area-inset-bottom) + 14px); border-top: 1px solid #21262d; }
 .rd-legend { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #7d8590; flex-wrap: wrap; }
 .rd-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-left: 6px; }
@@ -8341,6 +8351,68 @@ async function enrichEventsWithRoutes(events) {
 // rendering though, so the course is drawn here on the same tiles, and the
 // "Directions to start" button hands Apple Maps the one thing it does well -
 // navigating you to where the ride begins.
+// ===== TAILWIND SEGMENTS ALONG A ROUTE =====
+// Which of your segments on this course will the wind actually help on, on the
+// day of the ride. Scored per segment with windAdvantageForPath, which walks
+// the segment's own polyline and weights each leg by its length - so a segment
+// that turns into the wind halfway is scored honestly rather than on its
+// start-to-end bearing.
+//
+// The universe here is the segments already scanned into your palmares (KOMs
+// and Top 10s), not every segment on Strava. Strava has no bulk "segments
+// along this polyline" endpoint, so this ranks the ones we hold geometry for.
+function forecastIndexForDate(when) {
+  const data = window._wxData;
+  if (!data || !data.daily || !data.daily.time) return null;
+  const key = localDateKey(when);
+  const i = data.daily.time.indexOf(key);
+  return i >= 0 ? i : null;
+}
+
+async function tailwindSegmentsForRoute(routePoints, when, limit) {
+  if (!routePoints || routePoints.length < 2) return { error: 'no-route' };
+  const idx = forecastIndexForDate(when);
+  if (idx == null) return { error: 'no-forecast' };
+  const data = window._wxData;
+  const dir = data.daily.winddirection_10m_dominant[idx];
+  const rawSpeed = data.daily.windspeed_10m_max[idx];
+  if (dir == null || rawSpeed == null) return { error: 'no-forecast' };
+  const speed = msToMph(rawSpeed);
+  if (!athleteData) return { error: 'no-athlete' };
+
+  let result;
+  try { result = await getMapAchievementEntries(); } catch (e) { return { error: 'no-segments' }; }
+  const entries = (result.entries || []).filter(function (e) {
+    return sportGroupForType(e.activity_type) === 'ride';
+  });
+  if (!entries.length) return { error: 'no-segments', windDir: dir, windSpeed: speed };
+
+  const THRESHOLD_M = 45;   // same tolerance the route builder uses
+  const byId = {};
+  entries.forEach(function (entry) {
+    const detail = result.enrichedCache[entry.segment_id];
+    const points = pointsForMapEntry(entry, detail);
+    if (!points || points.length < 2) return;
+    const d = minDistancePolylineToPolylineMeters(points, routePoints, THRESHOLD_M);
+    if (d > THRESHOLD_M) return;
+    const adv = windAdvantageForPath(points, dir, speed);
+    if (!adv) return;
+    const existing = byId[entry.segment_id];
+    // One entry per segment; a KOM outranks a Top 10 for the same segment.
+    if (existing && !(entry.kind === 'kom' && existing.entry.kind !== 'kom')) return;
+    byId[entry.segment_id] = { entry: entry, points: points, adv: adv };
+  });
+
+  const ranked = Object.keys(byId).map(function (k) { return byId[k]; })
+    // Best tailwind first. Ties break toward the longer segment, where the
+    // same mph of help is worth more time.
+    .sort(function (a, b) {
+      const d = b.adv.meanComponent - a.adv.meanComponent;
+      return Math.abs(d) > 0.05 ? d : (b.adv.lengthMi - a.adv.lengthMi);
+    });
+  return { ranked: ranked.slice(0, limit || 5), windDir: dir, windSpeed: speed, total: ranked.length };
+}
+
 let _routeDetailMap = null;
 function openRouteDetail(key) {
   const ev = (window._upcomingEvents || []).filter(function (e) { return rideKey(e) === key; })[0];
@@ -8363,6 +8435,7 @@ function openRouteDetail(key) {
       '<button type="button" class="rd-close" onclick="closeRouteDetail()">\u2715</button>' +
     '</div>' +
     '<div id="route-detail-map"></div>' +
+    '<div id="rd-tailwind" class="rd-tailwind">Checking the wind for this ride\u2026</div>' +
     '<div class="rd-foot">' +
       '<div class="rd-legend"><span class="rd-dot rd-start"></span>Start' +
         '<span class="rd-dot rd-finish"></span>Finish' +
@@ -8402,10 +8475,69 @@ function openRouteDetail(key) {
 
     const region = mkRegionForPoints(pts, 1.15);
     if (region) mkSetRegion(_routeDetailMap, region, host);
+
+    // Rank the tailwind segments and draw them over the course.
+    tailwindSegmentsForRoute(pts, ev.nextDate, 5).then(function (res) {
+      renderTailwindRanking(res, ev);
+      if (!res || !res.ranked) return;
+      res.ranked.forEach(function (m, i) {
+        const helped = m.adv.meanComponent >= 0;
+        mkAddPolyline(group, m.points, {
+          color: helped ? '#3fb950' : '#f85149', weight: 7, opacity: 0.95
+        });
+        group.addAnnotation(mkDomAnnotation(mkCoord(m.points[0]),
+          '<div style="min-width:18px;height:18px;border-radius:50%;background:' +
+          (helped ? '#3fb950' : '#f85149') + ';border:2px solid #0d1117;color:#0d1117;' +
+          'font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center">' +
+          (i + 1) + '</div>', {}));
+      });
+    }).catch(function () { renderTailwindRanking({ error: 'failed' }, ev); });
   }).catch(function (e) {
     const host = document.getElementById('route-detail-map');
     if (host) host.innerHTML = '<div style="padding:20px;color:#7d8590;font-size:13px">Map unavailable right now.</div>';
   });
+}
+
+function renderTailwindRanking(res, ev) {
+  const el = document.getElementById('rd-tailwind');
+  if (!el) return;
+  const msg = function (t) { el.innerHTML = '<div class="rd-tw-empty">' + t + '</div>'; };
+  if (!res || res.error) {
+    if (res && res.error === 'no-forecast') {
+      return msg('No forecast for this date yet \u2014 the outlook only reaches 7 days, so check back nearer the ride.');
+    }
+    if (res && res.error === 'no-segments') {
+      return msg('No scanned segments to rank. Run the segment scan on the Palmar\u00e8s page first.');
+    }
+    return msg('Could not work out the wind for this ride.');
+  }
+  if (!res.ranked.length) {
+    return msg('None of your segments fall on this course \u2014 nothing to rank.' +
+      (res.total === 0 ? ' Segments have to be scanned and enriched to be matched.' : ''));
+  }
+  const dirName = windDirName(res.windDir);
+  const rows = res.ranked.map(function (m, i) {
+    const c = m.adv.meanComponent;
+    const helped = c >= 0;
+    const label = (helped ? 'Tailwind ' : 'Headwind ') + Math.abs(Math.round(c * 10) / 10) + ' mph';
+    const colour = c >= 8 ? '#3fb950' : c >= 2 ? '#d29922' : c >= 0 ? '#8b949e' : '#f85149';
+    return '<div class="rd-tw-row">' +
+      '<div class="rd-tw-rank" style="background:' + (helped ? '#3fb950' : '#f85149') + '">' + (i + 1) + '</div>' +
+      '<div class="rd-tw-main">' +
+        '<a href="' + stravaSegmentHref(m.entry.segment_id) + '" target="_blank" rel="noopener noreferrer" title="View on Strava" class="rd-tw-name">' +
+          escapeHTML(m.entry.segment_name || 'Segment') + '</a>' +
+        '<div class="rd-tw-meta">' + m.adv.lengthMi.toFixed(2) + ' mi \u00b7 ' +
+          m.adv.pctAssisted + '% wind-assisted \u00b7 ' +
+          (m.entry.kind === 'kom' ? 'you hold it' : 'Top 10') + '</div>' +
+      '</div>' +
+      '<div class="rd-tw-val" style="color:' + colour + '">' + label + '</div>' +
+    '</div>';
+  }).join('');
+  el.innerHTML =
+    '<div class="rd-tw-head">Best tailwind segments \u00b7 ' +
+      escapeHTML(dirName) + ' ' + Math.round(res.windSpeed) + ' mph forecast' +
+      (res.total > res.ranked.length ? ' \u00b7 top 5 of ' + res.total + ' on route' : '') +
+    '</div>' + rows;
 }
 
 function closeRouteDetail() {
@@ -11773,7 +11905,11 @@ function windAdvantageForPath(points, windDir, windSpeedMph) {
     const comp = windSpeedMph * Math.cos(angleDiff(bearing, windTo) * Math.PI / 180);
     weighted += comp * legLen;
     totalLen += legLen;
-    if (comp >= 0) assistedLen += legLen;
+    // A leg only counts as assisted if the wind is actually pushing. The old
+    // `>= 0` test counted a pure crosswind - where the component is zero - as
+    // fully assisted, so a segment at right angles to the wind reported
+    // "0.0 mph, 100% wind-assisted". 0.5 mph is the floor for "help".
+    if (comp > 0.5) assistedLen += legLen;
   }
   if (!(totalLen > 0)) return null;
   return { meanComponent: weighted / totalLen, pctAssisted: Math.round(assistedLen / totalLen * 100), lengthMi: totalLen };
