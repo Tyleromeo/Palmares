@@ -1673,6 +1673,14 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
         <input class="setting-input" id="rr-route" type="text" placeholder="Strava route link (optional)" title="Paste a strava.com/routes/... link to get the map, distance and tailwind ranking" style="width:220px;text-align:left" />
         <button class="gold-btn" style="margin-top:0" onclick="addRecurringRide()">Add</button>
       </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:#7d8590;display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+          <span style="border:1px solid #30363d;border-radius:6px;padding:6px 12px;color:#e6edf3">Choose GPX\u2026</span>
+          <input type="file" id="rr-gpx" accept=".gpx,application/gpx+xml,text/xml" onchange="onRecurringGPXPicked(this)" style="display:none" />
+          or upload a GPX \u2014 works for routes that are private on Strava, and brings real elevation
+        </label>
+        <div id="rr-gpx-note" style="font-size:12px;margin-top:5px"></div>
+      </div>
     </div>
   </div>
   <div class="card">
@@ -2569,6 +2577,101 @@ function saveRecurringRides(list) {
   reloadClubEvents();
 }
 
+// ===== GPX IMPORT FOR A STANDING RIDE =====
+// A Strava route link only works if the route is visible to the athlete's
+// account; a private one 404s and leaves the card with a shape but no numbers.
+// A GPX export sidesteps that entirely and is better data besides: full
+// resolution rather than a simplified summary line, and real per-point
+// elevation, so climbing can be measured instead of left blank.
+//
+// The parsed track is encoded to a polyline string and stored as the ride's
+// route, which is the same shape club events produce - so the map, the course
+// view and the tailwind ranking all work with no changes downstream.
+
+// Google's polyline algorithm. The codebase could already decode (Strava sends
+// these) but only ever wrote GPX out, never in.
+function encodePolyline(points) {
+  let lastLat = 0, lastLng = 0, out = '';
+  const enc = function (v) {
+    v = v < 0 ? ~(v << 1) : (v << 1);
+    let s = '';
+    while (v >= 0x20) { s += String.fromCharCode((0x20 | (v & 0x1f)) + 63); v >>= 5; }
+    return s + String.fromCharCode(v + 63);
+  };
+  points.forEach(function (p) {
+    const lat = Math.round(p[0] * 1e5), lng = Math.round(p[1] * 1e5);
+    out += enc(lat - lastLat) + enc(lng - lastLng);
+    lastLat = lat; lastLng = lng;
+  });
+  return out;
+}
+
+// Elevation gain with a 1 m threshold. Summing every positive delta counts GPS
+// wobble as climbing and inflates the total badly - on a 43-mile track that is
+// the difference between about 1,550 ft and a realistic 1,255 ft.
+function elevationGainFt(eles) {
+  if (!eles || eles.length < 2) return null;
+  let gain = 0, last = eles[0];
+  for (let i = 1; i < eles.length; i++) {
+    const e = eles[i];
+    if (e - last > 1.0) { gain += e - last; last = e; }
+    else if (e < last) { last = e; }
+  }
+  return gain * 3.281;
+}
+
+function parseGPXTrack(text) {
+  let doc;
+  try { doc = new DOMParser().parseFromString(text, 'application/xml'); } catch (e) { return null; }
+  if (!doc || doc.querySelector('parsererror')) return null;
+  // Track points first (an activity or course export), route points second.
+  let nodes = doc.getElementsByTagName('trkpt');
+  if (!nodes.length) nodes = doc.getElementsByTagName('rtept');
+  if (!nodes.length) return null;
+  const pts = [], eles = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const lat = parseFloat(nodes[i].getAttribute('lat'));
+    const lng = parseFloat(nodes[i].getAttribute('lon'));
+    if (isNaN(lat) || isNaN(lng)) continue;
+    pts.push([lat, lng]);
+    const el = nodes[i].getElementsByTagName('ele')[0];
+    eles.push(el ? parseFloat(el.textContent) : null);
+  }
+  if (pts.length < 2) return null;
+  const nameEl = doc.getElementsByTagName('name')[0];
+  return {
+    points: pts,
+    elevations: eles.every(function (e) { return e != null && !isNaN(e); }) ? eles : null,
+    name: nameEl ? nameEl.textContent.trim() : null
+  };
+}
+
+// Measure at full resolution, then thin for storage. A 6,500-point track is
+// ~2 MB of GPX; keeping every point would blow the localStorage budget, while
+// thinning to ~1,000 costs about 0.4% of the distance.
+function gpxToRoute(text) {
+  const t = parseGPXTrack(text);
+  if (!t) return null;
+  const distanceMi = lineDistanceMiles(t.points);
+  const elevationFt = t.elevations ? elevationGainFt(t.elevations) : null;
+  const MAX = 1000;
+  let pts = t.points;
+  if (pts.length > MAX) {
+    const step = Math.ceil(pts.length / MAX);
+    const thin = [];
+    for (let i = 0; i < pts.length; i += step) thin.push(pts[i]);
+    if (thin[thin.length - 1] !== pts[pts.length - 1]) thin.push(pts[pts.length - 1]);
+    pts = thin;
+  }
+  return {
+    polyline: encodePolyline(pts),
+    distanceMi: distanceMi,
+    elevationFt: elevationFt,
+    fromGPX: true,
+    name: t.name
+  };
+}
+
 // Strava route ids are now 19 digits, past what a JS number can hold exactly:
 // Number('3495300163045161320') becomes ...161500 and 404s. Kept as a string
 // from input to fetch, and never run through parseInt.
@@ -2579,6 +2682,34 @@ function parseStravaRouteId(input) {
   if (m) return m[1];
   if (/^\d+$/.test(t)) return t;             // bare id
   return null;
+}
+
+let _pendingGPXRoute = null;
+function onRecurringGPXPicked(input) {
+  const file = input && input.files && input.files[0];
+  const note = document.getElementById('rr-gpx-note');
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function () {
+    const route = gpxToRoute(String(reader.result || ''));
+    if (!route) {
+      _pendingGPXRoute = null;
+      if (note) { note.textContent = 'Could not read that GPX \u2014 no track points found.'; note.style.color = '#f85149'; }
+      return;
+    }
+    _pendingGPXRoute = route;
+    const bits = [route.distanceMi ? route.distanceMi.toFixed(1) + ' mi' : null,
+                  route.elevationFt ? Math.round(route.elevationFt).toLocaleString() + ' ft climbing' : null]
+                 .filter(Boolean).join(' \u00b7 ');
+    if (note) {
+      note.textContent = (route.name ? route.name + ' \u2014 ' : '') + bits + '. Press Add to attach it.';
+      note.style.color = '#3fb950';
+    }
+    // Offer the track's name if the ride hasn't been named yet.
+    const nameEl = document.getElementById('rr-name');
+    if (nameEl && !nameEl.value.trim() && route.name) nameEl.value = route.name;
+  };
+  reader.readAsText(file);
 }
 
 function addRecurringRide() {
@@ -2602,8 +2733,16 @@ function addRecurringRide() {
     weekday: parseInt(day, 10) || 0,
     time: time,
     until: until || null,
-    routeId: routeId || null
+    routeId: routeId || null,
+    // A GPX carries its own geometry and stats, so no Strava lookup is needed -
+    // and it works for a route that is private on Strava.
+    route: _pendingGPXRoute || null
   });
+  _pendingGPXRoute = null;
+  const note = document.getElementById('rr-gpx-note');
+  if (note) note.textContent = '';
+  const gpxInput = document.getElementById('rr-gpx');
+  if (gpxInput) gpxInput.value = '';
   saveRecurringRides(list);
   ['rr-name', 'rr-club', 'rr-until', 'rr-route'].forEach(function (id) {
     const el = document.getElementById(id); if (el) el.value = '';
@@ -2645,6 +2784,10 @@ function recurringRideEvents(now) {
     // club event: map, distance, and the tailwind ranking. enrichEventsWithRoutes
     // already keys off route_id, and it runs over the merged list.
     if (r.routeId) ev.route_id = r.routeId;
+    // An attached GPX is already complete, so hand it straight over as the
+    // enriched route; enrichEventsWithRoutes skips events that have neither an
+    // id nor an embedded route, so it won't be overwritten.
+    if (r.route && r.route.polyline) ev._route = r.route;
     out.push(ev);
   });
   return out;
@@ -2678,7 +2821,8 @@ function renderEventSourceSettings() {
               ' <span style="color:#57606a;font-size:11px">' + DAYS[r.weekday] + 's at ' + escapeHTML(ampm) +
               (r.club ? ' \u00b7 ' + escapeHTML(r.club) : '') +
               (r.until ? ' \u00b7 until ' + escapeHTML(r.until) : '') +
-              (r.routeId ? ' \u00b7 route attached' : '') + '</span></div>' +
+              (r.route && r.route.polyline ? ' \u00b7 GPX route' + (r.route.distanceMi ? ' ' + r.route.distanceMi.toFixed(1) + ' mi' : '')
+                : r.routeId ? ' \u00b7 route attached' : '') + '</span></div>' +
             '<button onclick="removeRecurringRide(' + i + ')" style="background:transparent;border:1px solid #f85149;border-radius:6px;color:#f85149;cursor:pointer;font-size:11px;padding:2px 8px;flex-shrink:0">Remove</button>' +
           '</div>';
         }).join('')
