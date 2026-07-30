@@ -1227,6 +1227,7 @@ body.ob-open { overflow: hidden; }
           <button class="map-toggle" onclick="undoRouteWaypoint()" style="font-size:11px">Undo point</button>
           <button class="map-toggle" onclick="clearRoute()" style="font-size:11px">Clear</button>
           <button class="map-toggle" onclick="saveCurrentRoute()" style="font-size:11px;border-color:#C9A227">Save route</button>
+          <button class="map-toggle" onclick="findSegmentsNow()" style="font-size:11px;border-color:#C9A227;color:#C9A227">Find segments</button>
           <button class="map-toggle" onclick="downloadRouteGPX()" style="font-size:11px">Download GPX</button>
           <button class="map-toggle active" onclick="sendRouteToGarmin()" style="font-size:11px;background:#e0691a;color:#0d1117;border-color:#e0691a">Send to Garmin</button>
         </div>
@@ -9920,11 +9921,38 @@ function mkLayerGroup(map) {
   };
 }
 
+// MapKit overlays are selectable by default, and selecting one swallows the
+// map's own click event. In the route builder that meant the orange line you
+// had already drawn blocked every click landing on it - so doubling back along
+// a road you had just ridden was impossible, which is exactly what an
+// out-and-back is. An overlay stays interactive only when it has something to
+// show AND the builder is not collecting clicks.
+function mapOverlayInteractive(hasPopup) {
+  return !!hasPopup && !routeBuilderActive;
+}
+
+// Overlays are rebuilt on every render, so mode changes have to sweep whatever
+// is currently on the map rather than relying on what was set at creation.
+function applyMapInteractivity() {
+  const groups = palmaresMapLayers || {};
+  Object.keys(groups).forEach(function (k) {
+    const g = groups[k];
+    if (!g) return;
+    (g.overlays || []).forEach(function (o) {
+      if (o) o.enabled = mapOverlayInteractive(o.data && o.data.popupHtml);
+    });
+    (g.annotations || []).forEach(function (a) {
+      if (a) a.enabled = mapOverlayInteractive(a.data && a.data.popupHtml);
+    });
+  });
+}
+
 function mkAddPolyline(group, points, opts) {
   opts = opts || {};
   const style = mkStyle(opts.color || '#FC4C02', opts.weight || 4, opts.opacity);
   if (opts.dash) style.lineDash = opts.dash;
   const ov = new mapkit.PolylineOverlay(mkCoords(points), { style: style });
+  ov.enabled = mapOverlayInteractive(opts.popupHtml);
   if (opts.popupHtml) {
     ov.data = { popupHtml: opts.popupHtml };
     ov.addEventListener('select', function() { showMapPopup(ov.data.popupHtml); });
@@ -9944,6 +9972,7 @@ function mkAddCircle(group, latlng, opts) {
     title: opts.title || '',
     anchorOffset: new DOMPoint(0, d / 2 + 2)
   });
+  a.enabled = mapOverlayInteractive(opts.popupHtml);
   if (opts.popupHtml) {
     a.data = { popupHtml: opts.popupHtml };
     a.addEventListener('select', function() { showMapPopup(a.data.popupHtml); });
@@ -10080,6 +10109,7 @@ function setMapMode(mode) {
   // full screen so there's room to place points and watch the line grow.
   if (mode === 'route') setMapFullscreen(true);
   renderPalmaresMap();
+  applyMapInteractivity();
 }
 
 // Expand the map to fill the viewport (and back). Leaflet caches its
@@ -10446,6 +10476,7 @@ function clearRoute() {
   routeLine = null;
   routeSegmentHighlights = [];
   routeSegmentsOnRoute = [];
+  loadedRouteId = null;
   resetRouteDiscovery();
   updateRouteStats();
   renderRouteSegmentsList();
@@ -10598,7 +10629,7 @@ function renderRouteSegmentsList() {
   const el = document.getElementById('route-segments-list');
   if (!el) return;
   if (!routeSegmentsOnRoute.length) {
-    el.innerHTML = routeLine ? 'No cached KOM/Top 10 segments detected along this route yet. Enrich segments in the Segments tab for better coverage.' : '';
+    el.innerHTML = routeLine ? 'None of your own KOMs or Top 10s are on this route.' : '';
     return;
   }
   const koms = routeSegmentsOnRoute.filter(function(m){ return m.entry.kind === 'kom'; }).length;
@@ -10785,6 +10816,38 @@ function clearRouteDiscoveryLayers() {
 
 // Scans the drawn course, keeps only what genuinely sits on it, and ranks the
 // keepers by how much the wind will help on the day.
+let loadedRouteId = null;
+
+async function findSegmentsNow() {
+  if (getRouteTrackPoints().length < 2) {
+    setRouteStatus('Draw or load a route first, then look for segments on it.');
+    return;
+  }
+  const scan = await scanRouteForSegments();
+  if (!scan || !scan.all) return;
+  // If this came from Saved routes, keep the result with it so it survives the
+  // next load - otherwise the scan would be spent again on every reopen.
+  if (loadedRouteId) {
+    const routes = await loadSavedRouteCollection();
+    const r = routes.find(function (x) { return x.id === loadedRouteId; });
+    if (r) {
+      r.discoveredCount = scan.totalFound;
+      r.scannedAt = scan.scannedAt;
+      r.scanWind = scan.wind || null;
+      r.tailwindPicks = scan.picks.map(function (m) {
+        return { id: m.id, name: m.name, points: m.points, distanceM: m.distanceM,
+                 avgGrade: m.avgGrade, mine: m.mine, rank: m.rank,
+                 adv: { meanComponent: m.adv.meanComponent, pctAssisted: m.adv.pctAssisted,
+                        lengthMi: m.adv.lengthMi } };
+      });
+      await saveRouteCollection(routes);
+      renderSavedRoutes();
+    }
+  }
+  setRouteStatus(scan.totalFound + ' Strava segments on this route' +
+    (scan.picks.length ? ', best ' + scan.picks.length + ' by tailwind listed below.' : '.'));
+}
+
 async function scanRouteForSegments() {
   const routePoints = getRouteTrackPoints();
   if (routePoints.length < 2) return null;
@@ -10915,6 +10978,7 @@ function renderRouteTailwindPicks() {
   const msg = function (t) { el.innerHTML = '<div class="rtw-empty">' + t + '</div>'; };
   if (!routeDiscovery) { el.innerHTML = ''; return; }
   if (routeDiscovery.error === 'no-token') return msg('Connect to Strava to scan this route for segments.');
+  if (routeDiscovery.needsScan) return msg('This route has not been scanned for segments yet — press Find segments.');
   const totalFound = routeDiscovery.totalFound || routeDiscovery.all.length;
   if (!totalFound) {
     return msg('No Strava segments sit on this route. Roads with no segments on them are common — try a scan on a busier stretch.');
@@ -11028,7 +11092,14 @@ async function sendSavedRouteToGarmin(id) {
 // API budget again. Everything else found by that scan is a count only.
 function restoreRouteDiscovery(r) {
   const picks = (r && r.tailwindPicks) || [];
-  if (!picks.length) { routeDiscovery = null; clearRouteDiscoveryLayers(); renderRouteTailwindPicks(); return; }
+  if (!picks.length) {
+    // Saved before segment scanning existed, or scanned and found nothing.
+    // Either way, say which rather than leaving an empty panel.
+    routeDiscovery = { needsScan: true, all: [], picks: [], totalFound: 0 };
+    clearRouteDiscoveryLayers();
+    renderRouteTailwindPicks();
+    return;
+  }
   routeDiscovery = {
     all: picks, ranked: picks, picks: picks,
     totalFound: r.discoveredCount || picks.length,
@@ -11162,6 +11233,7 @@ async function loadSavedRoute(id) {
   routeWaypoints.forEach(function(wp, idx){ addWaypointMarker(wp, idx + 1); });
   renderRoutePolyline();
   updateRouteStats();
+  loadedRouteId = r.id;
   restoreRouteDiscovery(r);
   setRouteStatus('Loaded saved route: ' + (r.name || 'Saved route'));
   if (routeLine && palmaresMap) {
