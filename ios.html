@@ -3534,10 +3534,6 @@ function connectStrava() {
 // Existing users authorised before profile:write existed, so their token can't
 // star. Detected from the scope Strava reported at login rather than assumed,
 // and only they are asked to reconnect - nobody else is logged out.
-function canStarSegments() {
-  const g = localStorage.getItem('ed_granted_scope') || '';
-  return g.indexOf('profile:write') >= 0;
-}
 async function reauthoriseForStarring() {
   const ok = await askConfirm(
     'Starring a segment saves it to your Strava account, which is how it reaches your Garmin as a Live Segment. ' +
@@ -3550,6 +3546,9 @@ async function reauthoriseForStarring() {
 async function handleCallback() {
   const params = new URLSearchParams(window.location.search);
   const code = params.get('code');
+  // Strava reports the granted scope as a query parameter on the redirect, not
+  // in the token exchange response.
+  const grantedScope = params.get('scope');
   const error = params.get('error');
   const errorDesc = params.get('error_description');
 
@@ -3582,10 +3581,15 @@ async function handleCallback() {
     // authoritative source - the developer settings page (My API Application)
     // can show a stale/different token (e.g. your own personal test token)
     // and isn't reliable for checking what THIS app's live OAuth flow received.
-    console.log('OAuth scope granted by Strava:', data.scope);
-    localStorage.setItem('ed_granted_scope', data.scope || '(none returned)');
-    if (!data.scope || !data.scope.includes('activity:read_all')) {
-      console.warn('activity:read_all was NOT granted - only got:', data.scope, '- some features (private activities, certain segment data) may not work correctly.');
+    // data.scope is always undefined - Strava does not return scope from the
+    // token exchange - so this used to record '(none returned)' on every single
+    // connection. the scope gate was therefore permanently false: starring
+    // asked the athlete to reconnect, and still asked after they had.
+    const granted = grantedScope || data.scope || '';
+    console.log('OAuth scope granted by Strava:', granted);
+    if (granted) localStorage.setItem('ed_granted_scope', granted);
+    if (!granted.includes('activity:read_all')) {
+      console.warn('activity:read_all was NOT granted - only got:', granted, '- some features (private activities, certain segment data) may not work correctly.');
     }
 
     // Note: Supabase activity caching now happens inside loadAll() itself,
@@ -8906,7 +8910,10 @@ function setStarredLocal(id, on) {
 }
 
 async function toggleSegmentStar(segId, btn) {
-  if (!canStarSegments()) { reauthoriseForStarring(); return; }
+  // No local gate on the stored scope. That record was wrong for every athlete
+  // who connected before the fix above, and a stale string must not stand
+  // between someone and a token that already carries the permission. Strava is
+  // the authority: attempt the star, and treat its 401/403 as the real answer.
   const token = await getToken();
   if (!token) { try { showToast('Not connected to Strava.'); } catch (e) {} return; }
   const want = !isStarred(segId);
@@ -12245,6 +12252,29 @@ function minDistancePointToPolylineMeters(point, line, stride) {
   return best;
 }
 
+// How much of a segment actually runs along the route, measured by length.
+// The distance test below answers only "does this come close at its closest
+// point", which every crossing road satisfies at the junction - so a segment
+// that merely touched the course at one corner was reported as being on it.
+// This walks the segment leg by leg instead and asks what fraction of it is
+// within the threshold, which is what "on my route" means.
+function polylineCoverageFraction(segPoints, routePoints, thresholdM) {
+  if (!segPoints || segPoints.length < 2 || !routePoints || routePoints.length < 2) return 0;
+  const routeStride = Math.max(1, Math.ceil(routePoints.length / 400));
+  let total = 0, covered = 0;
+  for (let i = 1; i < segPoints.length; i++) {
+    const a = segPoints[i - 1], b = segPoints[i];
+    const len = haversineMeters(a, b);
+    if (!(len > 0)) continue;
+    total += len;
+    // The midpoint, not the endpoints: a leg that starts on the route and
+    // heads away from it would otherwise count as covered.
+    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    if (minDistancePointToPolylineMeters(mid, routePoints, routeStride) <= thresholdM) covered += len;
+  }
+  return total > 0 ? covered / total : 0;
+}
+
 function minDistancePolylineToPolylineMeters(segPoints, routePoints, thresholdM) {
   if (!segPoints || segPoints.length < 2 || !routePoints || routePoints.length < 2) return Infinity;
   const segStride = Math.max(1, Math.ceil(segPoints.length / 20));
@@ -12291,7 +12321,11 @@ async function findRouteSegmentsOnRoute() {
       const points = pointsForMapEntry(entry, detail);
       if (!points || points.length < 2) return;
       const dist = minDistancePolylineToPolylineMeters(points, routePoints, thresholdM);
-      if (dist <= thresholdM) matches.push({ entry, detail, points, distanceFromRouteM: Math.round(dist) });
+      if (dist > thresholdM) return;
+      // Same coverage test as the Strava scan: a KOM on a road that merely
+      // crosses the course is not a KOM on the course.
+      if (polylineCoverageFraction(points, routePoints, thresholdM) < ROUTE_SEGMENT_MIN_COVERAGE) return;
+      matches.push({ entry, detail, points, distanceFromRouteM: Math.round(dist) });
     });
     // Dedupe by segment id; prefer KOM over Top 10 if both appear.
     const byId = {};
@@ -12380,6 +12414,10 @@ const EXPLORE_TILE_DEG = 0.022;      // ~1.5 mi of latitude per tile
 const EXPLORE_TILE_MARGIN = 0.004;   // overlap, so a segment on a tile seam is still seen
 const EXPLORE_MAX_TILES = 24;
 const ROUTE_TAILWIND_PICKS = 5;
+// A segment has to run along the route, not just touch it. Crossing roads
+// score under ~0.3 here, so this cleanly separates them while still allowing a
+// segment that overshoots slightly past a turn.
+const ROUTE_SEGMENT_MIN_COVERAGE = 0.85;
 
 function exploreTilesForRoute(routePoints, tileDeg, maxTiles) {
   const seen = {};
@@ -12515,8 +12553,11 @@ async function scanRouteForSegments() {
     let pts = null;
     try { pts = decodePolyline(sg.points); } catch (e) {}
     if (!pts || pts.length < 2) return;
+    // Cheap reject first, then the honest test.
     const d = minDistancePolylineToPolylineMeters(pts, routePoints, thresholdM);
     if (d > thresholdM) return;
+    const coverage = polylineCoverageFraction(pts, routePoints, thresholdM);
+    if (coverage < ROUTE_SEGMENT_MIN_COVERAGE) return;
     const own = mine[sg.id];
     matched.push({
       id: sg.id,
@@ -12526,6 +12567,7 @@ async function scanRouteForSegments() {
       avgGrade: sg.avg_grade,
       climbCategory: sg.climb_category || 0,
       distanceFromRouteM: Math.round(d),
+      coverage: coverage,
       mine: own ? own.kind : null,
       rank: own ? own.rank : null,
       adv: wind ? windAdvantageForPath(pts, wind.direction, wind.speed) : null
@@ -12619,7 +12661,7 @@ function renderRouteTailwindPicks() {
   const w = routeDiscovery.wind;
   const head = 'Best tailwind on this route · ' +
     (w ? windDirName(w.direction) + ' wind at ' + Math.round(w.speed) + ' mph' : 'wind unknown') +
-    ' · ' + totalFound + ' segments found' +
+    ' · ' + totalFound + (totalFound === 1 ? ' segment found' : ' segments found') +
     (routeDiscovery.rateLimited ? ' (Strava rate limit reached — partial scan)' : '') +
     (routeDiscovery.fromSaved ? ' · from the saved scan' : '');
 
@@ -12630,9 +12672,10 @@ function renderRouteTailwindPicks() {
     const colour = c >= 8 ? '#3fb950' : c >= 2 ? '#d29922' : c >= 0 ? '#8b949e' : '#f85149';
     const meta = [
       m.adv.lengthMi.toFixed(2) + ' mi',
+      (m.coverage != null ? Math.round(m.coverage * 100) + '% on route' : null),
       m.adv.pctAssisted + '% wind-assisted',
       m.mine === 'kom' ? 'you hold it' : (m.mine ? 'Top 10' + (m.rank ? ' #' + m.rank : '') : 'new to you')
-    ].join(' · ');
+    ].filter(Boolean).join(' · ');
     const starred = isStarred(m.id);
     return '<div class="rtw-row">' +
       '<div class="rtw-rank" style="background:' + (helped ? '#3fb950' : '#f85149') + '">' + (i + 1) + '</div>' +
@@ -12836,7 +12879,7 @@ async function saveCurrentRoute() {
     // every segment found would bloat the saved-routes blob for no benefit.
     route.tailwindPicks = scan.picks.map(function (m) {
       return { id: m.id, name: m.name, points: m.points, distanceM: m.distanceM,
-               avgGrade: m.avgGrade, mine: m.mine, rank: m.rank,
+               avgGrade: m.avgGrade, mine: m.mine, rank: m.rank, coverage: m.coverage,
                adv: { meanComponent: m.adv.meanComponent, pctAssisted: m.adv.pctAssisted,
                       lengthMi: m.adv.lengthMi } };
     });
