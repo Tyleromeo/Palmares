@@ -529,6 +529,13 @@ body.map-fs .nav { display: none !important; }
 body.map-fs .container { margin-left: 0 !important; }
 /* position/inset need !important: Leaflet writes position:relative inline on
    the map container, and an inline style beats a plain stylesheet rule. */
+body.map-fs #scout-map-card { position: fixed; inset: 0; z-index: 9998; margin: 0; padding: 0;
+  border: none; border-radius: 0; height: 100vh; height: 100dvh; overflow: hidden; background: #0d1117; }
+body.map-fs #map-mode-bar { position: fixed; top: calc(env(safe-area-inset-top) + 10px); left: 10px; right: 10px;
+  z-index: 10003; background: rgba(13,17,23,.82); border-radius: 10px; padding: 6px; margin: 0;
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+body.map-fs #mk-locate-btn { top: 68px !important; }
+body.map-fs #wind-rose { top: 68px !important; }
 body.map-fs #palmares-map { position: fixed !important; inset: 0 !important; width: 100vw; height: 100vh; height: 100dvh; min-height: 0; margin: 0; border: none; border-radius: 0; z-index: 10000; }
 /* Bottom-center, not top-left: the native app's top bar renders over the top
    of the web view and ate taps on the old top-left button. Bottom-center also
@@ -548,7 +555,10 @@ body.map-fs #route-fs-bar,
    that is already hidden outside its own mode. */
 body.map-fs #hunt-fs-bar { display: flex !important; }
 body.map-fs #route-builder-panel,
-body.map-fs #segment-hunter-panel { position: fixed !important; left: 0; right: 0; bottom: 0; z-index: 10002; margin: 0; border-radius: 14px 14px 0 0; max-height: 48vh; overflow-y: auto; padding-bottom: calc(env(safe-area-inset-bottom) + 14px); box-shadow: 0 -8px 24px rgba(0,0,0,.5); }
+body.map-fs #segment-hunter-panel { position: fixed !important; left: 0; right: 0; bottom: 0; z-index: 10002;
+  /* !important: both panels carry an inline margin-bottom, which would
+     otherwise leave a sliver of map showing beneath them. */
+  margin: 0 !important; border-radius: 14px 14px 0 0; max-height: 48vh; overflow-y: auto; padding-bottom: calc(env(safe-area-inset-bottom) + 14px); box-shadow: 0 -8px 24px rgba(0,0,0,.5); }
 .map-fs-btn { background:#161b22; border:1px solid #30363d; color:#e6edf3; border-radius:999px; padding:9px 15px; font-size:13px; cursor:pointer; display:flex; align-items:center; gap:6px; box-shadow: 0 2px 10px rgba(0,0,0,.4); }
 .map-fs-btn.exit { background:#e0691a; color:#0d1117; border-color:#e0691a; font-weight:600; }
 
@@ -10243,7 +10253,32 @@ function setMapMode(mode) {
 // Expand the map to fill the viewport (and back). Leaflet caches its
 // container size, so it has to be told to remeasure after the resize or the
 // tiles render into the old, smaller box.
+let _mapFsHome = null;
+
 function setMapFullscreen(on) {
+  // iOS lays a position:fixed element out against the nearest scrolling
+  // ancestor instead of the viewport, and the map card sits inside two of them
+  // - the deck scrolls sideways, the card scrolls down. Full screen therefore
+  // half-worked: the class went on and the Done bar appeared, but the map and
+  // its panel stayed boxed inside the card, so nothing actually filled the
+  // screen. Lifting the card to the body for the duration removes every such
+  // ancestor, and the fixed positioning already in the stylesheet resolves
+  // against the viewport as it was meant to. A comment node holds its place in
+  // the deck so it goes back in the same slot, which the dots depend on.
+  const card = document.getElementById('scout-map-card');
+  if (card) {
+    if (on && !_mapFsHome && card.parentNode) {
+      _mapFsHome = document.createComment('scout-map-card');
+      card.parentNode.insertBefore(_mapFsHome, card);
+      document.body.appendChild(card);
+    } else if (!on && _mapFsHome) {
+      if (_mapFsHome.parentNode) {
+        _mapFsHome.parentNode.insertBefore(card, _mapFsHome);
+        _mapFsHome.parentNode.removeChild(_mapFsHome);
+      }
+      _mapFsHome = null;
+    }
+  }
   document.body.classList.toggle('map-fs', !!on);
   // Straight away, not on the delayed repaint below: the exit affordances are
   // part of entering full screen, not part of drawing the map.
