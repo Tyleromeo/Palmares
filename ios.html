@@ -13297,6 +13297,7 @@ async function saveCurrentRoute() {
     created_at: new Date().toISOString()
   };
   routes.push(route);
+  loadedRouteId = route.id;
   await saveRouteCollection(routes);
   renderSavedRoutes();
 
@@ -13353,8 +13354,14 @@ async function deleteSavedRoute(id) {
   const routes = await loadSavedRouteCollection();
   const r = routes.find(function(x){ return x.id === id; });
   if (!await askConfirm('Delete saved route "' + (r ? r.name : 'this route') + '"?', 'Delete')) return;
+  // Deleting the route that is currently drawn has to take it off the map as
+  // well. Removing the record alone left the line, its numbered waypoints and
+  // its segment scan sitting there with nothing behind them.
+  const wasShowing = loadedRouteId === id;
   await saveRouteCollection(routes.filter(function(x){ return x.id !== id; }));
+  if (wasShowing) clearRoute();
   renderSavedRoutes();
+  if (wasShowing) setRouteStatus('Deleted "' + (r ? r.name : 'route') + '". The map is clear.');
 }
 
 function routeToGPX(route, nameOverride) {
