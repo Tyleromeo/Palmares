@@ -591,6 +591,18 @@ body.native-app .native-only { display: flex !important; }
 #palmares-map { position: relative; height: 72vh; min-height: 520px; border-radius: 12px; overflow: hidden; background: #0d1117; border: 1px solid #30363d; }
 /* Hover readout on the hunter map. pointer-events:none so it can never sit
    between the cursor and the line it is describing. */
+/* A drag handle down the right edge of the map. MapKit pans on any drag inside
+   the map, so the deck's own swipe can never start there - on a card that is
+   almost all map the only place left to swipe was the toolbar. This strip is
+   reserved for the deck instead. It is inset top and bottom so it never covers
+   the wind rose or MapKit's zoom buttons, both of which live in those corners. */
+#map-swipe-edge { position: absolute; right: 0; top: 60px; bottom: 92px; width: 28px; z-index: 16;
+  touch-action: none; cursor: grab; display: flex; align-items: center; justify-content: center;
+  border-radius: 10px 0 0 10px; background: linear-gradient(to right, rgba(1,4,9,0), rgba(1,4,9,.34)); }
+#map-swipe-edge::after { content: '\203A'; color: #8b949e; font-size: 19px; line-height: 1; }
+#map-swipe-edge:active { cursor: grabbing; background: linear-gradient(to right, rgba(1,4,9,0), rgba(1,4,9,.55)); }
+body.map-fs #map-swipe-edge { display: none; }   /* no deck to swipe in full screen */
+.map-icon-btn { width: 34px; padding: 0; text-align: center; font-size: 15px; }
 #hunt-hover { position: absolute; z-index: 30; pointer-events: none; max-width: 250px;
   background: rgba(13,17,23,.96); border: 1px solid #30363d; border-left: 3px solid #58a6ff;
   border-radius: 8px; padding: 8px 11px; box-shadow: 0 8px 22px rgba(0,0,0,.55);
@@ -1402,9 +1414,9 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
     <span id="map-counts" style="display:none"></span>
     <div class="map-toolbar" id="map-mode-bar">
       <button class="map-toggle active" id="map-mode-hunt" onclick="setMapMode('hunt')" style="border-color:#C9A227">Segment Hunter</button>
-      <button class="map-toggle" id="map-mode-route" onclick="setMapMode('route')" style="border-color:#e0691a">Route builder</button>
+      <button class="map-toggle" id="map-mode-route" onclick="setMapMode('route')" style="border-color:#e0691a">Route Builder</button>
       <button class="map-toggle" id="map-mode-heat" onclick="setMapMode('heat')">Heatmap</button>
-      <button class="map-toggle" id="map-fs-enter" onclick="setMapFullscreen(true)" style="margin-left:auto" title="Full screen">⛶ Full screen</button>
+      <button class="map-toggle map-icon-btn" id="map-fs-enter" onclick="setMapFullscreen(true)" style="margin-left:auto" title="Full screen" aria-label="Full screen">⛶</button>
     </div>
     <div class="map-toolbar map-subbar" id="map-group-type">
       <span class="map-group-label">Type</span>
@@ -1462,7 +1474,7 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
            which the native app's top bar can sit over and block. Shown only
            in full screen. -->
       <div id="route-fs-bar" style="display:none;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #30363d">
-        <span style="font-size:13px;font-weight:600;color:#e6edf3">Route builder</span>
+        <span style="font-size:13px;font-weight:600;color:#e6edf3">Route Builder</span>
         <button onclick="setMapFullscreen(false)" style="background:#e0691a;color:#0d1117;border:none;border-radius:999px;padding:9px 18px;font-size:14px;font-weight:700;cursor:pointer">✕ Done</button>
       </div>
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:space-between">
@@ -3112,7 +3124,7 @@ function showSection(name) {
   if (name === 'settings') { try { loadSettingsUI(); } catch(e) { console.error('loadSettingsUI:', e); } }
   if (name === 'activities' && allActivities.length) { try { renderActivities(); renderHeatmap(); renderGear(); renderStreaks(); applyCollapseState(); } catch(e) { console.error('renderActivities:', e); } }
   if (name === 'activities') { setTimeout(function(){ initDeck('log-deck'); }, 60); }
-  if (name === 'map') { setTimeout(function(){ initDeck('scout-deck'); }, 120); }
+  if (name === 'map') { setTimeout(function(){ initDeck('scout-deck'); initMapEdgeSwipe('scout-deck'); }, 120); }
   if (name === 'performance') { setTimeout(function(){ initDeck('performance-deck'); }, 60); }
   if (name === 'segments') { setTimeout(function(){ initDeck('segments-deck'); }, 60); }
   if (name === 'segments' && allActivities.length) { try { renderKomScanUI(); renderPowerBestsCard(); renderDistanceRecords(); applyCollapseState(); } catch(e) { console.error('renderKomScanUI:', e); } }
@@ -13466,6 +13478,51 @@ function resetRouteDiscovery() {
 // were only reachable while building - and in full screen the list sat under
 // the map controls. They get their own card now, with the builder linking to
 // it and back.
+// The map swallows every drag inside it, so the deck's swipe cannot begin
+// there. This reserves a strip down the map's right edge for the deck: the
+// drag follows the finger across the cards and lands on whichever one it ends
+// nearest, the same as a native swipe. Dragging the other way still goes back.
+function initMapEdgeSwipe(deckId) {
+  const host = document.getElementById('palmares-map');
+  const deck = document.getElementById(deckId);
+  if (!host || !deck || host._edgeSwipeWired) return;
+  host._edgeSwipeWired = true;
+
+  const strip = document.createElement('div');
+  strip.id = 'map-swipe-edge';
+  strip.title = 'Drag to the next card';
+  host.appendChild(strip);
+
+  let startX = 0, startScroll = 0, dragging = false, snapWas = '';
+  strip.addEventListener('pointerdown', function (e) {
+    if (document.body.classList.contains('map-fs')) return;
+    dragging = true;
+    startX = e.clientX;
+    startScroll = deck.scrollLeft;
+    // Scroll snapping fights a scrollLeft written mid-drag, pulling the deck
+    // back to the current card on every move. Off while dragging, on to land.
+    snapWas = deck.style.scrollSnapType;
+    deck.style.scrollSnapType = 'none';
+    try { strip.setPointerCapture(e.pointerId); } catch (err) {}
+    e.preventDefault();
+  });
+  strip.addEventListener('pointermove', function (e) {
+    if (!dragging) return;
+    deck.scrollLeft = startScroll - (e.clientX - startX);
+    e.preventDefault();
+  });
+  const finish = function (e) {
+    if (!dragging) return;
+    dragging = false;
+    deck.style.scrollSnapType = snapWas || '';
+    const w = deck.clientWidth || 1;
+    deckTo(deckId, Math.round(deck.scrollLeft / w));
+    try { strip.releasePointerCapture(e.pointerId); } catch (err) {}
+  };
+  strip.addEventListener('pointerup', finish);
+  strip.addEventListener('pointercancel', finish);
+}
+
 function deckToCard(deckId, cardId) {
   const deck = document.getElementById(deckId);
   const el = document.getElementById(cardId);
