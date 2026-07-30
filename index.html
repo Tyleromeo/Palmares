@@ -2978,6 +2978,29 @@ function loadWithManualToken() {
 let _syncInFlight = false;
 let _lastSyncAt = Date.now();
 
+// Pull-to-refresh should pick up what another device changed, not only what
+// Strava has. Saved routes live in the Supabase cache and are shared between
+// the website and the phone, so a course imported on one only appeared on the
+// other after tapping Refresh by hand. Starred segments are shared the same
+// way, through Strava itself.
+async function refreshSharedCollections() {
+  try {
+    const before = (savedRoutesCache || []).length;
+    await renderSavedRoutes();              // re-pulls the collection and repaints
+    const after = (savedRoutesCache || []).length;
+    if (after !== before) {
+      const gained = after - before;
+      showToast('\ud83d\uddfa\ufe0f',
+        gained > 0 ? (gained === 1 ? '1 new saved route' : gained + ' new saved routes')
+                   : 'Saved routes updated',
+        after + (after === 1 ? ' route' : ' routes') + ' on this device now.');
+    }
+  } catch (e) {}
+  // Forced: an explicit pull is exactly when the five-minute throttle should
+  // be overridden.
+  try { await refreshStarredFromStrava(true); } catch (e) {}
+}
+
 async function syncNow() {
   if (_syncInFlight) return;
   if (!athleteData || !allActivities.length) { showToast('⚠️', 'Not ready', 'Connect and load your data first.'); return; }
@@ -3048,6 +3071,9 @@ async function syncNow() {
   } finally {
     _syncInFlight = false;
     if (icon) icon.style.animation = '';
+    // Runs whether or not Strava had anything new: the routes may still have
+    // changed on the other device.
+    refreshSharedCollections();
   }
 }
 
