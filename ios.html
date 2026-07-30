@@ -8369,15 +8369,52 @@ function forecastIndexForDate(when) {
   return i >= 0 ? i : null;
 }
 
+// Wind at the hour the ride actually rolls out, not the day's dominant
+// direction. An 8am start and that day's afternoon peak are frequently
+// different quarters of the compass, and the daily figure is the MAX speed
+// besides - so ranking a breakfast ride against it overstates the wind and can
+// order the segments wrongly. Hourly reaches about 8 days, same as daily, so
+// this is available whenever the ride is; the daily figures remain the
+// fallback for anything beyond it.
+function windForEvent(when) {
+  const data = window._wxData;
+  if (!data) return null;
+  const h = data.hourly;
+  if (h && h.time && h.windspeed_10m && h.winddirection_10m) {
+    // Hourly stamps are local wall-clock, 'YYYY-MM-DDTHH:00'.
+    const pad = function (n) { return String(n).padStart(2, '0'); };
+    const key = localDateKey(when) + 'T' + pad(when.getHours()) + ':00';
+    let i = h.time.indexOf(key);
+    if (i < 0) {
+      // Some feeds emit ':30' or omit the exact hour; take the nearest stamp
+      // within an hour rather than silently falling back to the daily figure.
+      const target = when.getTime();
+      let best = -1, bestDiff = Infinity;
+      for (let k = 0; k < h.time.length; k++) {
+        const t = new Date(h.time[k]).getTime();
+        if (isNaN(t)) continue;
+        const diff = Math.abs(t - target);
+        if (diff < bestDiff) { bestDiff = diff; best = k; }
+      }
+      if (best >= 0 && bestDiff <= 60 * 60 * 1000) i = best;
+    }
+    if (i >= 0 && h.windspeed_10m[i] != null && h.winddirection_10m[i] != null) {
+      return { dir: h.winddirection_10m[i], speed: msToMph(h.windspeed_10m[i]), basis: 'hourly' };
+    }
+  }
+  const di = forecastIndexForDate(when);
+  if (di == null) return null;
+  const dir = data.daily.winddirection_10m_dominant[di];
+  const spd = data.daily.windspeed_10m_max[di];
+  if (dir == null || spd == null) return null;
+  return { dir: dir, speed: msToMph(spd), basis: 'daily' };
+}
+
 async function tailwindSegmentsForRoute(routePoints, when, limit) {
   if (!routePoints || routePoints.length < 2) return { error: 'no-route' };
-  const idx = forecastIndexForDate(when);
-  if (idx == null) return { error: 'no-forecast' };
-  const data = window._wxData;
-  const dir = data.daily.winddirection_10m_dominant[idx];
-  const rawSpeed = data.daily.windspeed_10m_max[idx];
-  if (dir == null || rawSpeed == null) return { error: 'no-forecast' };
-  const speed = msToMph(rawSpeed);
+  const wx = windForEvent(when);
+  if (!wx) return { error: 'no-forecast' };
+  const dir = wx.dir, speed = wx.speed;
   if (!athleteData) return { error: 'no-athlete' };
 
   let result;
@@ -8410,7 +8447,8 @@ async function tailwindSegmentsForRoute(routePoints, when, limit) {
       const d = b.adv.meanComponent - a.adv.meanComponent;
       return Math.abs(d) > 0.05 ? d : (b.adv.lengthMi - a.adv.lengthMi);
     });
-  return { ranked: ranked.slice(0, limit || 5), windDir: dir, windSpeed: speed, total: ranked.length };
+  return { ranked: ranked.slice(0, limit || 5), windDir: dir, windSpeed: speed,
+           basis: wx.basis, when: when, total: ranked.length };
 }
 
 let _routeDetailMap = null;
@@ -8533,9 +8571,17 @@ function renderTailwindRanking(res, ev) {
       '<div class="rd-tw-val" style="color:' + colour + '">' + label + '</div>' +
     '</div>';
   }).join('');
+  // Name the hour the wind was taken from, so the ranking can be checked
+  // against the forecast rather than taken on trust.
+  const at = res.when
+    ? res.when.toLocaleDateString('en-US', { weekday: 'short' }) + ' ' +
+      res.when.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+    : null;
   el.innerHTML =
     '<div class="rd-tw-head">Best tailwind segments \u00b7 ' +
-      escapeHTML(dirName) + ' ' + Math.round(res.windSpeed) + ' mph forecast' +
+      escapeHTML(dirName) + ' ' + Math.round(res.windSpeed) + ' mph' +
+      (at ? ' at ' + escapeHTML(at) : '') +
+      (res.basis === 'daily' ? ' (day average \u2014 hourly outlook does not reach yet)' : '') +
       (res.total > res.ranked.length ? ' \u00b7 top 5 of ' + res.total + ' on route' : '') +
     '</div>' + rows;
 }
