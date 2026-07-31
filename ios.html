@@ -1910,7 +1910,22 @@ async function getCached(athleteId, key, maxAgeMs) {
       max_age_ms: maxAgeMs
     });
     return data && typeof data === 'object' && data.hasOwnProperty('payload') ? data.payload : data;
-  } catch(e) { console.log('Cache read error for', key, ':', e); return null; }
+  } catch(e) {
+    console.log('Cache read error for', key, ':', e);
+    // A failed read is NOT the same as an empty cache, and conflating the two
+    // destroyed data: a network blip made getScanProgress hand back a blank
+    // progress object, and the next scan step saved that over hundreds of
+    // scanned activities. Callers that write back what they read must check
+    // this flag - see getScanProgress / saveScanProgress.
+    lastCacheReadFailed[key] = Date.now();
+    return null;
+  }
+}
+// Keyed by cache key, set when a read threw rather than legitimately missing.
+const lastCacheReadFailed = {};
+function cacheReadJustFailed(key) {
+  const t = lastCacheReadFailed[key];
+  return !!t && (Date.now() - t) < 60000;
 }
 
 function setCached(athleteId, key, payload) {
@@ -3823,6 +3838,18 @@ async function syncNow() {
       renderGear();
     }
 
+    // A new ride is exactly when its KOMs matter, so scan it now rather than
+    // waiting for a manual pass on the Palmares page. Only the new activities
+    // are fetched - scanKomChunk skips anything already in scannedIds - so this
+    // costs one detail call per new ride, not a re-scan.
+    if (newOnes.length) {
+      try {
+        await scanKomChunk(token, athleteData.id);
+        renderKomScanUI();
+        computeLastActivityWins();
+      } catch (e) { console.log('Post-sync KOM scan failed:', e); }
+    }
+
     if (newOnes.length) {
       const a = newOnes[0];
       const mi = (a.distance / 1609.34).toFixed(1);
@@ -4400,7 +4427,13 @@ const SCAN_CHUNK_SIZE = 40; // activities/segments processed per click - keeps
 async function getScanProgress(athleteId) {
   // Progress doesn't expire on its own; it's only cleared by a fresh restart.
   let progress = await getCached(athleteId, 'kom_scan_progress', 365*24*60*60*1000);
-  if (!progress) return { scannedIds: [], koms: [], top10s: [], allSegmentBests: {}, complete: false, distanceRecords: {}, distanceScannedIds: [], ultraScannedIds: [] };
+  if (!progress) {
+    const blank = { scannedIds: [], koms: [], top10s: [], allSegmentBests: {}, complete: false, distanceRecords: {}, distanceScannedIds: [], ultraScannedIds: [] };
+    // If the read FAILED rather than finding nothing, this blank is a lie.
+    // Flag it so saveScanProgress refuses to persist it over real progress.
+    if (cacheReadJustFailed('kom_scan_progress')) blank._readFailed = true;
+    return blank;
+  }
 
   // Backfill allSegmentBests for progress saved before this field existed -
   // without this, resuming an old in-progress scan would crash trying to
@@ -4523,6 +4556,20 @@ async function getScanProgress(athleteId) {
 }
 
 function saveScanProgress(athleteId, progress) {
+  // Never let a failed read become a write. Without this, one unreachable
+  // moment turned "I have scanned 500 activities" into "I have scanned 1".
+  if (progress && progress._readFailed) {
+    console.warn('Refusing to save scan progress built from a failed cache read - existing progress preserved.');
+    return Promise.resolve();
+  }
+  // Belt and braces: a scan that has found nothing at all and scanned nothing
+  // is indistinguishable from a wipe, so never persist it.
+  if (progress && !progress.complete &&
+      (!progress.scannedIds || !progress.scannedIds.length) &&
+      (!progress.koms || !progress.koms.length)) {
+    console.warn('Refusing to save an empty scan progress.');
+    return Promise.resolve();
+  }
   return setCached(athleteId, 'kom_scan_progress', progress);
 }
 
@@ -6088,7 +6135,13 @@ async function getPowerScanProgress(athleteId, sport) {
   const cacheKey = POWER_SPORTS[sport].cacheKey;
   const durationsKey = powerProgressKey(sport);
   let progress = await getCached(athleteId, cacheKey, 365*24*60*60*1000);
-  if (!progress) return freshPowerProgress(sport);
+  if (!progress) {
+    const blank = freshPowerProgress(sport);
+    // Same trap as the KOM scan: a failed read looks identical to an empty
+    // cache, and writing the blank back destroys the real progress.
+    if (cacheReadJustFailed(cacheKey)) blank._readFailed = true;
+    return blank;
+  }
   if (!progress.top5) progress.top5 = {};
   if (!progress.byYear) progress.byYear = {};
   if (!progress.scannedIds) progress.scannedIds = [];
@@ -6116,6 +6169,10 @@ async function getPowerScanProgress(athleteId, sport) {
 }
 
 function savePowerScanProgress(athleteId, sport, progress) {
+  if (progress && progress._readFailed) {
+    console.warn('Refusing to save power scan progress built from a failed cache read.');
+    return Promise.resolve();
+  }
   return setCached(athleteId, POWER_SPORTS[sport].cacheKey, progress);
 }
 
@@ -11242,6 +11299,22 @@ function setKomView(view) {
   renderFullKomList();
 }
 
+// Gold progress bar, matching the one shown while the app loads activity
+// pages. A percentage buried in a sentence does not convey "how much longer"
+// the way a bar does, and these scans run into the hundreds of activities.
+function scanProgressBar(done, total, colour) {
+  if (!total || total <= 0) return '';
+  const pct = Math.max(0, Math.min(100, (done / total) * 100));
+  return '<div style="margin:8px 0 10px">' +
+    '<div style="height:8px;background:#161b22;border:1px solid #21262d;border-radius:5px;overflow:hidden">' +
+      '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + (colour || '#C9A227') +
+      ';transition:width .3s ease"></div>' +
+    '</div>' +
+    '<div style="font-size:11px;color:#7d8590;margin-top:4px">' +
+      done.toLocaleString() + ' of ' + total.toLocaleString() + ' \u00b7 ' + Math.round(pct) + '%' +
+    '</div></div>';
+}
+
 async function renderKomScanUI() {
   const statusEl = document.getElementById('kom-scan-status');
   const controlsEl = document.getElementById('kom-scan-controls');
@@ -11260,7 +11333,8 @@ async function renderKomScanUI() {
     controlsEl.innerHTML = `<button class="gold-btn" id="kom-scan-btn" onclick="runKomScanChunk()">Start full scan</button>`;
   } else if (!progress.complete) {
     const pct = Math.round((progress.scannedIds.length / allActivitiesToScan.length) * 100);
-    statusEl.innerHTML = `Scanned ${progress.scannedIds.length} of ${allActivitiesToScan.length} activities (${pct}%) - found ${progress.koms.length} KOMs and ${progress.top10s.length} Top 10s so far. ${remaining} activities remaining.`;
+    statusEl.innerHTML = scanProgressBar(progress.scannedIds.length, allActivitiesToScan.length) +
+      `Scanned ${progress.scannedIds.length} of ${allActivitiesToScan.length} activities (${pct}%) - found ${progress.koms.length} KOMs and ${progress.top10s.length} Top 10s so far. ${remaining} activities remaining.`;
     controlsEl.innerHTML = `<button class="gold-btn" id="kom-scan-btn" onclick="runKomScanChunk()">Scan next ${Math.min(SCAN_CHUNK_SIZE, remaining)}</button> <button onclick="restartKomScan()" style="background:#2d1a1a;border:1px solid #f85149;border-radius:6px;padding:8px 14px;color:#f85149;cursor:pointer;font-size:13px;margin-left:8px">Restart scan</button>`;
   } else {
     const enrichedCache = (await getCached(athleteData.id, 'kom_enriched_details_v7', 7*24*60*60*1000)) || {};
@@ -11275,7 +11349,8 @@ async function renderKomScanUI() {
     const enrichedCount = allAchievementSegments.filter(id => enrichedCache[id]).length;
 
     if (enrichedCount < allAchievementSegments.length) {
-      statusEl.innerHTML = `Activity scan complete: ${progress.koms.length} KOMs, ${progress.top10s.length} Top 10s found. Fetching segment details and current KOM times across all ${allAchievementSegments.length} segments you've ever had an effort on (this also lets us catch "passive" KOMs Strava never stamped an achievement on): ${enrichedCount} of ${allAchievementSegments.length} segments enriched. (Note: Strava restricts exact leaderboard rank/2nd-place data to subscriber API access, so we detect lost KOMs by comparing your time to the segment's current best, without an exact "now ranked #X.")`;
+      statusEl.innerHTML = scanProgressBar(enrichedCount, allAchievementSegments.length) +
+        `Activity scan complete: ${progress.koms.length} KOMs, ${progress.top10s.length} Top 10s found. Fetching segment details and current KOM times across all ${allAchievementSegments.length} segments you've ever had an effort on (this also lets us catch "passive" KOMs Strava never stamped an achievement on): ${enrichedCount} of ${allAchievementSegments.length} segments enriched. (Note: Strava restricts exact leaderboard rank/2nd-place data to subscriber API access, so we detect lost KOMs by comparing your time to the segment's current best, without an exact "now ranked #X.")`;
       controlsEl.innerHTML = `<button class="gold-btn" id="kom-enrich-btn" onclick="runKomEnrichChunk()">Enrich next ${Math.min(SCAN_CHUNK_SIZE, allAchievementSegments.length - enrichedCount)}</button> <button onclick="restartKomScan()" style="background:#2d1a1a;border:1px solid #f85149;border-radius:6px;padding:8px 14px;color:#f85149;cursor:pointer;font-size:13px;margin-left:8px">Restart scan</button>`;
     } else {
       // Compute post-enrichment totals so this text matches the totals
