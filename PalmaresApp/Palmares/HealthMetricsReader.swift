@@ -217,12 +217,10 @@ enum HealthMetricsReader {
         let predicate = HKQuery.predicateForSamples(withStart: sixPMYesterday, end: Date())
         let query = HKSampleQuery(sampleType: type, predicate: predicate,
                                   limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
-            let asleepValues: Set<Int> = {
-                if #available(iOS 16.0, *) {
-                    return Set(HKCategoryValueSleepAnalysis.allAsleepValues.map(\.rawValue))
-                }
-                return [HKCategoryValueSleepAnalysis.asleep.rawValue]
-            }()
+            // The app's minimum is iOS 16, so the pre-16 fallback that used the
+            // now-deprecated .asleep case was unreachable code raising a
+            // deprecation warning for a branch that could never run.
+            let asleepValues = Set(HKCategoryValueSleepAnalysis.allAsleepValues.map(\.rawValue))
 
             let intervals = (samples as? [HKCategorySample] ?? [])
                 .filter { asleepValues.contains($0.value) }
