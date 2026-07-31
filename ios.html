@@ -6984,18 +6984,23 @@ function renderLastActivityWins() {
       '<div class="row-right" style="color:#58a6ff;font-size:12px;font-weight:600">#' + k.rank + '</div></div>';
   });
   w.powerPRs.forEach(function (p) {
-    html += '<div class="row" style="padding:6px 0"><div><div class="row-name">\u26a1 Best ever ' + fmtDur(p.dur) + ' power</div>' +
-      '<div class="row-meta">all-time best for that duration</div></div>' +
-      '<div class="row-right" style="color:#FC4C02;font-size:12px;font-weight:600">' + p.watts + ' w</div></div>';
+    // Goes to the card that actually holds this number - "All-time power bests,
+    // top 5 per duration" on Palmares. It previously led to True Age, which is
+    // simply the first card on Train and has nothing to do with power.
+    html += '<div class="row" style="padding:6px 0;cursor:pointer" onclick="goToCard(\'segments\',\'collapse-power-bests\')">' +
+      '<div><div class="row-name">\u26a1 Best ever ' + fmtDur(p.dur) + ' power</div>' +
+      '<div class="row-meta">all-time best for that duration \u00b7 tap to see the top 5</div></div>' +
+      '<div class="row-right" style="color:#FC4C02;font-size:12px;font-weight:600">' + p.watts + ' w &rsaquo;</div></div>';
   });
   if (w.speedPR) {
-    html += '<div class="row" style="padding:6px 0"><div><div class="row-name">\ud83d\ude80 Fastest you have ever gone</div>' +
-      '<div class="row-meta">previous best ' + w.speedPR.prevMph.toFixed(1) + ' mph</div></div>' +
-      '<div class="row-right" style="color:#3fb950;font-size:12px;font-weight:600">' + w.speedPR.mph.toFixed(1) + ' mph</div></div>';
+    html += '<div class="row" style="padding:6px 0;cursor:pointer" onclick="goToCard(\'activities\',\'collapse-totals\')">' +
+      '<div><div class="row-name">\ud83d\ude80 Fastest you have ever gone</div>' +
+      '<div class="row-meta">previous best ' + w.speedPR.prevMph.toFixed(1) + ' mph \u00b7 tap for career totals</div></div>' +
+      '<div class="row-right" style="color:#3fb950;font-size:12px;font-weight:600">' + w.speedPR.mph.toFixed(1) + ' mph &rsaquo;</div></div>';
   }
   el.innerHTML = html
     ? '<div style="margin-top:10px;border-top:1px solid #21262d;padding-top:8px">' +
-      '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#7d8590;margin-bottom:4px">What you won</div>' +
+      '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#C9A227;margin-bottom:4px">Today\u2019s Palmar\u00e8s</div>' +
       html + '</div>'
     : '';
 }
@@ -7489,12 +7494,28 @@ function goToCard(sectionName, cardId) {
     const sec = document.getElementById('section-' + sectionName);
     const card = document.getElementById(cardId);
     if (!sec || !card) return;
+    // Swipe-deck pages (Train, Palmares, Log, Scout) hold their cards in a
+    // horizontally scrolling strip, so scrollIntoView does nothing useful -
+    // it cannot move a deck sideways. Find the deck panel this card lives in
+    // and slide the deck to it instead. This is why tapping a power record
+    // landed on True Age: the section was shown, but nothing moved the deck,
+    // so it sat on whichever panel it had been left on.
+    const deck = sec.querySelector('.swipe-deck');
+    if (deck) {
+      const panels = deckPanels(deck);
+      const idx = panels.indexOf(card.closest('.swipe-deck > .card') || card);
+      if (idx >= 0) {
+        deckTo(deck.id, idx);
+        card.classList.remove('collapsed');   // never land on a collapsed card
+        return;
+      }
+    }
     if (sec.classList.contains('has-widgets') && window.matchMedia('(max-width:900px)').matches) {
       openDetail(sectionName, cardId);
     } else {
       card.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, 120);
+  }, 160);
 }
 
 function closeDetail(sectionName) {
