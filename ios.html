@@ -5283,17 +5283,25 @@ function renderTodayCards() {
 // Jumps a clicked achievement badge to where that record actually lives on
 // the Performance page - switches the relevant Rides/Runs toggle first so
 // the record is actually visible, then scrolls its card into view.
-function navigateToPerformance(sport, view) {
-  showSection('performance');
-  if (view === 'power') setPowerCurveSport(sport);
-  else if (view === 'distance') setDistanceSport(sport);
-  setTimeout(function() {
-    const containerId = view === 'power' ? 'power-top5-list' : 'distance-records-list';
-    const el = document.getElementById(containerId);
-    const card = el && el.closest('.card');
-    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, 60);
+function navigateToRecord(sport, view) {
+  // Find the section that actually holds the record rather than assuming one.
+  // This used to hardcode showSection('performance') and then scrollIntoView.
+  // Both lists have since moved to Palmares, so tapping "New all-time best
+  // power at 5s" opened Train, landed on True Age (its first deck panel) and
+  // scrolled to a card that wasn't on that page at all. Deriving the section
+  // from the element means moving a card again cannot break this.
+  if (view === 'power') { try { setPowerCurveSport(sport); } catch (e) {} }
+  else if (view === 'distance') { try { setDistanceSport(sport); } catch (e) {} }
+  const containerId = view === 'power' ? 'power-top5-list' : 'distance-records-list';
+  const el = document.getElementById(containerId);
+  const card = el && el.closest('.card');
+  const sec = card && card.closest('.section');
+  if (!card || !sec || !card.id) { showSection('performance'); return; }
+  goToCard(sec.id.replace('section-', ''), card.id);
 }
+// Old name kept so any stale inline handler still resolves rather than
+// throwing a ReferenceError and doing nothing at all.
+function navigateToPerformance(sport, view) { return navigateToRecord(sport, view); }
 
 async function renderLastActivityHighlight() {
   const card = document.getElementById('last-activity-card');
@@ -5360,20 +5368,24 @@ async function renderLastActivityHighlight() {
   // KOMs, Top 10s and power/speed bests from this ride. Async - the scans are
   // in cached storage - so the card paints first and gains the line after.
   renderLastActivityWins();
-  computeLastActivityWins();
 
   if (isRide || isRun) {
-    const badges = await checkActivityAchievements(a);
+    // Still run this: it fetches this activity's streams and merges any new
+    // records into the same progress stores the background scanners use,
+    // which is what makes a brand-new PR show up without waiting for a full
+    // scan. Only its badge output is dropped - "Today's Palmares" below the
+    // map lists every record from the ride, so a single cherry-picked badge
+    // above the map was both duplicate and arbitrary.
+    try { await checkActivityAchievements(a); } catch (e) {}
     const achEl = document.getElementById('last-activity-achievements');
-    if (achEl && badges.length) {
-      achEl.innerHTML = badges.map(b => {
-        const style = 'display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;color:#e6edf3' + (b.action ? ';cursor:pointer' : '');
-        const onclick = b.action ? ` onclick="${b.action}"` : '';
-        const textStyle = b.action ? 'text-decoration:underline;text-underline-offset:2px' : '';
-        return `<div${onclick} style="${style}"><span style="font-size:16px">${b.icon}</span><span style="${textStyle}">${escapeHTML(b.text)}</span></div>`;
-      }).join('');
-    }
+    if (achEl) achEl.innerHTML = '';
   }
+
+  // Deliberately after checkActivityAchievements: that call is what writes a
+  // just-set record into the progress store, and this reads it. Running it
+  // first meant a PR from the ride you just finished could be missing from
+  // Today's Palmares until the next render.
+  computeLastActivityWins();
 }
 
 // Small standalone Apple Maps view for the highlight card's route preview - a
@@ -5510,8 +5522,8 @@ async function checkActivityAchievements(activity) {
       if (!progress.scannedIds.includes(activity.id)) progress.scannedIds.push(activity.id);
       await savePowerScanProgress(athleteData.id, sport, progress);
 
-      if (bestAllTimeLabel) badges.push({ icon: '🏆', text: `New all-time best power at ${bestAllTimeLabel} (${bestAllTimeWatts}w)`, action: `navigateToPerformance('${sport}','power')` });
-      else if (anyYear) badges.push({ icon: '📅', text: `New ${year} best power on at least one duration`, action: `navigateToPerformance('${sport}','power')` });
+      if (bestAllTimeLabel) badges.push({ icon: '🏆', text: `New all-time best power at ${bestAllTimeLabel} (${bestAllTimeWatts}w)`, action: `navigateToRecord('${sport}','power')` });
+      else if (anyYear) badges.push({ icon: '📅', text: `New ${year} best power on at least one duration`, action: `navigateToRecord('${sport}','power')` });
     }
 
     // ---- Distance: stream-computed checkpoints only (full list for rides, ultra-only for runs) ----
@@ -5542,7 +5554,7 @@ async function checkActivityAchievements(activity) {
       }
 
       if (bestRank !== null) {
-        badges.push({ icon: bestRank === 0 ? '🥇' : '🎖️', text: `#${bestRank+1} fastest ${bestName} ever`, action: `navigateToPerformance('${sport}','distance')` });
+        badges.push({ icon: bestRank === 0 ? '🥇' : '🎖️', text: `#${bestRank+1} fastest ${bestName} ever`, action: `navigateToRecord('${sport}','distance')` });
       }
     }
 
