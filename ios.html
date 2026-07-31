@@ -8895,14 +8895,19 @@ function renderZoneOutput(sport) {
         '</div>' +
         '<div style="font-size:11px;color:#57606a;margin-top:3px">' +
           (z.n ? z.n + (z.n === 1 ? ' activity' : ' activities') + ' \u00b7 avg ' + z.avgHR + ' bpm \u00b7 ' +
-                 z.hours.toFixed(1) + ' h' : 'no activities in this zone yet') +
+                 z.hours.toFixed(1) + ' h'
+               // Not "you never train here" - it means no ride AVERAGED this
+               // hard over its whole length, which for Z4/Z5 is close to
+               // impossible outside a race. Say which it is.
+               : 'no ride averages this zone end to end') +
         '</div>' +
       '</div>';
     }).join('') +
     '<div style="font-size:11px;color:#484f58;margin-top:8px;line-height:1.5">' +
-      'Each activity is counted in the zone its <em>average</em> heart rate falls in, so a ' +
-      'zone 2 ride still contains harder and easier minutes. This is what a typical ride at ' +
-      'that effort produces, not a second-by-second breakdown.' +
+      'Each activity is counted in the zone its <em>average</em> heart rate falls in. ' +
+      'A hard ride with 20 minutes at threshold still averages out to zone 2 or 3 across ' +
+      'its whole length, so the top zones stay empty for almost everyone - that is this ' +
+      'chart\u2019s limit, not a gap in your training.' +
     '</div>';
 }
 
