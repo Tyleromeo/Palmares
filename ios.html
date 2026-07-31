@@ -12698,16 +12698,19 @@ function setRouteMode(mode) {
 }
 
 function onMapClickForRouteBuilder(e) {
-  if (!routeBuilderActive) return;
-  // While the segment picker is collecting a start/finish, its taps take
-  // priority over dropping ordinary waypoints.
+  // Collecting a start/finish for a segment route happens BEFORE the route
+  // builder is involved and works in any mode. Previously this ran only when
+  // routeBuilderActive was already true, so choosing segments dropped ordinary
+  // waypoints and the first tap became "waypoint 1" instead of the start.
   if (segmentRouteState.picking) {
     const c0 = palmaresMap.convertPointOnPageToCoordinate(e.pointOnPage);
-    if (c0 && segmentRouteHandleTap(c0.latitude, c0.longitude)) {
-      addWaypointMarker({ lat: c0.latitude, lng: c0.longitude }, routeMarkers.length + 1);
-      return;
+    if (c0) {
+      segmentRouteMarker([c0.latitude, c0.longitude], segmentRouteState.picking === 'start');
+      segmentRouteHandleTap(c0.latitude, c0.longitude);
     }
+    return;
   }
+  if (!routeBuilderActive) return;
   // MapKit reports a page point; convert it to a coordinate ourselves.
   const c = palmaresMap.convertPointOnPageToCoordinate(e.pointOnPage);
   if (!c) return;
@@ -14738,23 +14741,46 @@ function renderPickedSegments() {
     return;
   }
   const totalMi = keys.reduce(function (t, k) { return t + (pickedSegments[k].distanceMi || 0); }, 0);
+  // Mid-flight prompt takes over the panel, so the next tap is never ambiguous.
+  if (segmentRouteState.picking) {
+    el.innerHTML =
+      '<div style="font-size:13px;color:#C9A227;font-weight:600;margin-bottom:4px">' +
+        (segmentRouteState.picking === 'start' ? 'Tap the map: where do you START?' : 'Tap the map: where do you FINISH?') +
+      '</div>' +
+      '<div style="font-size:11px;color:#7d8590;margin-bottom:8px">' +
+        (segmentRouteState.picking === 'start'
+          ? 'Then you will be asked for the finish. Taps set these points only - they will not add waypoints.'
+          : 'Finishing where you started makes a loop.') +
+      '</div>' +
+      '<button onclick="cancelSegmentRoute()" style="background:transparent;border:1px solid #30363d;border-radius:6px;color:#7d8590;cursor:pointer;font-size:12px;padding:6px 12px">Cancel</button>' +
+      '<div id="segment-route-status" style="font-size:11px;color:#7d8590;margin-top:6px"></div>';
+    return;
+  }
   el.innerHTML =
     '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#7d8590;margin-bottom:6px">' +
       keys.length + ' segment' + (keys.length === 1 ? '' : 's') + ' chosen \u00b7 ' + totalMi.toFixed(1) + ' mi of segment' +
     '</div>' +
     keys.map(function (k) {
       const seg = pickedSegments[k];
+      // Compass bearing of the segment, because a segment only counts ridden
+      // its own way - the route is built to enter at its start and leave from
+      // its end, never to run it backwards.
+      const dir = (seg.points && seg.points.length > 1)
+        ? windDirName(bearingBetween(seg.points[0], seg.points[seg.points.length - 1]))
+        : null;
       return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0">' +
         '<button type="button" onclick="toggleSegmentPick(\'' + k + '\')" title="Remove" ' +
           'style="background:transparent;border:1px solid #30363d;border-radius:5px;color:#f85149;cursor:pointer;font-size:11px;padding:1px 7px;flex-shrink:0">\u2715</button>' +
-        '<span style="flex:1;min-width:0;font-size:12px;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHTML(seg.name) + '</span>' +
+        '<span style="flex:1;min-width:0;font-size:12px;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHTML(seg.name) +
+          (dir ? '<span style="color:#57606a"> \u00b7 ' + dir + 'bound</span>' : '') + '</span>' +
         '<span style="font-size:11px;color:#7d8590;flex-shrink:0">' + (seg.distanceMi || 0).toFixed(2) + ' mi</span>' +
       '</div>';
     }).join('') +
     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' +
-      '<button class="gold-btn" style="margin-top:0;font-size:12px;padding:7px 12px" onclick="startSegmentRoute()">Route these segments</button>' +
-      '<button onclick="clearPickedSegments()" style="background:transparent;border:1px solid #30363d;border-radius:6px;color:#7d8590;cursor:pointer;font-size:12px;padding:7px 12px">Clear</button>' +
+      '<button class="gold-btn" style="margin-top:0;font-size:12px;padding:8px 14px" onclick="startSegmentRoute()">Create route to segments</button>' +
+      '<button onclick="clearPickedSegments()" style="background:transparent;border:1px solid #30363d;border-radius:6px;color:#7d8590;cursor:pointer;font-size:12px;padding:8px 12px">Clear</button>' +
     '</div>' +
+    '<div style="font-size:10px;color:#484f58;margin-top:6px">Each is ridden in its own direction - the route enters at the segment start and leaves from its end.</div>' +
     '<div id="segment-route-status" style="font-size:11px;color:#7d8590;margin-top:6px"></div>';
 }
 
@@ -14814,12 +14840,25 @@ function orderSegmentsForRide(segs, start, end) {
 function startSegmentRoute() {
   const keys = Object.keys(pickedSegments);
   if (!keys.length) return;
-  segmentRouteState = { picking: 'start', start: null, end: null };
-  setMapMode('route');
   clearRoute();
-  const st = document.getElementById('segment-route-status');
-  if (st) st.innerHTML = '<span style="color:#C9A227">Tap the map to set your START point.</span>';
-  try { showToast('Tap the map to set your start point.'); } catch (e) {}
+  if (palmaresMapLayers.route) palmaresMapLayers.route.clearLayers();
+  segmentRouteState = { picking: 'start', start: null, end: null, markers: [] };
+  renderPickedSegments();
+  try { showToast('Tap the map to set where you START.'); } catch (e) {}
+}
+
+function cancelSegmentRoute() {
+  segmentRouteState = { picking: null, start: null, end: null, markers: [] };
+  if (palmaresMapLayers.route) palmaresMapLayers.route.clearLayers();
+  renderPickedSegments();
+}
+
+// Green for start, red for finish, so the two taps are distinguishable.
+function segmentRouteMarker(latlng, isStart) {
+  if (!palmaresMapLayers.route) return;
+  const html = '<div style="width:16px;height:16px;border-radius:50%;background:' +
+    (isStart ? '#3fb950' : '#f85149') + ';border:2px solid #0d1117"></div>';
+  palmaresMapLayers.route.addAnnotation(mkDomAnnotation(mkCoord(latlng), html, {}));
 }
 
 // Called from the map tap handler while the picker is collecting start/end.
@@ -14875,6 +14914,9 @@ async function buildSegmentRoute() {
   });
   routeWaypoints.push({ lat: end[0], lng: end[1] });
   routeLegs = legs.map(function (l) { return { points: l.points, distanceM: l.distanceM, ascentM: 0, mode: 'bike' }; });
+  // Now that a route exists, open the route builder so Save route, Download
+  // GPX and Send to Garmin are to hand.
+  setMapMode('route');
   renderRoutePolyline();
   updateRouteStats();
 
