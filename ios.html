@@ -12340,23 +12340,45 @@ function mkAddCircle(group, latlng, opts) {
 
 // MapKit has no bindPopup, so segment details render into a dismissible
 // panel pinned inside the map container.
+// The segment popup used to vanish the instant a finger lifted, which is
+// exactly when it becomes readable - until then your own hand is over it.
+// It now stays for at least three seconds no matter what tries to dismiss it,
+// so a stray re-render or deselect immediately after the tap cannot snatch it
+// away. Explicit dismissal (the X, or opening a different segment) is honoured
+// immediately; only automatic dismissal waits.
+const MAP_POPUP_MIN_MS = 3000;
+let _mapPopupUntil = 0, _mapPopupTimer = null;
+
 function showMapPopup(html) {
   const host = document.getElementById('palmares-map');
   if (!host) return;
-  hideMapPopup();
+  hideMapPopup(true);   // replacing one popup with another is deliberate
   const el = document.createElement('div');
   el.id = 'mk-popup';
   el.style.cssText = 'position:absolute;left:10px;bottom:10px;right:10px;max-width:340px;z-index:20;' +
     'background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 12px;' +
     'font-size:12px;color:#e6edf3;box-shadow:0 8px 24px rgba(0,0,0,.5)';
-  el.innerHTML = '<button onclick="hideMapPopup()" style="float:right;background:transparent;border:none;' +
-    'color:#7d8590;cursor:pointer;font-size:15px;line-height:1;padding:0 0 0 8px">&times;</button>' + html;
+  el.innerHTML = '<button onclick="hideMapPopup(true)" style="float:right;background:transparent;border:none;' +
+    'color:#7d8590;cursor:pointer;font-size:18px;line-height:1;padding:2px 4px 6px 12px">&times;</button>' + html;
   host.style.position = 'relative';
   host.appendChild(el);
+  _mapPopupUntil = Date.now() + MAP_POPUP_MIN_MS;
 }
-function hideMapPopup() {
+
+function hideMapPopup(force) {
   const p = document.getElementById('mk-popup');
-  if (p) p.remove();
+  if (!p) return;
+  const wait = _mapPopupUntil - Date.now();
+  if (!force && wait > 0) {
+    // Defer rather than ignore, so it still goes away - just not before it
+    // has been on screen long enough to read.
+    clearTimeout(_mapPopupTimer);
+    _mapPopupTimer = setTimeout(function () { hideMapPopup(true); }, wait);
+    return;
+  }
+  clearTimeout(_mapPopupTimer); _mapPopupTimer = null;
+  _mapPopupUntil = 0;
+  p.remove();
 }
 
 // Home base (Smithtown, NY) - the map's default view, and the reference
