@@ -1342,6 +1342,7 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
             <option value="duration-asc">Shortest effort</option>
             <option value="former" id="kom-sort-former-opt">Former KOMs first</option>
             <option value="towns">Group by town</option>
+            <option value="year">Group by year</option>
           </select>
         </div>
         <div class="filter-group filter-search-row">
@@ -11828,17 +11829,54 @@ async function renderFullKomList() {
   const sortedKoms = sortByMode(koms);
   const sortedTop10s = sortByMode(top10s);
 
+  // Group by year: newest year first, each with its own count, then that
+  // year's records under it. Uses the same row renderer, so a record looks
+  // identical however the list is arranged.
+  function renderGroupedByYear(list, isKom) {
+    if (!list.length) return '<p style="font-size:12px;color:#7d8590;padding:8px 0">No records found for this filter.</p>';
+    const byYear = {};
+    list.forEach(function (e) {
+      const d = e.date ? new Date(e.date) : null;
+      const y = (d && !isNaN(d.getTime())) ? d.getFullYear() : 'Undated';
+      (byYear[y] = byYear[y] || []).push(e);
+    });
+    // Numeric years descending; anything undated sits at the end rather than
+    // being dropped, so the section counts still add up to the header total.
+    const years = Object.keys(byYear).sort(function (a, b) {
+      if (a === 'Undated') return 1;
+      if (b === 'Undated') return -1;
+      return Number(b) - Number(a);
+    });
+    const label = isKom ? 'KOM' : 'Top 10';
+    return years.map(function (y) {
+      const rows = byYear[y];
+      // Within a year, newest first - the year heading already carries the
+      // ordering, so date order inside it is the useful one.
+      rows.sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
+      return '<div style="display:flex;align-items:baseline;gap:8px;margin:14px 0 6px;padding-bottom:4px;border-bottom:1px solid #21262d">' +
+          '<span style="font-size:15px;font-weight:700;color:#C9A227">' + y + '</span>' +
+          '<span style="font-size:12px;color:#7d8590">' + rows.length + ' ' + label + (rows.length === 1 ? '' : 's') + '</span>' +
+        '</div>' +
+        rows.map(function (e) { return renderRow(e, isKom); }).join('');
+    }).join('');
+  }
+  const groupByYear = komSortMode === 'year';
+
   // Show only one section at a time - matches Strava's own segment page
   // pattern of separate KOM and Top 10 tabs, keeping each view focused.
   let html = '';
   if (komView === 'koms') {
     html += '<h3 style="font-size:13px;font-weight:600;color:#7d8590;margin:0 0 8px;text-transform:uppercase;letter-spacing:1px">KOMs / CRs (' + sortedKoms.length + ')' +
       ' <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#484f58;margin-left:4px">&middot; ' + sortedTop10s.length + ' Top 10s hidden</span></h3>';
-    html += sortedKoms.length ? sortedKoms.map(e => renderRow(e, true)).join('') : '<p style="font-size:12px;color:#7d8590;padding:8px 0">No KOMs found for this filter.</p>';
+    html += groupByYear
+      ? renderGroupedByYear(sortedKoms, true)
+      : (sortedKoms.length ? sortedKoms.map(e => renderRow(e, true)).join('') : '<p style="font-size:12px;color:#7d8590;padding:8px 0">No KOMs found for this filter.</p>');
   } else {
     html += '<h3 style="font-size:13px;font-weight:600;color:#7d8590;margin:0 0 8px;text-transform:uppercase;letter-spacing:1px">Top 10s (' + sortedTop10s.length + ')' +
       ' <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#484f58;margin-left:4px">&middot; ' + sortedKoms.length + ' KOMs hidden</span></h3>';
-    html += sortedTop10s.length ? sortedTop10s.map(e => renderRow(e, false)).join('') : '<p style="font-size:12px;color:#7d8590;padding:8px 0">No Top 10s found for this filter.</p>';
+    html += groupByYear
+      ? renderGroupedByYear(sortedTop10s, false)
+      : (sortedTop10s.length ? sortedTop10s.map(e => renderRow(e, false)).join('') : '<p style="font-size:12px;color:#7d8590;padding:8px 0">No Top 10s found for this filter.</p>');
   }
 
   listEl.innerHTML = html;
