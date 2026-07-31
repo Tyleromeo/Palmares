@@ -915,6 +915,7 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
       </button>
     </div>
     <div id="last-activity-body"></div>
+    <div id="last-activity-wins"></div>
   </div>
 
   <!-- Training status. A real card so the phone layout can render it as the
@@ -5308,6 +5309,10 @@ async function renderLastActivityHighlight() {
     <div id="last-activity-map" style="height:240px;border-radius:8px;overflow:hidden;margin-top:10px;display:none"></div>`;
 
   renderLastActivityRouteMap(a);
+  // KOMs, Top 10s and power/speed bests from this ride. Async - the scans are
+  // in cached storage - so the card paints first and gains the line after.
+  renderLastActivityWins();
+  computeLastActivityWins();
 
   if (isRide || isRun) {
     const badges = await checkActivityAchievements(a);
@@ -6828,6 +6833,117 @@ const WIDGET_FULLWIDTH = {
   segments: '*'
 };
 
+// ===== WHAT YOU WON ON THAT RIDE =====
+// A KOM is the thing you most want to see on the Today page, and it was
+// nowhere on it - the last-activity card showed distance, power and heart rate
+// and said nothing about having taken a segment.
+//
+// Matched by activity_id rather than by date: entries in the KOM/Top-10 scan
+// and the power scan both carry the id of the ride that set them, so this is
+// exact. Nothing is inferred from timestamps, and a second ride on the same
+// day cannot borrow the first one's achievements.
+//
+// Computed asynchronously (the scans live in cached storage) into
+// window._lastActivityWins, which the card reads. Absent until it resolves,
+// so the card renders immediately and gains the line when it is ready.
+async function computeLastActivityWins() {
+  try {
+    if (!allActivities.length || !athleteData) return;
+    const a = allActivities[0];
+    const wins = { koms: [], top10s: [], powerPRs: [], speedPR: null, activityId: a.id };
+
+    const scan = await getScanProgress(athleteData.id);
+    (scan.koms || []).forEach(function (k) { if (String(k.activity_id) === String(a.id)) wins.koms.push(k); });
+    (scan.top10s || []).forEach(function (k) { if (String(k.activity_id) === String(a.id)) wins.top10s.push(k); });
+
+    // All-time best power for a duration, if this ride set it.
+    const sport = sportGroupForType(a.sport_type || a.type) === 'run' ? 'run' : 'ride';
+    try {
+      const pw = await getPowerScanProgress(athleteData.id, sport);
+      Object.keys(pw.top5 || {}).forEach(function (dur) {
+        const list = pw.top5[dur] || [];
+        if (list.length && String(list[0].activity_id) === String(a.id)) {
+          wins.powerPRs.push({ dur: parseInt(dur, 10), watts: Math.round(list[0].watts) });
+        }
+      });
+      wins.powerPRs.sort(function (x, y) { return x.dur - y.dur; });
+    } catch (e) {}
+
+    // Fastest ride ever, by max speed. Compared against every other activity of
+    // the same sport, excluding this one, so it only fires on a genuine best.
+    if (a.max_speed > 0) {
+      const others = allActivities.filter(function (o) {
+        return o.id !== a.id && o.max_speed > 0 &&
+          (sportGroupForType(o.sport_type || o.type) === sportGroupForType(a.sport_type || a.type));
+      });
+      const prevBest = others.reduce(function (m, o) { return Math.max(m, o.max_speed); }, 0);
+      if (others.length >= 5 && a.max_speed > prevBest) {
+        wins.speedPR = { mph: a.max_speed * 2.23694, prevMph: prevBest * 2.23694 };
+      }
+    }
+
+    window._lastActivityWins = wins;
+    try { buildWidgets('dashboard'); } catch (e) {}
+    try { renderLastActivityWins(); } catch (e) {}
+  } catch (e) { /* card simply shows no wins line */ }
+}
+
+// One-line summary for the glance tile.
+function lastActivityWinsSummary() {
+  const w = window._lastActivityWins;
+  if (!w || !allActivities.length || String(w.activityId) !== String(allActivities[0].id)) return null;
+  const bits = [];
+  if (w.koms.length) bits.push('\ud83c\udfc6 ' + w.koms.length + ' KOM' + (w.koms.length > 1 ? 's' : ''));
+  if (w.top10s.length) bits.push('Top 10 \u00d7' + w.top10s.length);
+  if (w.powerPRs.length) bits.push('\u26a1 ' + w.powerPRs.length + ' power PR' + (w.powerPRs.length > 1 ? 's' : ''));
+  if (w.speedPR) bits.push('Fastest ever');
+  return bits.length ? bits.join(' \u00b7 ') : null;
+}
+
+// Full detail, shown inside the card when drilled into.
+function renderLastActivityWins() {
+  const el = document.getElementById('last-activity-wins');
+  if (!el) return;
+  const w = window._lastActivityWins;
+  if (!w || !allActivities.length || String(w.activityId) !== String(allActivities[0].id)) { el.innerHTML = ''; return; }
+  const fmtDur = function (s) {
+    if (s >= 3600) return (s % 3600 === 0 ? (s / 3600) : (s / 3600).toFixed(1)) + 'h';
+    if (s >= 60) return (s / 60) + ' min';
+    return s + 's';
+  };
+  let html = '';
+  w.koms.forEach(function (k) {
+    html += '<div class="row" style="padding:6px 0"><div><div class="row-name">\ud83c\udfc6 ' +
+      '<a href="' + stravaSegmentHref(k.segment_id) + '" target="_blank" rel="noopener noreferrer" title="View on Strava" style="color:#e6edf3;text-decoration:none">' +
+      escapeHTML(k.segment_name || 'Segment') + '</a></div>' +
+      '<div class="row-meta">' + formatSeconds(k.elapsed) + '</div></div>' +
+      '<div class="row-right" style="color:#C9A227;font-size:12px;font-weight:600">KOM / CR</div></div>';
+  });
+  w.top10s.forEach(function (k) {
+    html += '<div class="row" style="padding:6px 0"><div><div class="row-name">\ud83c\udfc5 ' +
+      '<a href="' + stravaSegmentHref(k.segment_id) + '" target="_blank" rel="noopener noreferrer" title="View on Strava" style="color:#e6edf3;text-decoration:none">' +
+      escapeHTML(k.segment_name || 'Segment') + '</a></div>' +
+      '<div class="row-meta">' + formatSeconds(k.elapsed) + '</div></div>' +
+      '<div class="row-right" style="color:#58a6ff;font-size:12px;font-weight:600">#' + k.rank + '</div></div>';
+  });
+  w.powerPRs.forEach(function (p) {
+    html += '<div class="row" style="padding:6px 0"><div><div class="row-name">\u26a1 Best ever ' + fmtDur(p.dur) + ' power</div>' +
+      '<div class="row-meta">all-time best for that duration</div></div>' +
+      '<div class="row-right" style="color:#FC4C02;font-size:12px;font-weight:600">' + p.watts + ' w</div></div>';
+  });
+  if (w.speedPR) {
+    html += '<div class="row" style="padding:6px 0"><div><div class="row-name">\ud83d\ude80 Fastest you have ever gone</div>' +
+      '<div class="row-meta">previous best ' + w.speedPR.prevMph.toFixed(1) + ' mph</div></div>' +
+      '<div class="row-right" style="color:#3fb950;font-size:12px;font-weight:600">' + w.speedPR.mph.toFixed(1) + ' mph</div></div>';
+  }
+  el.innerHTML = html
+    ? '<div style="margin-top:10px;border-top:1px solid #21262d;padding-top:8px">' +
+      '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#7d8590;margin-bottom:4px">What you won</div>' +
+      html + '</div>'
+    : '';
+}
+
+
 const WIDGET_RENDERERS = {
   // In Focus: form is the number that should drive today's decision, so it
   // leads, with the load that produced it and the past week of form behind.
@@ -6972,10 +7088,14 @@ const WIDGET_RENDERERS = {
           '</div><div class="w-stat-l">Avg mph</div></div>';
       }
     }
+    // A KOM is the single most interesting thing that can happen on a ride, so
+    // it leads the tile when there is one.
+    const wins = lastActivityWinsSummary();
     return '<div class="w-head"><span class="w-big sm">' + mi + '</span><span class="w-cap">mi &middot; ' + (h ? h + 'h ' + mm + 'm' : mm + 'm') + '</span>' +
         '<span class="w-cap" style="color:#C9A227">' + escapeHTML(activityTypeLabel(a.sport_type || a.type)) + '</span>' +
         '<span class="w-cap" style="margin-left:auto;text-align:right;white-space:nowrap">' + wActivityDateStamp(a) + '</span></div>' +
       '<div class="w-sub w-truncate w-strong">' + escapeHTML(a.name || 'Untitled') + '</div>' +
+      (wins ? '<div class="w-sub w-truncate" style="color:#C9A227;font-weight:600">' + escapeHTML(wins) + '</div>' : '') +
       '<div class="w-stats" style="gap:10px;flex-wrap:nowrap">' + paceStat +
         (a.average_watts ? '<div style="min-width:0"><div class="w-stat-v">' + Math.round(a.average_watts) + 'w</div><div class="w-stat-l">Avg power</div></div>' : '') +
         (a.average_heartrate ? '<div style="min-width:0"><div class="w-stat-v">' + Math.round(a.average_heartrate) + '</div><div class="w-stat-l">Avg bpm</div></div>' : '') +
@@ -9782,19 +9902,47 @@ async function loadClubEvents(forceFresh) {
       const card = document.getElementById('today-event-card');
       const body = document.getElementById('today-event-body');
       if (!card || !body) return;
-      const todayStr = new Date().toDateString();
-      const todays = upcoming.filter(function(e) { return e.nextDate.toDateString() === todayStr; });
-      if (!todays.length) { card.style.display = 'none'; return; }
-      card.style.display = '';
-      body.innerHTML = todays.slice(0, 3).map(function(e) {
+      // A ride drops off 15 minutes after its start time - by then you are
+      // either on it or you missed it, and either way the card is no longer
+      // telling you anything.
+      //
+      // The countdown was also computed once, at render, and never revisited:
+      // a card drawn at 9:06 still read "in 9 min" at 9:24, long after the
+      // ride had rolled out. It now re-renders on a timer, which is what makes
+      // the 15-minute cutoff actually take effect rather than waiting for the
+      // next page load.
+      const GRACE_MS = 15 * 60 * 1000;
+      const draw = function () {
+        const nowT = new Date();
+        const todayStr = nowT.toDateString();
+        const todays = upcoming.filter(function (e) {
+          if (e.nextDate.toDateString() !== todayStr) return false;
+          return (nowT - e.nextDate) < GRACE_MS;
+        });
+        if (!todays.length) {
+          card.style.display = 'none';
+          // The glance tile is built from this card's rows, so refresh it too
+          // or a stale "in 9 min" survives on the tile after the card is gone.
+          try { buildWidgets('dashboard'); } catch (e) {}
+          return;
+        }
+        card.style.display = '';
+        body.innerHTML = todays.slice(0, 3).map(function(e) {
         const time = e.nextDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-        const mins = Math.round((e.nextDate - new Date()) / 60000);
+        const mins = Math.round((e.nextDate - nowT) / 60000);
         const when = mins <= 0 ? 'under way' : mins < 60 ? 'in ' + mins + ' min' : 'in ' + Math.round(mins / 60) + 'h';
         return '<div class="row"><div><div class="row-name">' +
             '<a href="' + (e.external ? escapeHTML(e.url) : stravaClubHref(e)) + '" target="_blank" rel="noopener noreferrer" title="View on Strava" aria-label="View on Strava" style="color:#e6edf3;text-decoration:none">' + escapeHTML(e.title || 'Club ride') + '</a></div>' +
             '<div class="row-meta">' + time + ' &middot; ' + escapeHTML(e.club_name || 'Club') + '</div></div>' +
           '<div class="row-right" style="color:#C9A227">' + when + '</div></div>';
-      }).join('');
+        }).join('');
+        try { buildWidgets('dashboard'); } catch (e) {}
+      };
+      draw();
+      // Once a minute is enough for a minute-resolution countdown, and it means
+      // the card clears itself while the page sits open.
+      if (window._todayEventTimer) clearInterval(window._todayEventTimer);
+      window._todayEventTimer = setInterval(draw, 60 * 1000);
     })();
 
     updateWidgetData({
