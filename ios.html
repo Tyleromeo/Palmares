@@ -8668,6 +8668,14 @@ function renderTrueAge() {
 }
 
 function renderVO2Max() {
+  // Pull the saved zone scan in once, then paint.
+  if (window._zoneScan === undefined && athleteData) {
+    window._zoneScan = null;
+    getZoneScanProgress(athleteData.id).then(function (p) {
+      window._zoneScan = p;
+      try { renderZoneOutput(zoneOutputSport); } catch (e) {}
+    }).catch(function () {});
+  }
   try { renderZoneOutput(zoneOutputSport); } catch (e) {}
   const el = document.getElementById('vo2max-display');
   if (!el) return;
@@ -8834,6 +8842,149 @@ function effectiveMaxHR() {
   return null;
 }
 
+// ===== TIME-IN-ZONE FROM HEART-RATE STREAMS =====
+// The activity-average approach could never populate Z4 or Z5: a ride is filed
+// by its whole-ride average heart rate, and averaging 149+ bpm across a whole
+// ride - descents, lights and all - essentially never happens outside a race.
+// So the interesting end of the chart was permanently empty.
+//
+// This reads the per-second heart-rate and power streams and counts the time
+// actually spent in each zone, with the power held during that time. A ride
+// that averages Z3 now contributes its real 15 minutes at threshold.
+//
+// Only per-activity AGGREGATES are stored, never the raw streams: five zones
+// with three numbers each is a few dozen bytes per activity, where the streams
+// themselves would be megabytes and blow the cache budget. Scanned ids are
+// tracked so an activity is counted exactly once no matter how often the scan
+// resumes.
+const ZONE_SCAN_KEY = 'zone_stream_scan_v1';
+const ZONE_SCAN_CHUNK = 25;
+
+function freshZoneScan() {
+  const empty = function () {
+    return HR_ZONE_DEFS.map(function () { return { secs: 0, wattSum: 0, wattSecs: 0, speedSum: 0, speedSecs: 0, hrSum: 0 }; });
+  };
+  return { scannedIds: [], ride: empty(), run: empty(), maxHRUsed: null };
+}
+
+async function getZoneScanProgress(athleteId) {
+  const p = await getCached(athleteId, ZONE_SCAN_KEY, 365*24*60*60*1000);
+  if (!p) {
+    const blank = freshZoneScan();
+    // Same guard as the KOM scan: a failed read must never be written back.
+    if (cacheReadJustFailed(ZONE_SCAN_KEY)) blank._readFailed = true;
+    return blank;
+  }
+  if (!p.ride || !p.run || !p.scannedIds) return freshZoneScan();
+  return p;
+}
+
+function saveZoneScanProgress(athleteId, progress) {
+  if (progress && progress._readFailed) return Promise.resolve();
+  return setCached(athleteId, ZONE_SCAN_KEY, progress);
+}
+
+function zoneScanCandidates() {
+  return (allActivities || []).filter(function (a) {
+    if (!a.average_heartrate || a.average_heartrate <= 0) return false;   // no HR, nothing to bucket
+    const g = sportGroupForType(a.sport_type || a.type);
+    return g === 'ride' || g === 'run';
+  });
+}
+
+async function runZoneScanChunk() {
+  if (!athleteData) return;
+  const btn = document.getElementById('zone-scan-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Scanning\u2026'; }
+  try {
+    const token = await getToken();
+    if (!token) return;
+    const headers = { Authorization: 'Bearer ' + token };
+    const progress = await getZoneScanProgress(athleteData.id);
+    const mhr = effectiveMaxHR();
+    if (!mhr) { try { showToast('Set a max heart rate in Settings first.'); } catch (e) {} return; }
+
+    // If max HR has changed, every stored bucket was computed against the old
+    // one and is no longer comparable. Start over rather than mixing.
+    if (progress.maxHRUsed && progress.maxHRUsed !== mhr.value) {
+      const fresh = freshZoneScan();
+      fresh.maxHRUsed = mhr.value;
+      progress.scannedIds = fresh.scannedIds;
+      progress.ride = fresh.ride; progress.run = fresh.run;
+      progress.maxHRUsed = mhr.value;
+    }
+    progress.maxHRUsed = mhr.value;
+
+    const done = new Set(progress.scannedIds);
+    const todo = zoneScanCandidates().filter(function (a) { return !done.has(a.id); }).slice(0, ZONE_SCAN_CHUNK);
+    for (const a of todo) {
+      try {
+        const resp = await fetch('https://www.strava.com/api/v3/activities/' + a.id +
+          '/streams?keys=heartrate,watts,velocity_smooth,time&resolution=high&key_by_type=true', { headers });
+        if (!resp.ok) { if (resp.status === 429) break; done.add(a.id); progress.scannedIds.push(a.id); continue; }
+        const st = await resp.json();
+        const hr = st && st.heartrate && st.heartrate.data;
+        if (hr && hr.length) {
+          const watts = (st.watts && st.watts.data) || null;
+          const vel = (st.velocity_smooth && st.velocity_smooth.data) || null;
+          const time = (st.time && st.time.data) || null;
+          const isRide = sportGroupForType(a.sport_type || a.type) === 'ride';
+          const target = isRide ? progress.ride : progress.run;
+          for (let i = 0; i < hr.length; i++) {
+            const bpm = hr[i];
+            if (!bpm || bpm <= 0) continue;
+            // Real elapsed seconds between samples, not an assumed 1 Hz -
+            // Strava thins long activities, so assuming 1s undercounts them.
+            const dt = (time && i > 0) ? Math.min(30, Math.max(1, time[i] - time[i-1])) : 1;
+            const frac = bpm / mhr.value;
+            let bi = HR_ZONE_DEFS.findIndex(function (z) { return frac >= z.lo && frac < z.hi; });
+            if (bi < 0) bi = frac >= 0.9 ? HR_ZONE_DEFS.length - 1 : 0;
+            const b = target[bi];
+            b.secs += dt;
+            b.hrSum += bpm * dt;
+            if (watts && watts[i] > 0) { b.wattSum += watts[i] * dt; b.wattSecs += dt; }
+            if (vel && vel[i] > 0)     { b.speedSum += vel[i] * dt;  b.speedSecs += dt; }
+          }
+        }
+        progress.scannedIds.push(a.id);
+        await new Promise(function (r) { setTimeout(r, 200); });
+      } catch (e) { /* skip this one; it stays unscanned and can be retried */ }
+    }
+    await saveZoneScanProgress(athleteData.id, progress);
+    window._zoneScan = progress;
+    renderZoneOutput(zoneOutputSport);
+  } finally {
+    if (btn) { btn.disabled = false; }
+    renderZoneOutput(zoneOutputSport);
+  }
+}
+
+// Stream-derived stats, when the scan has covered anything.
+function zoneStatsFromStreams(sport) {
+  const p = window._zoneScan;
+  if (!p || !p.scannedIds || !p.scannedIds.length) return null;
+  const mhr = effectiveMaxHR();
+  if (!mhr) return null;
+  const isRide = sport === 'ride';
+  const src = isRide ? p.ride : p.run;
+  if (!src) return null;
+  const zones = src.map(function (b, i) {
+    if (!b.secs) return { def: HR_ZONE_DEFS[i], n: 0 };
+    const value = isRide
+      ? (b.wattSecs ? b.wattSum / b.wattSecs : null)
+      : (b.speedSecs ? (1609.34 / (b.speedSum / b.speedSecs)) : null);
+    return {
+      def: HR_ZONE_DEFS[i],
+      n: value == null ? 0 : 1,
+      value: value,
+      avgHR: Math.round(b.hrSum / b.secs),
+      hours: b.secs / 3600
+    };
+  });
+  return { maxHR: mhr, zones: zones, isRide: isRide, fromStreams: true,
+           scanned: p.scannedIds.length, total: zoneScanCandidates().length };
+}
+
 function zoneOutputStats(sport) {
   const mhr = effectiveMaxHR();
   if (!mhr) return null;
@@ -8872,12 +9023,20 @@ function zoneOutputStats(sport) {
 function renderZoneOutput(sport) {
   const el = document.getElementById('zone-output');
   if (!el) return;
-  const stats = zoneOutputStats(sport);
+  // Stream-derived time-in-zone when the scan has run; otherwise fall back to
+  // the whole-ride average, which is better than nothing but cannot fill Z4/Z5.
+  const stats = zoneStatsFromStreams(sport) || zoneOutputStats(sport);
   if (!stats) {
     el.innerHTML = '<p style="font-size:13px;color:#7d8590">Set a max heart rate in Settings, or record a ride with heart rate, to see this.</p>';
     return;
   }
   const withData = stats.zones.filter(function (z) { return z.n > 0; });
+  if (!withData.length && stats.fromStreams) {
+    // Scan has run but produced nothing usable yet - keep the control visible.
+    el.innerHTML = '<div style="font-size:12px;color:#7d8590;margin-bottom:10px">No heart-rate data found in the activities analysed so far.</div>' +
+      '<button class="gold-btn" id="zone-scan-btn" style="margin-top:0" onclick="runZoneScanChunk()">Analyse more</button>';
+    return;
+  }
   if (!withData.length) {
     el.innerHTML = '<p style="font-size:13px;color:#7d8590">No ' +
       (sport === 'ride' ? 'rides with both heart rate and power' : 'runs with heart rate') +
@@ -8899,10 +9058,28 @@ function renderZoneOutput(sport) {
     return Math.max(6, 100 - ((z.value - minV) / (maxV - minV)) * 70);
   };
 
-  el.innerHTML =
+  const cand = zoneScanCandidates().length;
+  const scanned = (window._zoneScan && window._zoneScan.scannedIds) ? window._zoneScan.scannedIds.length : 0;
+  const remaining = Math.max(0, cand - scanned);
+  const scanBlock = stats.fromStreams
+    ? (remaining
+        ? scanProgressBar(scanned, cand) +
+          '<div style="margin-bottom:10px"><button class="gold-btn" id="zone-scan-btn" style="margin-top:0" onclick="runZoneScanChunk()">Scan next ' +
+          Math.min(ZONE_SCAN_CHUNK, remaining) + '</button></div>'
+        : '<div style="font-size:11px;color:#3fb950;margin-bottom:8px">\u2713 All ' + cand + ' activities with heart rate analysed</div>')
+    : '<div style="margin-bottom:10px">' +
+        '<div style="font-size:12px;color:#d29922;margin-bottom:6px">Showing whole-ride averages, so zones 4 and 5 stay empty. ' +
+        'Analyse your heart-rate data to measure the time actually spent in each zone.</div>' +
+        '<button class="gold-btn" id="zone-scan-btn" style="margin-top:0" onclick="runZoneScanChunk()">Analyse ' +
+        Math.min(ZONE_SCAN_CHUNK, cand) + ' activities</button>' +
+      '</div>';
+
+  el.innerHTML = scanBlock +
     '<div style="font-size:12px;color:#7d8590;margin-bottom:10px">' +
-      (stats.isRide ? 'Average power' : 'Average pace') + ' on rides whose overall heart rate sits in each zone \u00b7 ' +
-      'max HR ' + stats.maxHR.value + ' (' + escapeHTML(stats.maxHR.source) + ')' +
+      (stats.fromStreams
+        ? (stats.isRide ? 'Average power' : 'Average pace') + ' during the time actually spent in each zone'
+        : (stats.isRide ? 'Average power' : 'Average pace') + ' on rides whose overall heart rate sits in each zone') +
+      ' \u00b7 max HR ' + stats.maxHR.value + ' (' + escapeHTML(stats.maxHR.source) + ')' +
     '</div>' +
     stats.zones.map(function (z) {
       const lo = Math.round(z.def.lo * stats.maxHR.value);
@@ -8927,10 +9104,13 @@ function renderZoneOutput(sport) {
       '</div>';
     }).join('') +
     '<div style="font-size:11px;color:#484f58;margin-top:8px;line-height:1.5">' +
-      'Each activity is counted in the zone its <em>average</em> heart rate falls in. ' +
-      'A hard ride with 20 minutes at threshold still averages out to zone 2 or 3 across ' +
-      'its whole length, so the top zones stay empty for almost everyone - that is this ' +
-      'chart\u2019s limit, not a gap in your training.' +
+      (stats.fromStreams
+        ? 'Measured second by second from your heart-rate and power data, so a ride that ' +
+          'averages zone 2 still contributes its real minutes at threshold.'
+        : 'Each activity is counted in the zone its <em>average</em> heart rate falls in. ' +
+          'A hard ride with 20 minutes at threshold still averages out to zone 2 or 3 across ' +
+          'its whole length, so the top zones stay empty - that is this chart\u2019s limit, ' +
+          'not a gap in your training.') +
     '</div>';
 }
 
