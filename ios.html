@@ -1554,6 +1554,7 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
       <div id="route-tailwind-picks" class="rtw-wrap"></div>
     </div>
     <button type="button" id="map-fs-exit" class="map-fs-btn exit" onclick="setMapFullscreen(false)">✕ Exit full screen</button>
+    <div id="segment-picker" style="margin-bottom:10px;padding:9px 11px;background:#0d1117;border:1px solid #21262d;border-radius:8px"></div>
     <div class="map-shell"><div id="palmares-map"></div></div>
     <div class="map-status" id="map-status" style="display:none"></div>
   </div>
@@ -12576,6 +12577,10 @@ function syncMapToolbar() {
   show('map-group-sport', st.mode === 'segments' || st.mode === 'heat');
   show('map-group-wind', st.mode === 'segments');
   show('map-group-distance', st.mode === 'segments');
+  // The picker belongs to segment hunting; it would be noise in heat mode,
+  // but must stay visible in route mode while a route is being built from it.
+  show('segment-picker', st.mode === 'segments' ||
+    (st.mode === 'route' && Object.keys(pickedSegments).length > 0));
 }
 
 const MAP_SEGMENT_DISTANCE_BINS = [
@@ -12694,6 +12699,15 @@ function setRouteMode(mode) {
 
 function onMapClickForRouteBuilder(e) {
   if (!routeBuilderActive) return;
+  // While the segment picker is collecting a start/finish, its taps take
+  // priority over dropping ordinary waypoints.
+  if (segmentRouteState.picking) {
+    const c0 = palmaresMap.convertPointOnPageToCoordinate(e.pointOnPage);
+    if (c0 && segmentRouteHandleTap(c0.latitude, c0.longitude)) {
+      addWaypointMarker({ lat: c0.latitude, lng: c0.longitude }, routeMarkers.length + 1);
+      return;
+    }
+  }
   // MapKit reports a page point; convert it to a coordinate ourselves.
   const c = palmaresMap.convertPointOnPageToCoordinate(e.pointOnPage);
   if (!c) return;
@@ -14686,6 +14700,212 @@ function formatSeconds(seconds) {
   return s + 's';
 }
 
+// ===== SEGMENT PICKER: build a route that rides chosen segments =====
+// Pick the segments worth riding today (the tailwind ranking tells you which),
+// drop a start and finish, and get a route that links them in a sensible order
+// and hands you a GPX. Starred segments then arrive on the Garmin as Live
+// Segments, so the head unit knows about the very segments the route was built
+// around.
+const pickedSegments = {};   // segment_id -> { id, name, points, distanceMi }
+
+function isSegmentPicked(id) { return !!pickedSegments[String(id)]; }
+
+function toggleSegmentPick(id, name, encodedPts, distanceMi) {
+  const key = String(id);
+  if (pickedSegments[key]) delete pickedSegments[key];
+  else {
+    let pts = [];
+    try { pts = JSON.parse(decodeURIComponent(encodedPts)); } catch (e) {}
+    if (pts.length < 2) { try { showToast('That segment has no geometry yet - enrich it first.'); } catch (e) {} return; }
+    pickedSegments[key] = { id: key, name: name, points: pts, distanceMi: distanceMi || lineDistanceMiles(pts) };
+  }
+  renderPickedSegments();
+  renderPalmaresMap();
+}
+
+function clearPickedSegments() {
+  Object.keys(pickedSegments).forEach(function (k) { delete pickedSegments[k]; });
+  renderPickedSegments();
+  renderPalmaresMap();
+}
+
+function renderPickedSegments() {
+  const el = document.getElementById('segment-picker');
+  if (!el) return;
+  const keys = Object.keys(pickedSegments);
+  if (!keys.length) {
+    el.innerHTML = '<div style="font-size:11px;color:#57606a">Tap a segment on the map and tick <strong>Add to route</strong> to start building.</div>';
+    return;
+  }
+  const totalMi = keys.reduce(function (t, k) { return t + (pickedSegments[k].distanceMi || 0); }, 0);
+  el.innerHTML =
+    '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#7d8590;margin-bottom:6px">' +
+      keys.length + ' segment' + (keys.length === 1 ? '' : 's') + ' chosen \u00b7 ' + totalMi.toFixed(1) + ' mi of segment' +
+    '</div>' +
+    keys.map(function (k) {
+      const seg = pickedSegments[k];
+      return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0">' +
+        '<button type="button" onclick="toggleSegmentPick(\'' + k + '\')" title="Remove" ' +
+          'style="background:transparent;border:1px solid #30363d;border-radius:5px;color:#f85149;cursor:pointer;font-size:11px;padding:1px 7px;flex-shrink:0">\u2715</button>' +
+        '<span style="flex:1;min-width:0;font-size:12px;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHTML(seg.name) + '</span>' +
+        '<span style="font-size:11px;color:#7d8590;flex-shrink:0">' + (seg.distanceMi || 0).toFixed(2) + ' mi</span>' +
+      '</div>';
+    }).join('') +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' +
+      '<button class="gold-btn" style="margin-top:0;font-size:12px;padding:7px 12px" onclick="startSegmentRoute()">Route these segments</button>' +
+      '<button onclick="clearPickedSegments()" style="background:transparent;border:1px solid #30363d;border-radius:6px;color:#7d8590;cursor:pointer;font-size:12px;padding:7px 12px">Clear</button>' +
+    '</div>' +
+    '<div id="segment-route-status" style="font-size:11px;color:#7d8590;margin-top:6px"></div>';
+}
+
+// Order the chosen segments into a sensible ride and route between them.
+//
+// This is a travelling-salesman problem with a wrinkle: each segment must be
+// ridden in its own direction (Strava only times you one way), so the cost of
+// going from A to B is the distance from A's END to B's START - an asymmetric
+// matrix. Nearest-neighbour gives a decent order, then 2-opt improves it.
+// Exact TSP is exponential and pointless here: nobody links thirty segments,
+// and a few percent of extra transfer distance is invisible against the ride.
+let segmentRouteState = { picking: null, start: null, end: null };
+
+function orderSegmentsForRide(segs, start, end) {
+  if (segs.length <= 1) return segs.slice();
+  const endOf = function (s) { return s.points[s.points.length - 1]; };
+  const startOf = function (s) { return s.points[0]; };
+  const gap = function (from, seg) { return haversineMeters(from, startOf(seg)); };
+
+  // Nearest neighbour from the start point.
+  const remaining = segs.slice();
+  const order = [];
+  let cursor = start;
+  while (remaining.length) {
+    let bi = 0, best = Infinity;
+    remaining.forEach(function (seg, i) {
+      const d = gap(cursor, seg);
+      if (d < best) { best = d; bi = i; }
+    });
+    const chosen = remaining.splice(bi, 1)[0];
+    order.push(chosen);
+    cursor = endOf(chosen);
+  }
+
+  // 2-opt on the transfer legs only; segment interiors are fixed.
+  const totalTransfer = function (list) {
+    let t = 0, cur = start;
+    list.forEach(function (seg) { t += haversineMeters(cur, startOf(seg)); cur = endOf(seg); });
+    return t + haversineMeters(cur, end);
+  };
+  let bestOrder = order, bestCost = totalTransfer(order), improved = true, guard = 0;
+  while (improved && guard++ < 40) {
+    improved = false;
+    for (let i = 0; i < bestOrder.length - 1; i++) {
+      for (let j = i + 1; j < bestOrder.length; j++) {
+        const cand = bestOrder.slice();
+        const seg = cand.splice(i, 1)[0];
+        cand.splice(j, 0, seg);
+        const c = totalTransfer(cand);
+        if (c < bestCost - 1) { bestOrder = cand; bestCost = c; improved = true; }
+      }
+    }
+  }
+  return bestOrder;
+}
+
+function startSegmentRoute() {
+  const keys = Object.keys(pickedSegments);
+  if (!keys.length) return;
+  segmentRouteState = { picking: 'start', start: null, end: null };
+  setMapMode('route');
+  clearRoute();
+  const st = document.getElementById('segment-route-status');
+  if (st) st.innerHTML = '<span style="color:#C9A227">Tap the map to set your START point.</span>';
+  try { showToast('Tap the map to set your start point.'); } catch (e) {}
+}
+
+// Called from the map tap handler while the picker is collecting start/end.
+function segmentRouteHandleTap(lat, lng) {
+  const st = document.getElementById('segment-route-status');
+  if (segmentRouteState.picking === 'start') {
+    segmentRouteState.start = [lat, lng];
+    segmentRouteState.picking = 'end';
+    if (st) st.innerHTML = '<span style="color:#C9A227">Now tap your FINISH point.</span>';
+    return true;
+  }
+  if (segmentRouteState.picking === 'end') {
+    segmentRouteState.end = [lat, lng];
+    segmentRouteState.picking = null;
+    buildSegmentRoute();
+    return true;
+  }
+  return false;
+}
+
+async function buildSegmentRoute() {
+  const st = document.getElementById('segment-route-status');
+  const segs = Object.keys(pickedSegments).map(function (k) { return pickedSegments[k]; });
+  const start = segmentRouteState.start, end = segmentRouteState.end;
+  if (!segs.length || !start || !end) return;
+
+  const ordered = orderSegmentsForRide(segs, start, end);
+  if (st) st.textContent = 'Routing ' + ordered.length + ' segment' + (ordered.length === 1 ? '' : 's') + '\u2026';
+
+  // Waypoints alternate: transfer to a segment start, ride the segment, transfer
+  // on from its end. The segment's own geometry is used verbatim rather than
+  // asking a router to guess it - that is the whole point of choosing it.
+  const legs = [];
+  let cursor = start;
+  let failed = 0;
+  for (const seg of ordered) {
+    const segStart = seg.points[0], segEnd = seg.points[seg.points.length - 1];
+    const transfer = await routeBetween(cursor, segStart);
+    if (transfer) legs.push({ points: transfer.points, distanceM: transfer.distanceM, kind: 'transfer' });
+    else { legs.push({ points: [cursor, segStart], distanceM: haversineMeters(cursor, segStart), kind: 'transfer', straight: true }); failed++; }
+    legs.push({ points: seg.points, distanceM: (seg.distanceMi || 0) * 1609.34, kind: 'segment', name: seg.name });
+    cursor = segEnd;
+  }
+  const home = await routeBetween(cursor, end);
+  if (home) legs.push({ points: home.points, distanceM: home.distanceM, kind: 'transfer' });
+  else { legs.push({ points: [cursor, end], distanceM: haversineMeters(cursor, end), kind: 'transfer', straight: true }); failed++; }
+
+  // Hand it to the existing route builder so save, stats and GPX all work.
+  routeWaypoints = [{ lat: start[0], lng: start[1] }];
+  ordered.forEach(function (seg) {
+    const e = seg.points[seg.points.length - 1];
+    routeWaypoints.push({ lat: e[0], lng: e[1] });
+  });
+  routeWaypoints.push({ lat: end[0], lng: end[1] });
+  routeLegs = legs.map(function (l) { return { points: l.points, distanceM: l.distanceM, ascentM: 0, mode: 'bike' }; });
+  renderRoutePolyline();
+  updateRouteStats();
+
+  const miles = legs.reduce(function (t, l) { return t + l.distanceM; }, 0) / 1609.34;
+  if (st) {
+    st.innerHTML = '<span style="color:#3fb950">Route built: ' + miles.toFixed(1) + ' mi over ' +
+      ordered.length + ' segment' + (ordered.length === 1 ? '' : 's') + '.</span>' +
+      (failed ? '<br><span style="color:#d29922">' + failed + ' connection' + (failed === 1 ? '' : 's') +
+        ' could not be routed on roads and are drawn straight - adjust before riding.</span>' : '') +
+      '<br>Use <strong>Save route</strong> or <strong>Download GPX</strong> in the panel below.';
+  }
+  try { showToast('Route built - ' + miles.toFixed(1) + ' mi. Save it or download the GPX.'); } catch (e) {}
+}
+
+// One OSRM leg between two points, returning null rather than throwing so a
+// single unroutable connection cannot lose the whole route.
+async function routeBetween(a, b) {
+  try {
+    const url = 'https://router.project-osrm.org/route/v1/bike/' +
+      a[1] + ',' + a[0] + ';' + b[1] + ',' + b[0] + '?overview=full&geometries=geojson';
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data.routes || !data.routes.length) return null;
+    return {
+      points: data.routes[0].geometry.coordinates.map(function (c) { return [c[1], c[0]]; }),
+      distanceM: data.routes[0].distance
+    };
+  } catch (e) { return null; }
+}
+
 function popupForMapEntry(entry, detail, wind) {
   const sport = sportGroupForType(entry.activity_type) === 'run' ? 'Run' : 'Bike';
   const rank = entry.kind === 'kom' ? (entry.passiveKom ? 'KOM*' : 'KOM / CR') : (entry.formerKom ? 'Former KOM / Top 10' : 'Top 10 #' + entry.rank);
@@ -14702,6 +14922,24 @@ function popupForMapEntry(entry, detail, wind) {
     // "View on Strava" is the exact link text Strava's brand guidelines
     // require when linking back to their source data - not a paraphrase.
     '<div style="margin-top:6px"><a class="view-on-strava" href="' + stravaSegmentHref(entry.segment_id) + '" target="_blank" rel="noopener noreferrer">View on Strava</a></div>' +
+    // Tick to add this segment to a route. The geometry travels with the
+    // handler so the picker never has to re-derive it from the cache.
+    (function () {
+      const pts = entry._mapPoints || pointsForMapEntry(entry, detail);
+      if (!pts || pts.length < 2) return '';
+      const picked = isSegmentPicked(entry.segment_id);
+      const payload = encodeURIComponent(JSON.stringify(pts.map(function (p) {
+        return [Math.round(p[0] * 1e5) / 1e5, Math.round(p[1] * 1e5) / 1e5];
+      })));
+      const mi = entry._mapDistanceMi != null ? entry._mapDistanceMi : lineDistanceMiles(pts);
+      return '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;padding-top:8px;' +
+        'border-top:1px solid #30363d;font-size:12px;color:#e6edf3;cursor:pointer">' +
+        '<input type="checkbox"' + (picked ? ' checked' : '') +
+        ' onchange="toggleSegmentPick(\'' + entry.segment_id + '\',' +
+        JSON.stringify(entry.segment_name || 'Segment').replace(/"/g, '&quot;') + ',&quot;' + payload + '&quot;,' + (mi || 0) + ')">' +
+        (picked ? 'In your route' : 'Add to route') +
+      '</label>';
+    })() +
   '</div>';
 }
 
@@ -14900,6 +15138,7 @@ async function renderPalmaresMap() {
   hideMapPopup();
 
   syncMapToolbar();
+  renderPickedSegments();
 
   // Clear the old overlays and (re)draw the heatmap up front - before any
   // slow fetch - so switching mode or sport repaints immediately instead of
@@ -14960,9 +15199,12 @@ async function renderPalmaresMap() {
         return;
       }
       const wind = windForLine(points);
-      const color = mapColorForEntry(entry, points);
-      const weight = entry.kind === 'kom' ? 5 : 4;
-      const opacity = entry.kind === 'kom' ? 0.95 : 0.78;
+      const picked = isSegmentPicked(entry.segment_id);
+      // A chosen segment reads as chosen at a glance - otherwise you lose track
+      // of what is already in the route while panning around picking more.
+      const color = picked ? '#C9A227' : mapColorForEntry(entry, points);
+      const weight = picked ? 8 : (entry.kind === 'kom' ? 5 : 4);
+      const opacity = picked ? 1 : (entry.kind === 'kom' ? 0.95 : 0.78);
       const lineOptions = { color: color, weight: weight, opacity: opacity,
         popupHtml: popupForMapEntry(entry, detail, wind) };
       if (entry.kind === 'top10') lineOptions.dash = [8, 6];
