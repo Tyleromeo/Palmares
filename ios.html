@@ -6561,9 +6561,31 @@ function renderPowerTop5List(progress, sport) {
     twirlSection(labels[i], progress.top5[dur], e => e.watts + 'w', accent)
   ).filter(Boolean);
 
+  // How much of the history these "all-time" bests actually rest on. Without
+  // this a top-5 built from two rides is indistinguishable from one built from
+  // four hundred - which is exactly how a wiped scan went unnoticed: the last
+  // activity check re-seeds the store with just that one ride, so the card
+  // filled back up with today's numbers and looked healthy.
+  const scanned = (progress.scannedIds || []).length;
+  const eligible = (allActivities || []).filter(function (a) {
+    const g = sportGroupForType(a.sport_type || a.type);
+    return (sport === 'ride' ? g === 'ride' : g === 'run') && a.average_watts > 0;
+  }).length;
+  let coverage = '';
+  if (eligible) {
+    const pct = Math.round(scanned / eligible * 100);
+    const thin = scanned < eligible * 0.9;
+    coverage = '<div style="font-size:11px;color:' + (thin ? '#d29922' : '#57606a') +
+      ';margin-bottom:8px' + (thin ? ';padding:6px 8px;background:#1c1a10;border:1px solid #d29922;border-radius:6px' : '') + '">' +
+      (thin
+        ? 'Built from only ' + scanned + ' of ' + eligible + ' power rides (' + pct + '%). These are not your all-time bests yet \u2014 run the power curve scan on Train to cover the rest.'
+        : 'From all ' + scanned + ' of your ' + eligible + ' power rides.') +
+      '</div>';
+  }
+
   listEl.innerHTML = sections.length
-    ? sections.join('')
-    : '<p style="font-size:13px;color:#7d8590">No power bests recorded yet - run the scan above.</p>';
+    ? coverage + sections.join('')
+    : '<p style="font-size:13px;color:#7d8590">No power bests recorded yet - run the power curve scan on the Train page.</p>';
 }
 
 // ==================== DISTANCE RECORDS (400m - 100K) ====================
