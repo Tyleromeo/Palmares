@@ -770,7 +770,10 @@ body.map-fs #segment-hunter-panel { position: fixed !important; left: 0; right: 
    whole display. Sits above the map's own full-screen layer. */
 body.rd-open { overflow: hidden; }
 #route-detail { position: fixed; inset: 0; z-index: 21000; background: #0d1117; display: flex; flex-direction: column; }
-.rd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: calc(env(safe-area-inset-top) + 12px) 16px 12px; border-bottom: 1px solid #21262d; }
+/* flex-shrink:0 on both bars for the same reason as the setup sheet: without
+   it a long tailwind list squeezes the footer, which holds Directions to
+   start, off a small screen. */
+.rd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: calc(env(safe-area-inset-top) + 12px) 16px 12px; border-bottom: 1px solid #21262d; flex-shrink: 0; }
 .rd-title { font-size: 17px; font-weight: 600; color: #e6edf3; }
 .rd-sub { font-size: 12px; color: #7d8590; margin-top: 3px; }
 .rd-close { background: transparent; border: 1px solid #30363d; color: #7d8590; border-radius: 999px; width: 34px; height: 34px; font-size: 15px; cursor: pointer; flex-shrink: 0; }
@@ -785,7 +788,7 @@ body.rd-open { overflow: hidden; }
 .rd-tw-name { display: block; font-size: 13px; color: #e6edf3; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rd-tw-meta { font-size: 11px; color: #57606a; margin-top: 1px; }
 .rd-tw-val { font-size: 12px; font-weight: 600; text-align: right; white-space: nowrap; flex-shrink: 0; }
-.rd-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px calc(env(safe-area-inset-bottom) + 14px); border-top: 1px solid #21262d; }
+.rd-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px calc(env(safe-area-inset-bottom) + 14px); border-top: 1px solid #21262d; flex-shrink: 0; }
 .rd-legend { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #7d8590; flex-wrap: wrap; }
 .rd-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-left: 6px; }
 .rd-dot.rd-start { background: #3fb950; }
@@ -809,13 +812,35 @@ body.rd-open { overflow: hidden; }
 /* FIRST-RUN PROFILE SETUP - a full-screen sheet on first launch. Sits above
    everything including the map's full-screen layer (z 10000) and the nav. */
 body.ob-open { overflow: hidden; }
-#profile-setup { position: fixed; inset: 0; z-index: 20000; background: rgba(1,4,9,.75); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 16px; }
-.ob-sheet { background: #0d1117; border: 1px solid #30363d; border-radius: 16px; width: 100%; max-width: 520px; max-height: 92dvh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,.6); }
-.ob-head { padding: 22px 22px 14px; border-bottom: 1px solid #21262d; }
+#profile-setup { position: fixed; inset: 0; z-index: 20000; background: rgba(1,4,9,.75); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 12px; }
+/* An iPhone SE has barely 500pt of usable height once the native bars are
+   accounted for. Reclaim the padding and trim the header so the fields and the
+   footer both fit rather than competing. */
+@media (max-height: 700px) {
+  #profile-setup { padding: 0; }
+  .ob-sheet { max-height: 100%; border-radius: 0; border-left: none; border-right: none; }
+  .ob-head { padding: 14px 18px 10px; }
+  .ob-head h2 { font-size: 19px; }
+  .ob-head p { font-size: 12px; }
+  .ob-body { padding: 4px 18px 8px; }
+  .ob-row { padding: 10px 0; }
+  .ob-foot { padding: 10px 18px calc(env(safe-area-inset-bottom) + 12px); }
+}
+/* max-height:100% rather than a dvh figure: the sheet is already inside a
+   position:fixed inset:0 parent, so 100% is exactly the space available and
+   cannot disagree with the web view's idea of a viewport unit. */
+.ob-sheet { background: #0d1117; border: 1px solid #30363d; border-radius: 16px; width: 100%; max-width: 520px; max-height: 100%; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,.6); }
+/* flex-shrink:0 keeps the header and footer their natural size; without it the
+   footer - which holds Save and continue - was the thing that gave way. */
+.ob-head { padding: 22px 22px 14px; border-bottom: 1px solid #21262d; flex-shrink: 0; }
 .ob-logo { font-family: Georgia, serif; font-size: 15px; font-weight: 700; color: #C9A227; letter-spacing: 1.5px; margin-bottom: 10px; }
 .ob-head h2 { font-size: 22px; margin: 0 0 6px; color: #e6edf3; }
 .ob-head p { font-size: 13px; color: #7d8590; line-height: 1.5; margin: 0; }
-.ob-body { padding: 6px 22px 10px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+/* min-height:0 is the fix. A flex child defaults to min-height:auto, which
+   refuses to shrink below its content, so overflow-y:auto never engaged: the
+   body grew to fit every field and the sheet's overflow:hidden clipped the
+   footer away. On a small phone that left no way to reach Save and continue. */
+.ob-body { padding: 6px 22px 10px; overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1 1 auto; min-height: 0; }
 .ob-row { padding: 13px 0; border-bottom: 1px solid #21262d; }
 .ob-row:last-child { border-bottom: none; }
 .ob-label { font-size: 14px; font-weight: 600; color: #e6edf3; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -824,7 +849,7 @@ body.ob-open { overflow: hidden; }
 .ob-input-wrap { display: flex; align-items: center; gap: 7px; }
 .ob-input-wrap .setting-input, .ob-input-wrap .form-select { flex: 0 1 190px; }
 .ob-unit { font-size: 12px; color: #7d8590; }
-.ob-foot { padding: 14px 22px calc(env(safe-area-inset-bottom) + 16px); border-top: 1px solid #21262d; display: flex; align-items: center; gap: 12px; }
+.ob-foot { padding: 14px 22px calc(env(safe-area-inset-bottom) + 16px); border-top: 1px solid #21262d; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .ob-foot .gold-btn { flex: 1; padding: 12px; font-size: 15px; }
 .ob-skip { background: transparent; border: none; color: #7d8590; font-size: 13px; cursor: pointer; padding: 12px 4px; }
 .ob-skip:hover { color: #e6edf3; }
