@@ -6425,10 +6425,42 @@ async function renderPowerCurveFromScan() {
   renderPowerBestsCard();
 }
 
+// Durations worth showing for THIS athlete. The standard list runs to five
+// hours, so anyone who has not ridden or run that long saw a column of "--"
+// for efforts they were never going to have - a long tail of blanks that says
+// nothing except "you are not me".
+//
+// The scan still covers every duration, and the cache key still hashes the
+// full list: this trims the DISPLAY only, so the moment a longer effort is
+// recorded its row appears with data already in it rather than needing a
+// rescan.
+function displayDurationsFor(sport) {
+  const all = POWER_SPORTS[sport].durations;
+  const labels = POWER_SPORTS[sport].labels;
+  const types = POWER_SPORTS[sport].types;
+  let longest = 0;
+  (allActivities || []).forEach(function (a) {
+    if (types.indexOf(a.type) < 0) return;
+    const t = a.moving_time || a.elapsed_time || 0;
+    if (t > longest) longest = t;
+  });
+  if (!longest) return { durations: all, labels: labels };
+  const durations = [], out = [];
+  for (let i = 0; i < all.length; i++) {
+    if (all[i] > longest) break;
+    durations.push(all[i]); out.push(labels[i]);
+  }
+  // Never collapse to nothing: even a very short history keeps the sprint
+  // durations, which are the ones a new rider actually has.
+  if (durations.length < 3) return { durations: all.slice(0, 3), labels: labels.slice(0, 3) };
+  return { durations: durations, labels: out };
+}
+
 function renderPowerCurveAllTime(progress, sport) {
   const isRide = sport === 'ride';
-  const durations = POWER_SPORTS[sport].durations;
-  const labels = POWER_SPORTS[sport].labels;
+  const dd = displayDurationsFor(sport);
+  const durations = dd.durations;
+  const labels = dd.labels;
   const s = getSettings();
   const ftp = s.ftp || 220;
   const weight = s.weight || 75;
@@ -6485,8 +6517,9 @@ function renderPowerCurveAllTime(progress, sport) {
 // they may simply be riding/running slower than a past peak.
 function renderPowerCurveYearCompare(progress, sport) {
   const isRide = sport === 'ride';
-  const durations = POWER_SPORTS[sport].durations;
-  const labels = POWER_SPORTS[sport].labels;
+  const ddy = displayDurationsFor(sport);
+  const durations = ddy.durations;
+  const labels = ddy.labels;
   const currentYear = new Date().getFullYear();
   const accent = isRide ? '#FC4C02' : '#58a6ff';
 
@@ -6579,8 +6612,9 @@ function renderPowerTop5List(progress, sport) {
   const listEl = document.getElementById('power-top5-list');
   if (!listEl) return;
 
-  const durations = POWER_SPORTS[sport].durations;
-  const labels = POWER_SPORTS[sport].labels;
+  const ddb = displayDurationsFor(sport);
+  const durations = ddb.durations;
+  const labels = ddb.labels;
   const accent = sport === 'ride' ? '#FC4C02' : '#58a6ff';
   const sections = durations.map((dur, i) =>
     twirlSection(labels[i], progress.top5[dur], e => e.watts + 'w', accent)
