@@ -836,10 +836,16 @@ body.ob-open { overflow: hidden; }
 .ob-logo { font-family: Georgia, serif; font-size: 15px; font-weight: 700; color: #C9A227; letter-spacing: 1.5px; margin-bottom: 10px; }
 .ob-head h2 { font-size: 22px; margin: 0 0 6px; color: #e6edf3; }
 .ob-head p { font-size: 13px; color: #7d8590; line-height: 1.5; margin: 0; }
-/* min-height:0 is the fix. A flex child defaults to min-height:auto, which
-   refuses to shrink below its content, so overflow-y:auto never engaged: the
-   body grew to fit every field and the sheet's overflow:hidden clipped the
-   footer away. On a small phone that left no way to reach Save and continue. */
+/* The sheet's flex children are the two step wrappers, NOT the head/body/foot
+   inside them, so the height constraint has to be handed down one more level.
+   Without this each step is a plain block that sizes to its content, .ob-body's
+   flex/min-height are inert (its parent isn't a flex container), and so
+   overflow-y:auto never engages: the body grows to fit every field and the
+   sheet's overflow:hidden clips the footer away entirely. On an iPhone SE that
+   left no way to reach Save and continue and nothing to scroll. */
+.ob-step { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+/* min-height:0 - a flex child defaults to min-height:auto and refuses to shrink
+   below its content, which would clip the footer again even with .ob-step. */
 .ob-body { padding: 6px 22px 10px; overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1 1 auto; min-height: 0; }
 .ob-row { padding: 13px 0; border-bottom: 1px solid #21262d; }
 .ob-row:last-child { border-bottom: none; }
@@ -2521,7 +2527,7 @@ function showProfileSetup() {
     '<div class="ob-sheet" role="dialog" aria-modal="true" aria-labelledby="ob-title">' +
 
       // ---- Step 1: what this is, and where its data comes from ----
-      '<div id="ob-step-welcome">' +
+      '<div id="ob-step-welcome" class="ob-step">' +
         '<div class="ob-head">' +
           '<div class="ob-logo">Palmarès</div>' +
           '<h2 id="ob-title">' + (name ? 'Strava is connected, ' + escapeHTML(name) : 'Strava is connected') + '</h2>' +
@@ -2555,7 +2561,7 @@ function showProfileSetup() {
       '</div>' +
 
       // ---- Step 2: confirm what we imported ----
-      '<div id="ob-step-details" style="display:none">' +
+      '<div id="ob-step-details" class="ob-step" style="display:none">' +
         '<div class="ob-head">' +
           '<h2>Your profile</h2>' +
           '<p>Filled in from your Strava profile' +

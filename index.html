@@ -610,7 +610,12 @@ body.ob-open { overflow: hidden; }
 .ob-logo { font-family: Georgia, serif; font-size: 15px; font-weight: 700; color: #C9A227; letter-spacing: 1.5px; margin-bottom: 10px; }
 .ob-head h2 { font-size: 22px; margin: 0 0 6px; color: #e6edf3; }
 .ob-head p { font-size: 13px; color: #7d8590; line-height: 1.5; margin: 0; }
-.ob-body { padding: 6px 22px 10px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+/* flex:1 1 auto with min-height:0 - a flex child defaults to min-height:auto and
+   refuses to shrink below its content, so overflow-y:auto never engages and the
+   sheet's overflow:hidden clips the footer (and its Save button) away in a short
+   browser window. Here head/body/foot are direct children of .ob-sheet; the
+   phone build nests them one level deeper and needs .ob-step as well. */
+.ob-body { padding: 6px 22px 10px; overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1 1 auto; min-height: 0; }
 .ob-row { padding: 13px 0; border-bottom: 1px solid #21262d; }
 .ob-row:last-child { border-bottom: none; }
 .ob-label { font-size: 14px; font-weight: 600; color: #e6edf3; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
