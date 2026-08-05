@@ -8880,14 +8880,19 @@ function effectiveMaxHR() {
 // themselves would be megabytes and blow the cache budget. Scanned ids are
 // tracked so an activity is counted exactly once no matter how often the scan
 // resumes.
-const ZONE_SCAN_KEY = 'zone_stream_scan_v1';
+const ZONE_SCAN_KEY = 'zone_stream_scan_v2';
 const ZONE_SCAN_CHUNK = 25;
 
+function emptyZoneBuckets() {
+  return HR_ZONE_DEFS.map(function () {
+    return { secs: 0, wattSum: 0, wattSecs: 0, speedSum: 0, speedSecs: 0, hrSum: 0, acts: 0 };
+  });
+}
 function freshZoneScan() {
-  const empty = function () {
-    return HR_ZONE_DEFS.map(function () { return { secs: 0, wattSum: 0, wattSecs: 0, speedSum: 0, speedSecs: 0, hrSum: 0 }; });
-  };
-  return { scannedIds: [], ride: empty(), run: empty(), maxHRUsed: null };
+  // byMonth keys are 'YYYY-MM' so output at a given effort can be tracked
+  // across a season - the interesting question is whether the watts you hold
+  // in zone 2 are climbing, not just what they are today.
+  return { scannedIds: [], ride: emptyZoneBuckets(), run: emptyZoneBuckets(), byMonth: {}, maxHRUsed: null };
 }
 
 async function getZoneScanProgress(athleteId) {
@@ -8899,6 +8904,7 @@ async function getZoneScanProgress(athleteId) {
     return blank;
   }
   if (!p.ride || !p.run || !p.scannedIds) return freshZoneScan();
+  if (!p.byMonth) p.byMonth = {};
   return p;
 }
 
@@ -8907,9 +8913,26 @@ function saveZoneScanProgress(athleteId, progress) {
   return setCached(athleteId, ZONE_SCAN_KEY, progress);
 }
 
+// Scoped to the last 18 months. Two reasons, not one: it is roughly 1.5
+// seasons, which is the span a progression question is actually about, and a
+// full history here would be over a thousand stream fetches - past the daily
+// Strava allowance and spent largely on rides too old to say anything about
+// current form. Older rides stay in every other view; only this scan is
+// windowed, and the card says so rather than quietly ignoring them.
+const ZONE_SCAN_MONTHS = 18;
+
+function zoneScanCutoff() {
+  const d = new Date();
+  d.setMonth(d.getMonth() - ZONE_SCAN_MONTHS);
+  return d;
+}
+
 function zoneScanCandidates() {
+  const cutoff = zoneScanCutoff();
   return (allActivities || []).filter(function (a) {
     if (!a.average_heartrate || a.average_heartrate <= 0) return false;   // no HR, nothing to bucket
+    const d = new Date(a.start_date_local || a.start_date || 0);
+    if (isNaN(d.getTime()) || d < cutoff) return false;
     const g = sportGroupForType(a.sport_type || a.type);
     return g === 'ride' || g === 'run';
   });
@@ -8953,6 +8976,12 @@ async function runZoneScanChunk() {
           const time = (st.time && st.time.data) || null;
           const isRide = sportGroupForType(a.sport_type || a.type) === 'ride';
           const target = isRide ? progress.ride : progress.run;
+          // Same numbers again, bucketed by the month of the ride, so the
+          // season's progression can be drawn without a second pass.
+          const mKey = (a.start_date_local || a.start_date || '').slice(0, 7);
+          if (mKey && !progress.byMonth[mKey]) progress.byMonth[mKey] = { ride: emptyZoneBuckets(), run: emptyZoneBuckets() };
+          const mTarget = mKey ? (isRide ? progress.byMonth[mKey].ride : progress.byMonth[mKey].run) : null;
+          const touched = {};
           for (let i = 0; i < hr.length; i++) {
             const bpm = hr[i];
             if (!bpm || bpm <= 0) continue;
@@ -8962,12 +8991,24 @@ async function runZoneScanChunk() {
             const frac = bpm / mhr.value;
             let bi = HR_ZONE_DEFS.findIndex(function (z) { return frac >= z.lo && frac < z.hi; });
             if (bi < 0) bi = frac >= 0.9 ? HR_ZONE_DEFS.length - 1 : 0;
-            const b = target[bi];
-            b.secs += dt;
-            b.hrSum += bpm * dt;
-            if (watts && watts[i] > 0) { b.wattSum += watts[i] * dt; b.wattSecs += dt; }
-            if (vel && vel[i] > 0)     { b.speedSum += vel[i] * dt;  b.speedSecs += dt; }
+            const w = (watts && watts[i] > 0) ? watts[i] : null;
+            const v = (vel && vel[i] > 0) ? vel[i] : null;
+            [target[bi], mTarget ? mTarget[bi] : null].forEach(function (b) {
+              if (!b) return;
+              b.secs += dt;
+              b.hrSum += bpm * dt;
+              if (w !== null) { b.wattSum += w * dt; b.wattSecs += dt; }
+              if (v !== null) { b.speedSum += v * dt; b.speedSecs += dt; }
+            });
+            touched[bi] = true;
           }
+          // One increment per activity per zone, so "N rides" means rides, not
+          // samples - the previous version hardcoded 1 and the card printed
+          // "1 activity" no matter how many had been scanned.
+          Object.keys(touched).forEach(function (bi) {
+            target[bi].acts = (target[bi].acts || 0) + 1;
+            if (mTarget) mTarget[bi].acts = (mTarget[bi].acts || 0) + 1;
+          });
         }
         progress.scannedIds.push(a.id);
         await new Promise(function (r) { setTimeout(r, 200); });
@@ -8998,7 +9039,7 @@ function zoneStatsFromStreams(sport) {
       : (b.speedSecs ? (1609.34 / (b.speedSum / b.speedSecs)) : null);
     return {
       def: HR_ZONE_DEFS[i],
-      n: value == null ? 0 : 1,
+      n: value == null ? 0 : (b.acts || 1),
       value: value,
       avgHR: Math.round(b.hrSum / b.secs),
       hours: b.secs / 3600
@@ -9041,6 +9082,72 @@ function zoneOutputStats(sport) {
     };
   });
   return { maxHR: mhr, zones: zones, count: acts.length, isRide: isRide };
+}
+
+// Watts held in one zone, month by month. This is the question worth asking of
+// a season: not "what do I produce at zone 2" but "is it going up". Same heart
+// rate, more power, means aerobic fitness improving.
+function zoneProgression(sport, zoneIndex) {
+  const p = window._zoneScan;
+  if (!p || !p.byMonth) return [];
+  const isRide = sport === 'ride';
+  return Object.keys(p.byMonth).sort().map(function (m) {
+    const b = (isRide ? p.byMonth[m].ride : p.byMonth[m].run)[zoneIndex];
+    if (!b || !b.secs) return null;
+    const value = isRide
+      ? (b.wattSecs ? b.wattSum / b.wattSecs : null)
+      : (b.speedSecs ? (1609.34 / (b.speedSum / b.speedSecs)) : null);
+    if (value == null) return null;
+    // A handful of seconds in a zone is noise, not a data point.
+    if (b.secs < 600) return null;
+    return { month: m, value: value, hours: b.secs / 3600, acts: b.acts || 0 };
+  }).filter(Boolean);
+}
+
+let zoneTrendIndex = 1;   // default to Z2, the zone most rides live in
+function setZoneTrendZone(i) { zoneTrendIndex = parseInt(i, 10) || 0; renderZoneOutput(zoneOutputSport); }
+
+function zoneProgressionHTML(sport) {
+  const rows = zoneProgression(sport, zoneTrendIndex);
+  const z = HR_ZONE_DEFS[zoneTrendIndex];
+  const picker = '<select class="form-select" style="width:auto;padding:4px 8px;font-size:12px" onchange="setZoneTrendZone(this.value)">' +
+    HR_ZONE_DEFS.map(function (d, i) {
+      return '<option value="' + i + '"' + (i === zoneTrendIndex ? ' selected' : '') + '>' + d.label + '</option>';
+    }).join('') + '</select>';
+  const head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:14px 0 8px;padding-top:12px;border-top:1px solid #21262d">' +
+      '<span style="font-size:13px;font-weight:600;color:#e6edf3">Progression</span>' + picker + '</div>';
+  if (rows.length < 2) {
+    return head + '<div style="font-size:11px;color:#57606a">Needs at least two months with 10+ minutes in ' +
+      escapeHTML(z.label) + '. Scan more of your history to fill this in.</div>';
+  }
+  const vals = rows.map(function (r) { return r.value; });
+  const lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  const span = (hi - lo) || 1;
+  const isRide = sport === 'ride';
+  // For runs the value is seconds per mile, where lower is better, so the bar
+  // scale inverts - otherwise getting faster would draw a shrinking bar.
+  const frac = function (v) { return isRide ? (v - lo) / span : 1 - (v - lo) / span; };
+  const first = rows[0].value, last = rows[rows.length - 1].value;
+  const better = isRide ? last > first : last < first;
+  const deltaTxt = isRide
+    ? (last - first >= 0 ? '+' : '') + Math.round(last - first) + ' w'
+    : (first - last >= 0 ? '-' : '+') + Math.abs(Math.round(first - last)) + ' s/mi';
+  return head +
+    '<div style="font-size:11px;color:' + (better ? '#3fb950' : '#7d8590') + ';margin-bottom:8px">' +
+      deltaTxt + ' from ' + rows[0].month + ' to ' + rows[rows.length - 1].month +
+      (better ? ' \u2014 same effort, more output' : '') +
+    '</div>' +
+    rows.map(function (r) {
+      const label = isRide ? Math.round(r.value) + ' w' : secsToMmSs(Math.round(r.value)) + ' /mi';
+      const pct = 8 + frac(r.value) * 92;
+      return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0">' +
+        '<span style="font-size:11px;color:#7d8590;width:58px;flex-shrink:0">' + r.month + '</span>' +
+        '<div style="flex:1;height:7px;background:#161b22;border-radius:4px;overflow:hidden">' +
+          '<div style="height:100%;width:' + pct.toFixed(0) + '%;background:' + z.color + '"></div></div>' +
+        '<span style="font-size:11px;color:#e6edf3;width:56px;text-align:right;flex-shrink:0">' + label + '</span>' +
+        '<span style="font-size:10px;color:#484f58;width:34px;text-align:right;flex-shrink:0">' + r.hours.toFixed(0) + 'h</span>' +
+      '</div>';
+    }).join('');
 }
 
 function renderZoneOutput(sport) {
@@ -9088,13 +9195,16 @@ function renderZoneOutput(sport) {
     ? (remaining
         ? scanProgressBar(scanned, cand) +
           '<div style="margin-bottom:10px"><button class="gold-btn" id="zone-scan-btn" style="margin-top:0" onclick="runZoneScanChunk()">Scan next ' +
-          Math.min(ZONE_SCAN_CHUNK, remaining) + '</button></div>'
-        : '<div style="font-size:11px;color:#3fb950;margin-bottom:8px">\u2713 All ' + cand + ' activities with heart rate analysed</div>')
+          Math.min(ZONE_SCAN_CHUNK, remaining) + '</button>' +
+          '<div style="font-size:10px;color:#484f58;margin-top:5px">Last ' + ZONE_SCAN_MONTHS + ' months only \u2014 about 1.5 seasons, which is what a progression is about.</div></div>'
+        : '<div style="font-size:11px;color:#3fb950;margin-bottom:8px">\u2713 All ' + cand + ' activities from the last ' + ZONE_SCAN_MONTHS + ' months analysed</div>')
     : '<div style="margin-bottom:10px">' +
         '<div style="font-size:12px;color:#d29922;margin-bottom:6px">Showing whole-ride averages, so zones 4 and 5 stay empty. ' +
         'Analyse your heart-rate data to measure the time actually spent in each zone.</div>' +
         '<button class="gold-btn" id="zone-scan-btn" style="margin-top:0" onclick="runZoneScanChunk()">Analyse ' +
         Math.min(ZONE_SCAN_CHUNK, cand) + ' activities</button>' +
+        '<div style="font-size:10px;color:#484f58;margin-top:5px">Covers your last ' + ZONE_SCAN_MONTHS +
+        ' months (' + cand + ' activities with heart rate).</div>' +
       '</div>';
 
   el.innerHTML = scanBlock +
@@ -9134,7 +9244,8 @@ function renderZoneOutput(sport) {
           'A hard ride with 20 minutes at threshold still averages out to zone 2 or 3 across ' +
           'its whole length, so the top zones stay empty - that is this chart\u2019s limit, ' +
           'not a gap in your training.') +
-    '</div>';
+    '</div>' +
+    (stats.fromStreams ? zoneProgressionHTML(sport) : '');
 }
 
 let zoneOutputSport = 'ride';
