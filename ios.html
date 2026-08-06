@@ -1473,6 +1473,10 @@ if (window.isPalmaresNativeApp || window.isEldoradoNativeApp) document.body.clas
                 <option value="ridden">Segments I've ridden</option>
                 <option value="starred">★ Starred on Strava</option>
               </select>
+              <select id="tailwind-sort" onchange="renderTailwindSegments(currentWxDayIdx)" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 8px;color:#e6edf3;font-size:12px">
+                <option value="wind" selected>Best tailwind</option>
+                <option value="near">Closest to me</option>
+              </select>
               <select id="tailwind-radius" onchange="renderTailwindSegments(currentWxDayIdx)" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 8px;color:#e6edf3;font-size:12px">
                 <option value="5">5 mi</option>
                 <option value="10" selected>10 mi</option>
@@ -9696,6 +9700,7 @@ async function refreshStarredFromStrava(force) {
         map[String(s.id)] = {
           name: s.name || '',
           distance: s.distance || null,
+          average_grade: s.average_grade != null ? s.average_grade : null,
           start_latlng: s.start_latlng || null,
           end_latlng: s.end_latlng || null,
           activity_type: s.activity_type || 'Ride',
@@ -15483,6 +15488,7 @@ async function computeTailwindSegments(dayIdx) {
         start: points[0],
         end: points[points.length - 1],
         distanceMi: detail && detail.distance ? detail.distance / 1609.34 : null,
+        grade: detail && detail.average_grade != null ? detail.average_grade : null,
         starred: isStarred(seg.segment_id)
       });
     });
@@ -15507,6 +15513,7 @@ async function computeTailwindSegments(dayIdx) {
         start: s.start_latlng,
         end: s.end_latlng,
         distanceMi: s.distance ? s.distance / 1609.34 : null,
+        grade: s.average_grade != null ? s.average_grade : null,
         starred: true
       });
     });
@@ -15514,9 +15521,12 @@ async function computeTailwindSegments(dayIdx) {
 
   const results = [];
   candidates.forEach(function(c) {
-    const nearCenter = milesBetweenLatLng(c.start, center) <= radius
-                    || milesBetweenLatLng(c.end, center) <= radius;
-    if (!nearCenter) return;
+    // Nearest end, not the start: a segment can begin outside the radius and
+    // still be one you would ride to. Reused as the "closest" sort key, so the
+    // number shown is the same one the radius filter judged it by.
+    const awayMi = Math.min(milesBetweenLatLng(c.start, center),
+                            milesBetweenLatLng(c.end, center));
+    if (awayMi > radius) return;
     const bearing = bearingBetween(c.start, c.end);
     const diff = angleDiff(bearing, windTo);
     const component = windSpeedMph * Math.cos(diff * Math.PI / 180);
@@ -15524,14 +15534,22 @@ async function computeTailwindSegments(dayIdx) {
       segment_id: c.segment_id,
       segment_name: c.segment_name,
       distanceMi: c.distanceMi,
+      grade: c.grade,
+      awayMi: awayMi,
       component: component,
       starred: !!c.starred,
       rank: rankBySegmentId[c.segment_id] != null ? rankBySegmentId[c.segment_id] : null
     });
   });
 
-  results.sort(function(a, b) { return b.component - a.component; });
+  // Sort last, on the full in-range set, so "closest" cannot be a re-ordering
+  // of a wind-picked top ten - it is the nearest ten outright.
+  const sortSel = document.getElementById('tailwind-sort');
+  const sortBy = sortSel ? sortSel.value : 'wind';
+  if (sortBy === 'near') results.sort(function(a, b) { return a.awayMi - b.awayMi; });
+  else results.sort(function(a, b) { return b.component - a.component; });
   const top = results.slice(0, TAILWIND_MAX);
+  top.sortBy = sortBy;
   top.source = source;
   top.starTotal = wantStarred ? Object.keys(starredSet()).length : 0;
   top.considered = results.length; // how many were in range before the cut
@@ -15610,13 +15628,21 @@ async function renderTailwindSegments(dayIdx) {
       return '<div class="row">' +
         '<div>' +
           '<div class="row-name">' + rankBadge + star + '<a href="' + stravaSegmentHref(s.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">' + escapeHTML(s.segment_name || 'Segment') + '</a></div>' +
-          (s.distanceMi ? '<div class="row-meta">' + s.distanceMi.toFixed(2) + ' mi</div>' : '') +
+          '<div class="row-meta">' + [
+            s.distanceMi ? s.distanceMi.toFixed(2) + ' mi' : null,
+            // Strava reports grade as a percentage already. Anything under half
+            // a percent reads as flat rather than as a precise-looking 0.2%.
+            s.grade != null ? (Math.abs(s.grade) < 0.5 ? 'flat' : s.grade.toFixed(1) + '%') : null,
+            s.awayMi != null ? s.awayMi.toFixed(1) + ' mi away' : null
+          ].filter(Boolean).join(' · ') + '</div>' +
         '</div>' +
         '<div class="row-right" style="color:' + color + '">' + label + '</div>' +
       '</div>';
     }).join('') +
       (top.considered > top.length
-        ? '<div style="font-size:11px;color:#7d8590;margin-top:8px">Best ' + top.length + ' of ' + top.considered + ' in range</div>'
+        ? '<div style="font-size:11px;color:#7d8590;margin-top:8px">Showing ' + top.length +
+          ' of ' + top.considered + ' in range · ' +
+          (top.sortBy === 'near' ? 'closest first' : 'best tailwind first') + '</div>'
         : '');
   } catch (e) {
     el.innerHTML = '<div style="color:#7d8590">Could not load tailwind segments.</div>';
