@@ -12547,48 +12547,141 @@ function popupForMapEntry(entry, detail, wind) {
   '</div>';
 }
 
+// Opacity by how many SEPARATE activities covered that stretch of road:
+// index 0 is one activity, index 3 is four or more. A road done once already
+// reads clearly - you should not need ten passes for a road to show up - so
+// the ramp starts high and compresses, rather than fading in from nothing.
+const HEAT_RAMP = [0.50, 0.65, 0.80, 0.90];
+
+// Roughly 50m cells. A degree of longitude shrinks with latitude, so the
+// longitude step is divided by cos(lat) to keep cells about square on the
+// ground; without that, cells would be badly stretched away from the equator.
+const HEAT_LAT_STEP = 0.00045;
+// Caps sampling across a pathological segment (a GPS dropout can leave a
+// straight line across the county); 400 cells is ~20km, past any real one.
+const HEAT_MAX_STEPS = 400;
+
+// Recomputing costs ~1s over a long history, so the finished runs are kept and
+// reused when flipping modes back and forth. Keyed on sport plus a signature
+// of the activity list, so a sync invalidates it.
+let heatRunCache = { key: null, runs: null, stats: null };
+
+// This deliberately does NOT work by stacking translucent lines. Stacking
+// composites as 1-(1-a)^n, so the curve's shape is fixed by the alpha and the
+// steps cannot be chosen independently - and worse, a road ridden ten times
+// gets drawn ten times. Instead each stretch of road is counted once and then
+// drawn exactly once, at the opacity its own ride count earns.
+//
+// Counting also makes this cheaper than what it replaced: one overlay per
+// stretch of road rather than one per activity, and the shared roads (which
+// are most of them) stop being redrawn. On a 1,500-activity history that is
+// ~500 overlays and ~25k points instead of 1,500 overlays and ~375k points.
+function heatRunsFor(tracks, sportSel) {
+  const cosLat = Math.max(0.15, Math.cos(tracks[0][0][0] * Math.PI / 180));
+  const lngStep = HEAT_LAT_STEP / cosLat;
+
+  // Walks a track and calls back once per cell entered, in order. Consecutive
+  // samples landing in the same cell are skipped rather than reported twice -
+  // sampling runs at twice the cell resolution so that a diagonal never skips
+  // a cell, which means repeats are the common case, and treating them as
+  // separate visits would chop every road into two-point fragments.
+  function walkCells(pts, cb) {
+    let lastKey = -1;
+    for (let j = 1; j < pts.length; j++) {
+      const a = pts[j - 1], b = pts[j];
+      const dLat = b[0] - a[0], dLng = b[1] - a[1];
+      let steps = Math.ceil(Math.max(Math.abs(dLat / HEAT_LAT_STEP), Math.abs(dLng / lngStep)) * 2);
+      if (steps < 1) steps = 1;
+      if (steps > HEAT_MAX_STEPS) steps = HEAT_MAX_STEPS;
+      for (let s = 0; s <= steps; s++) {
+        const t = s / steps;
+        const la = a[0] + dLat * t, ln = a[1] + dLng * t;
+        const key = (Math.round(la / HEAT_LAT_STEP) + 500000) * 1000000
+                  + (Math.round(ln / lngStep) + 500000);
+        if (key === lastKey) continue;
+        lastKey = key;
+        cb(key, la, ln);
+      }
+    }
+  }
+
+  // Pass 1 - how many distinct activities covered each cell. lastAct keeps an
+  // out-and-back within a single ride from counting as two rides.
+  const counts = new Map(), lastAct = new Map();
+  tracks.forEach(function (pts, i) {
+    walkCells(pts, function (key) {
+      if (lastAct.get(key) === i) return;
+      lastAct.set(key, i);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+  });
+
+  // Pass 2 - paint each cell once, gathering neighbours that share a ride count
+  // into a single polyline. A cell already painted ends the current run, so no
+  // stretch is ever drawn twice and the opacities stay exactly as set above.
+  const painted = new Set(), runs = [];
+  let run = [], runBucket = -1;
+  function flush() {
+    if (run.length > 1) runs.push({ pts: run, opacity: HEAT_RAMP[runBucket] });
+    run = [];
+  }
+  tracks.forEach(function (pts) {
+    walkCells(pts, function (key, la, ln) {
+      if (painted.has(key)) { flush(); runBucket = -1; return; }
+      painted.add(key);
+      const n = counts.get(key) || 1;
+      const b = n >= HEAT_RAMP.length ? HEAT_RAMP.length - 1 : n - 1;
+      if (b !== runBucket) { flush(); runBucket = b; } // flush() still sees the old bucket
+      run.push([la, ln]);
+    });
+    flush();
+    runBucket = -1;
+  });
+  return runs;
+}
+
 function renderHeatLayer() {
   if (!palmaresMap || !palmaresMapLayers.heat) return { activityCount: 0, pointCount: 0, missing: 0 };
   palmaresMapLayers.heat.clearLayers();
   if (palmaresMapState.mode !== 'heat') return { activityCount: 0, pointCount: 0, missing: 0 };
 
-  // Road-style heatmap: draw each activity polyline as a semi-transparent
-  // line. Where multiple activities overlap the same road, the alpha
-  // compositing stacks up and the road naturally darkens - showing the
-  // paths you actually ride/run rather than a blurry blob. This is what
-  // Strava's own heatmap does and is what road cyclists actually want
-  // (which roads have I ridden, and how often).
-  let activityCount = 0, missing = 0, pointCount = 0;
-  const anySport = true; // sport is always a single active choice now
-  if (!anySport) return { activityCount: 0, pointCount: 0, missing: 0 };
+  const sportSel = palmaresMapState.sport;
+  const cacheKey = sportSel + ':' + allActivities.length + ':' +
+    ((allActivities[0] && allActivities[0].id) || 0);
 
-  allActivities.forEach(function(a) {
-    const sport = sportGroupForType(a.type);
-    if (!((sport === 'ride' && palmaresMapState.sport === 'bike') || (sport === 'run' && palmaresMapState.sport === 'run'))) return;
-    const poly = a.map && (a.map.summary_polyline || a.map.polyline);
-    const pts = decodePolyline(poly);
-    if (!pts.length) { missing++; return; }
-    activityCount++;
-    pointCount += pts.length;
-    // Low per-line opacity means one ride shows up faint while ten on the same
-    // road stack toward opaque - that's the "brighter where I go more" behavior,
-    // and it's why the alpha stays low instead of drawing a solid line.
-    //
-    // Cyan at 0.10 scored 1.22 contrast against Apple's muted-dark road fill for
-    // a single trace, well under the ~3.0 floor for seeing a non-text mark - one
-    // ride was effectively invisible. Yellow is the brightest hue available
-    // (OKLCH L 0.909 vs cyan's 0.814) and doesn't compete with the basemap water.
-    // Runs keep red but need more alpha: red's contrast is capped near 4.1 no
-    // matter the alpha, where yellow climbs past 8.
-    const isRun = sport === 'run';
-    mkAddPolyline(palmaresMapLayers.heat, pts, {
-      color: isRun ? '#ff6b6b' : '#ffe14d',
-      weight: 2,
-      opacity: isRun ? 0.24 : 0.18
+  let runs, stats;
+  if (heatRunCache.key === cacheKey) {
+    runs = heatRunCache.runs;
+    stats = heatRunCache.stats;
+  } else {
+    let missing = 0, pointCount = 0;
+    const tracks = [];
+    allActivities.forEach(function (a) {
+      const sport = sportGroupForType(a.type);
+      if (!((sport === 'ride' && sportSel === 'bike') || (sport === 'run' && sportSel === 'run'))) return;
+      const poly = a.map && (a.map.summary_polyline || a.map.polyline);
+      const pts = decodePolyline(poly);
+      if (!pts.length) { missing++; return; }
+      pointCount += pts.length;
+      tracks.push(pts);
+    });
+    if (!tracks.length) return { activityCount: 0, pointCount: 0, missing: missing };
+    runs = heatRunsFor(tracks, sportSel);
+    stats = { activityCount: tracks.length, pointCount: pointCount, missing: missing };
+    heatRunCache = { key: cacheKey, runs: runs, stats: stats };
+  }
+
+  // Yellow for rides, red for runs. Yellow is the brightest hue available
+  // (OKLCH L 0.909) and, unlike the cyan this replaced, does not compete with
+  // the basemap's water.
+  const color = sportSel === 'run' ? '#ff6b6b' : '#ffe14d';
+  runs.forEach(function (r) {
+    mkAddPolyline(palmaresMapLayers.heat, r.pts, {
+      color: color, weight: 2, opacity: r.opacity
     });
   });
 
-  return { activityCount, pointCount, missing };
+  return stats;
 }
 
 // ==================== WEATHER: TAILWIND SEGMENTS ====================
