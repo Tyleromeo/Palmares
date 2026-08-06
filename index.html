@@ -1201,8 +1201,12 @@ body.ob-open { overflow: hidden; }
                 <option value="ride" selected>Ride</option>
                 <option value="run">Run</option>
               </select>
+              <select id="tailwind-day" onchange="renderTailwindSegments(Number(this.value))" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 8px;color:#e6edf3;font-size:12px">
+                <option value="0" selected>Today</option>
+              </select>
               <select id="tailwind-source" onchange="renderTailwindSegments(currentWxDayIdx)" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 8px;color:#e6edf3;font-size:12px">
-                <option value="ridden" selected>Segments I've ridden</option>
+                <option value="both" selected>Ridden + starred</option>
+                <option value="ridden">Segments I've ridden</option>
                 <option value="starred">★ Starred on Strava</option>
               </select>
               <select id="tailwind-radius" onchange="renderTailwindSegments(currentWxDayIdx)" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 8px;color:#e6edf3;font-size:12px">
@@ -12829,10 +12833,39 @@ async function computeTailwindSegments(dayIdx) {
   const sourceSel = document.getElementById('tailwind-source');
   const source = sourceSel ? sourceSel.value : 'ridden';
 
+  const wantRidden  = source === 'ridden'  || source === 'both';
+  const wantStarred = source === 'starred' || source === 'both';
+
   const candidates = [];
-  if (source === 'starred') {
+  const seenIds = new Set();
+
+  // Ridden first, so that when both pools are on, a segment that is both
+  // ridden and starred is taken from here - this pool carries the real
+  // geometry and the leaderboard rank, which the starred summary lacks.
+  if (wantRidden) {
+    Object.values(progress.allSegmentBests || {}).forEach(function(seg) {
+      const segSport = sportGroupForType(seg.activity_type);
+      if (sport === 'ride' && segSport !== 'ride') return;
+      if (sport === 'run' && segSport !== 'run') return;
+      const detail = enrichedCache[seg.segment_id];
+      const points = pointsForMapEntry(null, detail);
+      if (points.length < 2) return;
+      seenIds.add(String(seg.segment_id));
+      candidates.push({
+        segment_id: seg.segment_id,
+        segment_name: seg.segment_name,
+        start: points[0],
+        end: points[points.length - 1],
+        distanceMi: detail && detail.distance ? detail.distance / 1609.34 : null,
+        starred: isStarred(seg.segment_id)
+      });
+    });
+  }
+
+  if (wantStarred) {
     const stars = starredSet();
     Object.keys(stars).forEach(function(id) {
+      if (seenIds.has(String(id))) return; // already in from the ridden pool
       const s = stars[id];
       // A mirror entry from before stars carried detail is just 1: it still
       // means starred, but there is nothing to place on the map with.
@@ -12847,23 +12880,8 @@ async function computeTailwindSegments(dayIdx) {
         segment_name: s.name || 'Segment ' + id,
         start: s.start_latlng,
         end: s.end_latlng,
-        distanceMi: s.distance ? s.distance / 1609.34 : null
-      });
-    });
-  } else {
-    Object.values(progress.allSegmentBests || {}).forEach(function(seg) {
-      const segSport = sportGroupForType(seg.activity_type);
-      if (sport === 'ride' && segSport !== 'ride') return;
-      if (sport === 'run' && segSport !== 'run') return;
-      const detail = enrichedCache[seg.segment_id];
-      const points = pointsForMapEntry(null, detail);
-      if (points.length < 2) return;
-      candidates.push({
-        segment_id: seg.segment_id,
-        segment_name: seg.segment_name,
-        start: points[0],
-        end: points[points.length - 1],
-        distanceMi: detail && detail.distance ? detail.distance / 1609.34 : null
+        distanceMi: s.distance ? s.distance / 1609.34 : null,
+        starred: true
       });
     });
   }
@@ -12881,37 +12899,64 @@ async function computeTailwindSegments(dayIdx) {
       segment_name: c.segment_name,
       distanceMi: c.distanceMi,
       component: component,
+      starred: !!c.starred,
       rank: rankBySegmentId[c.segment_id] != null ? rankBySegmentId[c.segment_id] : null
     });
   });
 
   results.sort(function(a, b) { return b.component - a.component; });
-  results.source = source;
-  results.starTotal = source === 'starred' ? Object.keys(starredSet()).length : 0;
-  const top = results.slice(0, 3);
+  const top = results.slice(0, TAILWIND_MAX);
   top.source = source;
-  top.starTotal = results.starTotal;
+  top.starTotal = wantStarred ? Object.keys(starredSet()).length : 0;
+  top.considered = results.length; // how many were in range before the cut
   return top;
 }
 
 // One-shot: the starred-list refetch below must not re-fire on every render.
 let _tailwindStarRetry = false;
 
+// Ten rather than three. Three is enough when the list is only what you have
+// already ridden near one zip, but once stars are in the pool there are real
+// choices to compare, and a rider picking a direction wants the field.
+const TAILWIND_MAX = 10;
+
+// The forecast day picker, built the same way and from the same labels as the
+// segment hunter's, so the two read identically. Rebuilt only when the number
+// of forecast days changes; the value is re-synced every render because
+// tapping a day card on the forecast also moves it.
+function populateTailwindDays() {
+  const sel = document.getElementById('tailwind-day');
+  const d = window._wxData && window._wxData.daily;
+  if (!sel || !d || !d.time || !d.time.length) return;
+  const days = d.time.length;
+  if (sel.options.length !== days) {
+    let html = '';
+    for (let i = 0; i < days; i++) {
+      const label = huntDayLabel(i);
+      if (label) html += '<option value="' + i + '">' + escapeHTML(label) + '</option>';
+    }
+    sel.innerHTML = html;
+  }
+  if (currentWxDayIdx >= days) currentWxDayIdx = 0;
+  sel.value = String(currentWxDayIdx);
+}
+
 async function renderTailwindSegments(dayIdx) {
-  currentWxDayIdx = dayIdx;
+  currentWxDayIdx = Math.max(0, Number(dayIdx) || 0);
+  populateTailwindDays();
   const el = document.getElementById('wx-tailwind-segments');
   if (!el) return;
   el.textContent = 'Loading...';
   try {
-    let top = await computeTailwindSegments(dayIdx);
+    let top = await computeTailwindSegments(currentWxDayIdx);
 
     // Stars mirrored before they carried coordinates are unplaceable, so an
     // athlete with plenty of stars can still come back empty. Pull the real
     // list once and retry rather than telling them they have none.
-    if (!top.length && top.source === 'starred' && !_tailwindStarRetry) {
+    if (!top.length && top.source !== 'ridden' && !_tailwindStarRetry) {
       _tailwindStarRetry = true;
       await refreshStarredFromStrava(true);
-      top = await computeTailwindSegments(dayIdx);
+      top = await computeTailwindSegments(currentWxDayIdx);
     }
 
     if (!top.length) {
@@ -12919,7 +12964,9 @@ async function renderTailwindSegments(dayIdx) {
         ? (top.starTotal
             ? 'None of your ' + top.starTotal + ' starred segments are within this radius for the selected sport — widen the distance, switch sport, or change the zip.'
             : 'No starred segments on Strava yet. Star one from its Strava page, or with the ★ on any segment here, and it will show up.')
-        : 'No completed segments with a tailwind found in this radius yet — finish the Segments scan for full coverage, or widen the distance.';
+        : top.source === 'both'
+          ? 'Nothing in range for the selected sport — widen the distance, change the zip, or finish the Segments scan for fuller coverage.'
+          : 'No completed segments with a tailwind found in this radius yet — finish the Segments scan for full coverage, or widen the distance.';
       el.innerHTML = '<div style="color:#7d8590">' + msg + '</div>';
       return;
     }
@@ -12931,14 +12978,20 @@ async function renderTailwindSegments(dayIdx) {
         : s.rank != null
           ? '<span class="badge b-blue" style="margin-right:6px">#' + s.rank + '</span>'
           : '<span style="font-size:10px;color:#7d8590;margin-right:6px">Outside Top 10</span>';
+      // With both pools showing, the star is what tells you which of these you
+      // picked out yourself versus which you merely happen to have ridden.
+      const star = s.starred ? '<span style="color:#C9A227;margin-right:4px" title="Starred on Strava">★</span>' : '';
       return '<div class="row">' +
         '<div>' +
-          '<div class="row-name">' + rankBadge + '<a href="' + stravaSegmentHref(s.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">' + escapeHTML(s.segment_name || 'Segment') + '</a></div>' +
+          '<div class="row-name">' + rankBadge + star + '<a href="' + stravaSegmentHref(s.segment_id) + '" target="_blank" rel="noopener noreferrer" style="color:#e6edf3;text-decoration:none" title="View on Strava" aria-label="View on Strava">' + escapeHTML(s.segment_name || 'Segment') + '</a></div>' +
           (s.distanceMi ? '<div class="row-meta">' + s.distanceMi.toFixed(2) + ' mi</div>' : '') +
         '</div>' +
         '<div class="row-right" style="color:' + color + '">' + label + '</div>' +
       '</div>';
-    }).join('');
+    }).join('') +
+      (top.considered > top.length
+        ? '<div style="font-size:11px;color:#7d8590;margin-top:8px">Best ' + top.length + ' of ' + top.considered + ' in range</div>'
+        : '');
   } catch (e) {
     el.innerHTML = '<div style="color:#7d8590">Could not load tailwind segments.</div>';
   }
