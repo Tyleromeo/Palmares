@@ -15206,16 +15206,26 @@ function renderHeatLayer() {
     if (!pts.length) { missing++; return; }
     activityCount++;
     pointCount += pts.length;
-    // Low per-line opacity means a single ride shows up faint, but 10
-    // rides on the same road stack toward opaque - that's the "darker
-    // where I go more" behavior. Black for bike stacks well against light
-    // OSM tiles; red for runs is intuitive and distinct.
-    // Brighter than the old black/red pair: Apple's dark basemap needs a
-    // light trace to stack visibly, where OSM's light tiles needed a dark one.
+    // Low per-line opacity means one ride shows up faint while ten on the same
+    // road stack toward opaque - that's the "brighter where I go more" behavior,
+    // and it's why the alpha stays low instead of drawing a solid line.
+    //
+    // Cyan at 0.10 was the complaint. Composited onto Apple's muted-dark road
+    // fill a single cyan trace scores 1.22 contrast, where ~3.0 is the floor for
+    // seeing a non-text mark at all - so one ride was effectively invisible.
+    // Hue alone doesn't fix that (yellow at 0.10 scores 1.26); the alpha was the
+    // real problem. Yellow is also the brightest hue on offer (OKLCH L 0.909 vs
+    // cyan's 0.814) and, unlike cyan, doesn't compete with the basemap's water.
+    //
+    // Runs keep their red but get a higher alpha, because red is intrinsically
+    // dark: its contrast against the road fill is capped near 4.1 however much
+    // alpha it gets, where yellow climbs past 8. The extra alpha buys red the
+    // same "clearly there within a few passes" behavior, not extra headroom.
+    const isRun = sport === 'run';
     mkAddPolyline(palmaresMapLayers.heat, pts, {
-      color: sport === 'run' ? '#ff6b6b' : '#4dd4ff',
+      color: isRun ? '#ff6b6b' : '#ffe14d',
       weight: 2,
-      opacity: 0.10
+      opacity: isRun ? 0.24 : 0.18
     });
   });
 
