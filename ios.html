@@ -2045,6 +2045,15 @@ async function saveActivityGeometryCache(athleteId, activities, mergeExisting) {
     let payload = fresh;
     if (mergeExisting) {
       const existing = await getCached(athleteId, 'activity_geometry_v1', 365*24*60*60*1000) || {};
+      // A failed read is NOT an empty cache. Without this guard a single
+      // network blip during an incremental sync merged that day's two or three
+      // rides into {} and wrote the result back, deleting the route geometry
+      // for every older activity. Nothing visible broke at the time: the rides
+      // themselves live in the activities table, so only the Map heatmap lost
+      // them, and it silently drew fewer rides rather than reporting a gap -
+      // whole regions the athlete had ridden for years just stopped appearing.
+      // Same guard the scan-progress writers already use.
+      if (cacheReadJustFailed('activity_geometry_v1')) return;
       payload = Object.assign({}, existing, fresh);
     }
     await setCached(athleteId, 'activity_geometry_v1', payload);
@@ -2132,6 +2141,10 @@ async function saveSportTypeCache(athleteId, activities, mergeExisting) {
     let payload = fresh;
     if (mergeExisting) {
       const existing = await getCached(athleteId, 'sport_types_v1', 365*24*60*60*1000) || {};
+      // Same failed-read guard as the geometry cache above: merging into {}
+      // after a failed read would reclassify every older gravel/MTB/trail
+      // activity back to its legacy type.
+      if (cacheReadJustFailed('sport_types_v1')) return;
       payload = Object.assign({}, existing, fresh);
     }
     await setCached(athleteId, 'sport_types_v1', payload);
@@ -15585,7 +15598,12 @@ async function renderPalmaresMap() {
   if (countsEl) {
     const rangeLabel = currentMapSegmentDistanceLabel();
     if (palmaresMapState.mode === 'heat') {
-      countsEl.textContent = heatStats.activityCount + ' heatmap ' + (palmaresMapState.sport === 'run' ? 'runs' : 'rides');
+      // Say when activities were dropped for want of route geometry. Reporting
+      // only what got drawn is how a heatmap can quietly lose whole regions and
+      // still look plausible - a resync repopulates the geometry cache.
+      countsEl.textContent = heatStats.activityCount + ' heatmap ' +
+        (palmaresMapState.sport === 'run' ? 'runs' : 'rides') +
+        (heatStats.missing ? ' · ' + heatStats.missing + ' missing route data' : '');
     } else if (palmaresMapState.mode === 'route') {
       countsEl.textContent = routeWaypoints.length ? (routeWaypoints.length + ' waypoint' + (routeWaypoints.length === 1 ? '' : 's')) : 'Tap the map to drop waypoints';
     } else {

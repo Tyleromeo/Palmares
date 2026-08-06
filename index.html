@@ -1688,7 +1688,21 @@ async function getCached(athleteId, key, maxAgeMs) {
       max_age_ms: maxAgeMs
     });
     return data && typeof data === 'object' && data.hasOwnProperty('payload') ? data.payload : data;
-  } catch(e) { console.log('Cache read error for', key, ':', e); return null; }
+  } catch(e) {
+    console.log('Cache read error for', key, ':', e);
+    // A failed read is NOT the same as an empty cache. Callers that write back
+    // a merge of what they read must check this, or one network blip turns
+    // "read everything, add today's, save" into "save only today's" and the
+    // rest is gone. This site shares its cache with the iOS build, so the loss
+    // is not confined to whichever one hit the blip.
+    lastCacheReadFailed[key] = Date.now();
+    return null;
+  }
+}
+const lastCacheReadFailed = {};
+function cacheReadJustFailed(key) {
+  const t = lastCacheReadFailed[key];
+  return !!t && (Date.now() - t) < 60000;
 }
 
 function setCached(athleteId, key, payload) {
@@ -1757,6 +1771,12 @@ async function saveActivityGeometryCache(athleteId, activities, mergeExisting) {
     let payload = fresh;
     if (mergeExisting) {
       const existing = await getCached(athleteId, 'activity_geometry_v1', 365*24*60*60*1000) || {};
+      // A failed read is NOT an empty cache. Without this, one network blip
+      // during an incremental sync merged that day's rides into {} and wrote
+      // it back, deleting route geometry for every older activity - the rides
+      // survive in the activities table, so only the Map heatmap lost them,
+      // and it silently drew fewer rides instead of reporting the gap.
+      if (cacheReadJustFailed('activity_geometry_v1')) return;
       payload = Object.assign({}, existing, fresh);
     }
     await setCached(athleteId, 'activity_geometry_v1', payload);
@@ -1834,6 +1854,9 @@ async function saveSportTypeCache(athleteId, activities, mergeExisting) {
     let payload = fresh;
     if (mergeExisting) {
       const existing = await getCached(athleteId, 'sport_types_v1', 365*24*60*60*1000) || {};
+      // Same failed-read guard as the geometry cache: merging into {} would
+      // reclassify every older gravel/MTB/trail activity to its legacy type.
+      if (cacheReadJustFailed('sport_types_v1')) return;
       payload = Object.assign({}, existing, fresh);
     }
     await setCached(athleteId, 'sport_types_v1', payload);
@@ -12945,7 +12968,12 @@ async function renderPalmaresMap() {
   if (countsEl) {
     const rangeLabel = currentMapSegmentDistanceLabel();
     if (palmaresMapState.mode === 'heat') {
-      countsEl.textContent = heatStats.activityCount + ' heatmap ' + (palmaresMapState.sport === 'run' ? 'runs' : 'rides');
+      // Say when activities were dropped for want of route geometry, rather
+      // than reporting only what got drawn - that is how a heatmap loses whole
+      // regions and still looks plausible. A resync repopulates the cache.
+      countsEl.textContent = heatStats.activityCount + ' heatmap ' +
+        (palmaresMapState.sport === 'run' ? 'runs' : 'rides') +
+        (heatStats.missing ? ' · ' + heatStats.missing + ' missing route data' : '');
     } else if (palmaresMapState.mode === 'route') {
       countsEl.textContent = routeWaypoints.length ? (routeWaypoints.length + ' waypoint' + (routeWaypoints.length === 1 ? '' : 's')) : 'Tap the map to drop waypoints';
     } else {
